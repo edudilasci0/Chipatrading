@@ -18,7 +18,7 @@ class Transaction(Base):
     transaction_type = Column(String, nullable=False)
     timestamp = Column(DateTime, nullable=False)
 
-# Se obtiene la URL de la base de datos desde la variable de entorno
+# Obtén la URL de la base de datos desde la variable de entorno DATABASE_URL
 DATABASE_PATH = os.getenv("DATABASE_PATH", "sqlite:///default.db")
 engine = create_engine(DATABASE_PATH)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -31,7 +31,6 @@ def init_db():
 def save_transaction(transaction_data, send_telegram_alert):
     """
     Guarda la transacción en la base de datos y envía una alerta a Telegram.
-    
     :param transaction_data: dict con la información de la transacción.
     :param send_telegram_alert: función para enviar alertas.
     """
