@@ -32,6 +32,6 @@ class WalletTracker:
 
     def get_trader(self, wallet_address):
         for trader in self.traders:
-            if trader.get("Trader") == wallet_address:
+            if trader.get("Wallet") == wallet_address:
                 return trader
         return None
