@@ -1,5 +1,5 @@
 requests
-solana
+solana==0.26.0
 websocket-client
 python-telegram-bot==13.7
 psycopg2-binary
