@@ -3,18 +3,24 @@
 import requests
 import json
 import threading
-import websocket  # Asegúrate de tener instalado "websocket-client"
+import websocket  # Asegúrate de tener instalada la librería "websocket-client"
 
 class CieloAPI:
     BASE_URL = "https://feed-api.cielo.finance/api/v1"
 
     def __init__(self, api_key=None):
-        self.api_key = api_key
+        # Si no se pasa ningún valor, se usa la API key por defecto.
+        self.api_key = api_key if api_key else "bb4dbdac-9ac7-4c42-97d3-f6435d0674da"
 
     def get_feed(self, params={}):
         url = f"{self.BASE_URL}/feed"
+        headers = {}
+        if self.api_key:
+            headers["X-API-KEY"] = self.api_key  # Se añade la API key en el header
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=headers)
+            print("Status Code:", response.status_code)
+            print("Response Content:", response.text)
             if response.status_code == 200:
                 return response.json()
             else:
@@ -26,8 +32,11 @@ class CieloAPI:
 
     def get_wallet_by_address(self, wallet_address):
         url = f"{self.BASE_URL}/tracked-wallets/address/{wallet_address}"
+        headers = {}
+        if self.api_key:
+            headers["X-API-KEY"] = self.api_key
         try:
-            response = requests.get(url)
+            response = requests.get(url, headers=headers)
             if response.status_code == 200:
                 return response.json()
             else:
@@ -41,7 +50,8 @@ class CieloWebSocketClient:
     WS_URL = "wss://feed-api.cielo.finance/api/v1/ws"
 
     def __init__(self, api_key=None, on_message_callback=None):
-        self.api_key = api_key
+        # Usa la API key proporcionada o la por defecto.
+        self.api_key = api_key if api_key else "bb4dbdac-9ac7-4c42-97d3-f6435d0674da"
         self.on_message_callback = on_message_callback
         self.ws = None
 
@@ -73,7 +83,6 @@ class CieloWebSocketClient:
         headers = {}
         if self.api_key:
             headers["X-API-KEY"] = self.api_key
-
         self.ws = websocket.WebSocketApp(
             self.WS_URL,
             header=headers,
