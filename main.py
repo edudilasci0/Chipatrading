@@ -1,4 +1,4 @@
-# main.py (fragmento modificado)
+# main.py
 
 import time
 import logging
@@ -12,7 +12,7 @@ from cielo_api import CieloAPI, CieloWebSocketClient
 from rugcheck import login_rugcheck_solana, validar_seguridad_contrato
 from db import init_db, save_transaction
 
-# Configuración de logging (ya lo tienes configurado)
+# Configuración de logging: se registra en app.log y se imprime en la consola.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s: %(message)s',
@@ -22,9 +22,11 @@ logging.basicConfig(
     ]
 )
 
-# Variables de entorno configuradas en Render
+# Variables de entorno
+# Aquí se utilizan las variables de entorno; si no se configuran, se usan valores por defecto.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+# Se recomienda configurar CIELO_API_KEY en Render, pero si no, se usará la por defecto en cielo_api.py
 CIELO_API_KEY = os.getenv("CIELO_API_KEY", None)
 DATABASE_PATH = os.getenv("DATABASE_URL", "postgres://user:pass@host:port/dbname")
 SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "YOUR_SOLANA_PRIVATE_KEY")
@@ -62,7 +64,7 @@ def send_summary_alert(processed, inserted):
 def load_wallets():
     """
     Carga la lista de wallets desde el archivo traders_data.json.
-    Se espera que cada entrada tenga una clave "Wallet" con la dirección.
+    Se espera que cada entrada tenga la clave "Wallet".
     """
     try:
         with open("traders_data.json", "r") as f:
@@ -76,7 +78,7 @@ def load_wallets():
 
 def process_feed_data():
     """
-    Recorre la lista de wallets, consulta el feed de Cielo filtrando por cada wallet,
+    Recorre la lista de wallets, consulta el feed de Cielo filtrado por cada wallet,
     e intenta procesar las transacciones.
     """
     global processed_transactions, inserted_transactions
