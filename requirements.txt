@@ -3,3 +3,4 @@ solana
 websocket-client
 python-telegram-bot==13.7
 psycopg2-binary
+typing_extensions>=4.0.0
