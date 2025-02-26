@@ -1,101 +1,61 @@
 # cielo_api.py
-
-import requests
+import asyncio
+import websockets
 import json
-import threading
-import websocket  # Asegúrate de tener instalada la librería "websocket-client"
 
 class CieloAPI:
-    BASE_URL = "https://feed-api.cielo.finance/api/v1"
+    """
+    Maneja la conexión WebSocket a la API de Cielo y la suscripción al feed.
+    """
 
-    def __init__(self, api_key=None):
-        # Si no se pasa ningún valor, se usa la API key por defecto.
-        self.api_key = api_key if api_key else "bb4dbdac-9ac7-4c42-97d3-f6435d0674da"
+    def __init__(self, api_key: str):
+        """
+        :param api_key: API Key de Cielo
+        """
+        self.api_key = api_key
+        self.ws_url = "wss://feed-api.cielo.finance/api/v1/ws"
+        self.websocket = None
 
-    def get_feed(self, params={}):
-        url = f"{self.BASE_URL}/feed"
-        headers = {}
-        if self.api_key:
-            headers["X-API-KEY"] = self.api_key  # Se añade la API key en el header
-        try:
-            response = requests.get(url, params=params, headers=headers)
-            print("Status Code:", response.status_code)
-            print("Response Content:", response.text)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print("Error en get_feed:", response.status_code, response.text)
-                return None
-        except Exception as e:
-            print("Excepción en get_feed:", e)
-            return None
-
-    def get_wallet_by_address(self, wallet_address):
-        url = f"{self.BASE_URL}/tracked-wallets/address/{wallet_address}"
-        headers = {}
-        if self.api_key:
-            headers["X-API-KEY"] = self.api_key
-        try:
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print("Error en get_wallet_by_address:", response.status_code, response.text)
-                return None
-        except Exception as e:
-            print("Excepción en get_wallet_by_address:", e)
-            return None
-
-class CieloWebSocketClient:
-    WS_URL = "wss://feed-api.cielo.finance/api/v1/ws"
-
-    def __init__(self, api_key=None, on_message_callback=None):
-        # Usa la API key proporcionada o la por defecto.
-        self.api_key = api_key if api_key else "bb4dbdac-9ac7-4c42-97d3-f6435d0674da"
-        self.on_message_callback = on_message_callback
-        self.ws = None
-
-    def on_message(self, ws, message):
-        print("Mensaje recibido:", message)
-        if self.on_message_callback:
-            self.on_message_callback(message)
-
-    def on_error(self, ws, error):
-        print("Error en WebSocket:", error)
-
-    def on_close(self, ws, close_status_code, close_msg):
-        print("WebSocket cerrado:", close_status_code, close_msg)
-
-    def on_open(self, ws):
-        print("WebSocket conectado")
-        subscribe_message = {
-            "type": "subscribe_feed",
-            "filter": {
-                "tx_types": ["transfer", "swap"],
-                "chains": ["solana"],
-                "min_usd_value": 100
-            }
+    async def connect(self, on_message_callback, filter_params=None):
+        """
+        Establece la conexión WebSocket, suscribe el feed y procesa mensajes entrantes.
+        :param on_message_callback: Función async que maneja cada mensaje del WS.
+        :param filter_params: dict de filtros para 'subscribe_feed'.
+        """
+        headers = {
+            "X-API-KEY": self.api_key  # Se incluye la API Key directamente
         }
-        ws.send(json.dumps(subscribe_message))
-        print("Mensaje de suscripción enviado:", subscribe_message)
+        print(f"🔗 Conectando a Cielo con API Key: {self.api_key}...")
 
-    def run(self):
-        headers = {}
-        if self.api_key:
-            headers["X-API-KEY"] = self.api_key
-        self.ws = websocket.WebSocketApp(
-            self.WS_URL,
-            header=headers,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open
-        )
-        wst = threading.Thread(target=self.ws.run_forever)
-        wst.daemon = True
-        wst.start()
-        return self.ws
+        async with websockets.connect(self.ws_url, extra_headers=headers) as ws:
+            self.websocket = ws
+            print("✅ WebSocket conectado a Cielo")
 
-    def stop(self):
-        if self.ws:
-            self.ws.close()
+            # Enviar comando subscribe_feed con los filtros
+            if filter_params is None:
+                filter_params = {}
+
+            subscribe_message = {
+                "type": "subscribe_feed",
+                "filter": filter_params
+            }
+            await ws.send(json.dumps(subscribe_message))
+            print(f"📡 Suscrito con filtros => {filter_params}")
+
+            # Escuchar mensajes indefinidamente
+            async for message in ws:
+                await on_message_callback(message)
+
+    async def run_forever(self, on_message_callback, filter_params=None):
+        """
+        Ejecuta la conexión en un bucle infinito, reintentando si se cierra.
+        """
+        while True:
+            try:
+                await self.connect(on_message_callback, filter_params)
+            except (websockets.ConnectionClosed, OSError) as e:
+                print(f"🔴 Conexión cerrada o error de red: {e}. Reintentando en 5s...")
+                await asyncio.sleep(5)
+            except Exception as e:
+                print(f"🚨 Error inesperado: {e}, reintentando en 5s...")
+                await asyncio.sleep(5)
