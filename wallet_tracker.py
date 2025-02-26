@@ -1,37 +1,40 @@
 # wallet_tracker.py
-
 import json
 
 class WalletTracker:
+    """
+    Administra la lista de wallets definida en traders_data.json
+    """
+
     def __init__(self, json_path='traders_data.json'):
         self.json_path = json_path
-        self.traders = self.load_traders()
+        self.wallets = []
+        self.load_wallets()
 
-    def load_traders(self):
+    def load_wallets(self):
+        """
+        Carga la lista de wallets desde el JSON, esperando
+        que cada entrada tenga 'Wallet' como clave.
+        """
         try:
             with open(self.json_path, 'r') as f:
                 data = json.load(f)
-            return data
+            self.wallets = [entry["Wallet"] for entry in data if "Wallet" in entry]
+            print(f"📝 Cargadas {len(self.wallets)} wallets desde {self.json_path}")
         except FileNotFoundError:
-            return []
+            print(f"⚠️ {self.json_path} no existe. Se inicia sin wallets.")
+            self.wallets = []
 
-    def save_traders(self):
-        with open(self.json_path, 'w') as f:
-            json.dump(self.traders, f, indent=4)
+    def get_wallets(self):
+        return self.wallets
 
-    def update_trader(self, trader_data):
-        updated = False
-        for idx, trader in enumerate(self.traders):
-            if trader.get("Trader") == trader_data.get("Trader"):
-                self.traders[idx] = trader_data
-                updated = True
-                break
-        if not updated:
-            self.traders.append(trader_data)
-        self.save_traders()
-
-    def get_trader(self, wallet_address):
-        for trader in self.traders:
-            if trader.get("Wallet") == wallet_address:
-                return trader
-        return None
+    def add_wallet(self, wallet_dict):
+        """
+        Agrega una nueva wallet al listado en memoria.
+        Si quieres persistir, reescribe el JSON.
+        """
+        if "Wallet" in wallet_dict:
+            self.wallets.append(wallet_dict["Wallet"])
+            # Podrías reescribir traders_data.json
+            # ...
+            print(f"➕ Wallet agregada: {wallet_dict['Wallet']}")
