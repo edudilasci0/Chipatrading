@@ -298,7 +298,7 @@ def get_token_transactions(token, hours=24):
         sql = """
         SELECT wallet, tx_type, amount_usd, created_at
         FROM transactions
-        WHERE token = %s AND created_at > NOW() - INTERVAL %s HOUR
+        WHERE token = %s AND created_at > NOW() - INTERVAL '%s HOUR'
         ORDER BY created_at DESC
         """
         cur.execute(sql, (token, hours))
@@ -344,7 +344,7 @@ def get_signals_without_outcomes(hours=48):
         sql = """
         SELECT id, token, trader_count, confidence, initial_price, created_at
         FROM signals
-        WHERE created_at > NOW() - INTERVAL %s HOUR
+        WHERE created_at > NOW() - INTERVAL '%s HOUR'
         AND outcome_collected = FALSE
         """
         cur.execute(sql, (hours,))
