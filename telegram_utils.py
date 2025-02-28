@@ -2,6 +2,7 @@ import os
 import requests
 import time
 import logging
+import json  # Añadido para usar json.dumps en send_telegram_button
 from config import Config
 
 # Configurar logging
