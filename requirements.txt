@@ -1,7 +1,4 @@
-requests
-solana==0.26.0
-websocket-client
-python-telegram-bot==13.7
-psycopg2-binary
-typing_extensions>=4.0.0
-SQLAlchemy>=1.4.0
+requests==2.31.0
+websockets==10.4
+psycopg2-binary==2.9.7
+asyncio
