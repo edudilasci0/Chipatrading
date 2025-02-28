@@ -1,9 +1,32 @@
 import time
 import json
 import requests
-from solana.keypair import Keypair
 from binascii import unhexlify
 from config import Config
+
+# Intenta diferentes importaciones según la versión de Solana instalada
+try:
+    # Intenta la importación de versiones más recientes (solders)
+    from solders.keypair import Keypair
+except ImportError:
+    try:
+        # Intenta la importación original
+        from solana.keypair import Keypair
+    except ImportError:
+        # Si ambas fallan, crea una implementación básica para evitar que el programa falle
+        print("⚠️ No se pudo importar Keypair de solana o solders.")
+        print("⚠️ La funcionalidad de RugCheck estará desactivada.")
+        
+        # Clase mock para permitir que el programa continúe sin la funcionalidad completa
+        class Keypair:
+            @staticmethod
+            def from_secret_key(secret_key):
+                class MockKeypair:
+                    def sign(self, message):
+                        class MockSignature:
+                            signature = b'0' * 64  # Firma ficticia
+                        return MockSignature()
+                return MockKeypair()
 
 class RugCheckAPI:
     """
