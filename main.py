@@ -1,174 +1,138 @@
 # main.py
-
-import time
-import logging
-import os
+import asyncio
 import requests
-import json
-from datetime import datetime
+from cielo_api import CieloAPI
+from dexscreener_api import DexScreenerClient
+from scoring import ScoringSystem
+from db import init_db_connection
+# from signal_logic import SignalLogic   # si lo usas
 
-from wallet_tracker import WalletTracker
-from cielo_api import CieloAPI, CieloWebSocketClient
-from rugcheck import login_rugcheck_solana, validar_seguridad_contrato
-from db import init_db, save_transaction
+TELEGRAM_BOT_TOKEN = "123456789:ABCXYZ"
+TELEGRAM_CHAT_ID = "-1001234567890"
+CIELO_API_KEY = "bb4dbdac-9ac7-4c42-97d3-f6435d0674da"
 
-# Configuración de logging: se registra en app.log y se imprime en la consola.
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s',
-    handlers=[
-        logging.FileHandler("app.log"),
-        logging.StreamHandler()
-    ]
-)
-
-# Variables de entorno
-# Aquí se utilizan las variables de entorno; si no se configuran, se usan valores por defecto.
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
-# Se recomienda configurar CIELO_API_KEY en Render, pero si no, se usará la por defecto en cielo_api.py
-CIELO_API_KEY = os.getenv("CIELO_API_KEY", None)
-DATABASE_PATH = os.getenv("DATABASE_URL", "postgres://user:pass@host:port/dbname")
-SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "YOUR_SOLANA_PRIVATE_KEY")
-SOLANA_PUBLIC_KEY = os.getenv("SOLANA_PUBLIC_KEY", "YOUR_SOLANA_PUBLIC_KEY")
-
-# Contadores globales para el resumen de actividad
-processed_transactions = 0
-inserted_transactions = 0
-
-def send_telegram_alert(message):
-    """Envía una alerta a Telegram y registra el resultado."""
+def send_telegram_message(text: str, parse_mode="Markdown"):
+    """
+    Envía un mensaje a Telegram usando requests.
+    """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": parse_mode
+    }
     try:
-        response = requests.post(url, data=payload)
-        if response.status_code == 200:
-            logging.info("Alerta enviada a Telegram: %s", message)
+        resp = requests.post(url, data=payload)
+        if resp.status_code == 200:
+            print("✉️ Mensaje enviado a Telegram con éxito.")
         else:
-            logging.error("Error al enviar alerta a Telegram: %s", response.text)
+            print(f"⚠️ Error al enviar mensaje a Telegram: {resp.text}")
     except Exception as e:
-        logging.exception("Excepción al enviar alerta a Telegram: %s", e)
+        print(f"🚨 Excepción al enviar mensaje a Telegram: {e}")
 
-def send_summary_alert(processed, inserted):
+async def daily_summary_loop():
     """
-    Envía un resumen de actividad a Telegram con la cantidad de transacciones procesadas
-    e insertadas en la base de datos.
+    Envía un resumen diario de las actividades (opcional).
     """
-    message = (
-        f"Resumen de actividad:\n"
-        f"- Transacciones procesadas: {processed}\n"
-        f"- Transacciones insertadas: {inserted}"
-    )
-    send_telegram_alert(message)
-
-def load_wallets():
-    """
-    Carga la lista de wallets desde el archivo traders_data.json.
-    Se espera que cada entrada tenga la clave "Wallet".
-    """
-    try:
-        with open("traders_data.json", "r") as f:
-            data = json.load(f)
-        wallets = [entry["Wallet"] for entry in data if "Wallet" in entry]
-        logging.info("Wallets cargadas: %s", wallets)
-        return wallets
-    except Exception as e:
-        logging.exception("Error al cargar wallets: %s", e)
-        return []
-
-def process_feed_data():
-    """
-    Recorre la lista de wallets, consulta el feed de Cielo filtrado por cada wallet,
-    e intenta procesar las transacciones.
-    """
-    global processed_transactions, inserted_transactions
-    try:
-        cielo = CieloAPI(api_key=CIELO_API_KEY)
-        wallets = load_wallets()
-        if not wallets:
-            logging.error("No se cargaron wallets para filtrar el feed.")
-            return
-
-        for wallet in wallets:
-            params = {
-                "wallet": wallet,
-                "limit": 50,
-                "minUSD": 100,
-                "includeMarketCap": True
-            }
-            data = cielo.get_feed(params)
-            logging.info("Wallet %s - Respuesta completa del feed: %s", wallet, data)
-            if data:
-                transactions = data.get("transactions", [])
-                if not transactions:
-                    logging.info("Wallet %s - No se encontraron transacciones.", wallet)
-                else:
-                    for tx in transactions:
-                        processed_transactions += 1
-                        token = tx.get("token_data", {})
-                        token_mint = token.get("mint")
-                        if token_mint:
-                            jwt = login_rugcheck_solana(
-                                private_key=SOLANA_PRIVATE_KEY.encode("utf-8"),
-                                wallet_public_key=SOLANA_PUBLIC_KEY
-                            )
-                            if jwt and validar_seguridad_contrato(jwt, token_mint):
-                                alert_message = (
-                                    f"Transacción relevante (Wallet {wallet}):\n"
-                                    f"Token: {token.get('symbol', 'N/D')}\n"
-                                    f"USD Value: {tx.get('usd_value', 'N/D')}\n"
-                                    f"Tipo: {tx.get('type', 'N/D')}"
-                                )
-                                send_telegram_alert(alert_message)
-                                tx_data = {
-                                    "id": tx.get("id", "N/D"),
-                                    "symbol": token.get("symbol", "N/D"),
-                                    "mint": token_mint,
-                                    "usd_value": tx.get("usd_value", 0),
-                                    "type": tx.get("type", "N/D"),
-                                    "timestamp": tx.get("timestamp", datetime.now().isoformat())
-                                }
-                                save_transaction(tx_data, send_telegram_alert)
-                                inserted_transactions += 1
-                            else:
-                                logging.info("Wallet %s - Token %s rechazado en validación.", wallet, token.get("symbol", "N/D"))
-                                send_telegram_alert(f"Wallet {wallet} - Token {token.get('symbol', 'N/D')} rechazado en validación.")
-            else:
-                logging.error("Wallet %s - No se obtuvieron datos del feed de Cielo.", wallet)
-    except Exception as e:
-        logging.exception("Error en process_feed_data: %s", e)
-        send_telegram_alert("Error en process_feed_data.")
-
-def main():
-    logging.info("Inicio del bot de trading...")
-    print("Inicio del bot de trading...")
-    
-    # Inicializa la base de datos (crea tablas si no existen)
-    init_db()
-
-    # Inicializa el tracker (si se utiliza)
-    tracker = WalletTracker()
-
-    # Envía un mensaje de prueba a Telegram para confirmar la integración
-    send_telegram_alert("Mensaje de prueba: El bot de trading se inició correctamente.")
-    
-    # Inicia el WebSocket para actualizaciones en tiempo real desde Cielo (opcional)
-    ws_client = CieloWebSocketClient(
-        api_key=CIELO_API_KEY, 
-        on_message_callback=lambda msg: logging.info("WS: %s", msg)
-    )
-    ws_client.run()
-    
-    # Bucle principal: ejecuta el proceso y envía un resumen cada 60 segundos
     while True:
-        logging.info("Ejecutando process_feed_data()")
-        process_feed_data()
-        send_summary_alert(processed_transactions, inserted_transactions)
-        time.sleep(60)
+        try:
+            await asyncio.sleep(86400)  # 24 horas
+            # Recolectar datos del día (ejemplo).
+            signals_today = 5
+            runners_detected = 2
+            summary_msg = (
+                "*Resumen Diario Chipatrading*\n\n"
+                f"• Señales emitidas hoy: `{signals_today}`\n"
+                f"• Daily runners detectados: `{runners_detected}`\n\n"
+                "¡Gracias por usar Chipatrading!"
+            )
+            send_telegram_message(summary_msg)
+        except Exception as e:
+            print(f"🚨 Error en daily_summary_loop: {e}")
+
+async def on_cielo_message(message: str, scoring_system: ScoringSystem, dexscreener_client: DexScreenerClient):
+    """
+    Función que maneja cada mensaje proveniente de Cielo (WebSocket).
+    Procesa transacciones, actualiza scoring, etc.
+    """
+    import json
+    try:
+        data = json.loads(message)
+        if "transactions" in data:
+            for tx in data["transactions"]:
+                tx_type = tx.get("type")
+                usd_value = float(tx.get("amount_usd", 0))
+                wallet = tx.get("wallet")
+                token = tx.get("token", "Unknown")
+
+                # Filtro: solo BUY/SELL, >300 USD, etc. Ajusta según quieras.
+                if tx_type in ["BUY", "SELL"] and usd_value >= 300:
+                    print(f"🔎 Transacción Relevante => {tx}")
+
+                    # Actualizar score
+                    scoring_system.update_score_on_trade(wallet, tx)
+
+                    # Podrías obtener volumen asc y market cap
+                    # (placeholder de DexScreener)
+                    vol_data = dexscreener_client.get_volume_growth(token)
+                    market_cap = dexscreener_client.get_market_cap(token)
+
+                    # Calcular confianza, etc.
+                    # Ej: confidence = scoring_system.compute_signal_confidence([...], { ... })
+
+                    # Mandar alerta Telegram de la transacción
+                    msg = (
+                        f"Trader {wallet} hizo {tx_type} en {token} "
+                        f"({usd_value}$). MarketCap aprox: {market_cap}$"
+                    )
+                    send_telegram_message(msg)
+
+    except json.JSONDecodeError as e:
+        print(f"⚠️ Error decodificando JSON => {e}")
+    except Exception as e:
+        print(f"🚨 Error en on_cielo_message => {e}")
+
+async def main():
+    # 1) Conexión a la BD (placeholder)
+    init_db_connection()  # en db.py define la lógica
+
+    # 2) Mensaje de bienvenida
+    welcome_msg = (
+        "*Bienvenido(a) a Chipatrading*\n\n"
+        "Hola, soy **ChipatradingBot**.\n\n"
+        "Estoy aquí para:\n"
+        "• Detectar tokens con volumen ascendente\n"
+        "• Analizar transacciones de whales y scalpers\n"
+        "• Emitir señales si encuentro daily runners\n\n"
+        "¡Estaré enviando actualizaciones cuando detecte movimientos interesantes!"
+    )
+    send_telegram_message(welcome_msg)
+
+    # 3) Instanciar DexScreenerClient
+    dexscreener_client = DexScreenerClient()
+
+    # 4) Instanciar el sistema de scoring
+    scoring_system = ScoringSystem()
+
+    # 5) Instanciar CieloAPI y filtrar swaps solana > 300
+    from cielo_api import CieloAPI
+    cielo = CieloAPI(api_key=CIELO_API_KEY)
+
+    filter_params = {
+        "chains": ["solana"],
+        "tx_types": ["swap"],
+        "min_usd_value": 300
+    }
+
+    # 6) Tarea para resumen diario (opcional)
+    asyncio.create_task(daily_summary_loop())
+
+    # 7) Callback de Cielo
+    async def handle_cielo_msg(msg):
+        await on_cielo_message(msg, scoring_system, dexscreener_client)
+
+    # 8) Ejecutar el WebSocket
+    await cielo.run_forever(on_message_callback=handle_cielo_msg, filter_params=filter_params)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logging.exception("Error en main: %s", e)
-        send_telegram_alert("Error en main.")
+    asyncio.run(main())
