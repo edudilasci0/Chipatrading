@@ -10,7 +10,7 @@ class CieloAPI:
 
     def __init__(self, api_key: str):
         """
-        :param api_key: API Key de Cielo
+        :param api_key: API Key de Cielo (X-API-KEY).
         """
         self.api_key = api_key
         self.ws_url = "wss://feed-api.cielo.finance/api/v1/ws"
@@ -23,9 +23,9 @@ class CieloAPI:
         :param filter_params: dict de filtros para 'subscribe_feed'.
         """
         headers = {
-            "X-API-KEY": self.api_key  # Se incluye la API Key directamente
+            "X-API-KEY": self.api_key
         }
-        print(f"🔗 Conectando a Cielo con API Key: {self.api_key}...")
+        print(f"🔗 Conectando a la API de Cielo con key: {self.api_key}...")
 
         async with websockets.connect(self.ws_url, extra_headers=headers) as ws:
             self.websocket = ws
