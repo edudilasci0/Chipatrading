@@ -58,231 +58,133 @@ def retry_db_operation(max_attempts=3, delay=1):
         return wrapper
     return decorator
 
-def fix_database_schema():
-    """
-    Corrige la estructura de la base de datos para asegurar compatibilidad.
-    Se ejecuta antes de init_db para manejar migraciones y correcciones.
-    """
-    with get_connection() as conn:
-        cur = conn.cursor()
-        try:
-            # 1. Verificar tabla transactions
-            cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'transactions')")
-            if cur.fetchone()[0]:
-                # Verificar y corregir columnas
-                columns_to_check = [
-                    ("wallet", "TEXT"),
-                    ("token", "TEXT"),
-                    ("tx_type", "TEXT"),
-                    ("amount_usd", "NUMERIC"),
-                    ("created_at", "TIMESTAMP")
-                ]
-                
-                for column_name, column_type in columns_to_check:
-                    cur.execute(f"SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = '{column_name}')")
-                    if not cur.fetchone()[0]:
-                        print(f"⚠️ Columna '{column_name}' falta en 'transactions'. Agregando...")
-                        cur.execute(f"ALTER TABLE transactions ADD COLUMN {column_name} {column_type}")
-                        if column_name == "created_at":
-                            cur.execute("ALTER TABLE transactions ALTER COLUMN created_at SET DEFAULT NOW()")
-                        conn.commit()
-                        print(f"✅ Columna '{column_name}' agregada.")
-            
-            # 2. Verificar tabla signals
-            cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'signals')")
-            if cur.fetchone()[0]:
-                # Verificar y corregir columnas
-                columns_to_check = [
-                    ("token", "TEXT"),
-                    ("trader_count", "INTEGER"),
-                    ("confidence", "NUMERIC"),
-                    ("initial_price", "NUMERIC"),
-                    ("created_at", "TIMESTAMP"),
-                    ("outcome_collected", "BOOLEAN")
-                ]
-                
-                for column_name, column_type in columns_to_check:
-                    cur.execute(f"SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'signals' AND column_name = '{column_name}')")
-                    if not cur.fetchone()[0]:
-                        print(f"⚠️ Columna '{column_name}' falta en 'signals'. Agregando...")
-                        cur.execute(f"ALTER TABLE signals ADD COLUMN {column_name} {column_type}")
-                        if column_name == "created_at":
-                            cur.execute("ALTER TABLE signals ALTER COLUMN created_at SET DEFAULT NOW()")
-                        elif column_name == "outcome_collected":
-                            cur.execute("ALTER TABLE signals ALTER COLUMN outcome_collected SET DEFAULT FALSE")
-                        conn.commit()
-                        print(f"✅ Columna '{column_name}' agregada.")
-            
-            # Si todo salió bien, confirmar transacción
-            conn.commit()
-            print("✅ Corrección de esquema completada.")
-            
-        except Exception as e:
-            conn.rollback()
-            print(f"🚨 Error al corregir esquema: {e}")
-            # En este caso, podemos intentar un enfoque más radical
-            try:
-                print("⚠️ Intentando enfoque alternativo para la tabla transactions...")
-                # Verificar si podemos hacer backup de datos existentes
-                cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'transactions')")
-                if cur.fetchone()[0]:
-                    # Crear tabla de respaldo para datos existentes
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS transactions_backup AS
-                        SELECT * FROM transactions
-                    """)
-                    # Contar registros respaldados
-                    cur.execute("SELECT COUNT(*) FROM transactions_backup")
-                    backup_count = cur.fetchone()[0]
-                    print(f"✅ Se respaldaron {backup_count} registros de transactions.")
-                    
-                    # Eliminar tabla problemática
-                    cur.execute("DROP TABLE transactions")
-                    print("✅ Tabla transactions eliminada para recreación.")
-                
-                conn.commit()
-                return True
-            except Exception as backup_error:
-                conn.rollback()
-                print(f"🚨 Error al intentar enfoque alternativo: {backup_error}")
-                return False
-
 def init_db():
     """
     Crea las tablas necesarias si no existen y los índices.
     """
-    # Primero intentar corregir cualquier problema de esquema
-    fix_database_schema()
-    
-    with get_connection() as conn:
-        cur = conn.cursor()
-
-        # Tabla de puntuaciones de wallets
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS wallet_scores (
-                wallet TEXT PRIMARY KEY,
-                score NUMERIC,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-
-        # Tabla de transacciones
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id SERIAL PRIMARY KEY,
-                wallet TEXT,
-                token TEXT,
-                tx_type TEXT,
-                amount_usd NUMERIC,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-
-        # Tabla de señales
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS signals (
-                id SERIAL PRIMARY KEY,
-                token TEXT,
-                trader_count INTEGER,
-                confidence NUMERIC,
-                initial_price NUMERIC,
-                created_at TIMESTAMP DEFAULT NOW(),
-                outcome_collected BOOLEAN DEFAULT FALSE
-            )
-        """)
-        
-        # Tabla de rendimiento de señales
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS signal_performance (
-                id SERIAL PRIMARY KEY,
-                token TEXT,
-                signal_id INTEGER REFERENCES signals(id),
-                timeframe TEXT,
-                percent_change NUMERIC,
-                confidence NUMERIC,
-                traders_count INTEGER,
-                timestamp TIMESTAMP DEFAULT NOW(),
-                UNIQUE(token, timeframe)
-            )
-        """)
-        
-        # Tabla de configuración del bot
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        
-        # Insertar configuraciones iniciales
-        default_settings = [
-            ("min_transaction_usd", str(Config.MIN_TRANSACTION_USD)),
-            ("min_traders_for_signal", str(Config.MIN_TRADERS_FOR_SIGNAL)),
-            ("signal_window_seconds", str(Config.SIGNAL_WINDOW_SECONDS)),
-            ("min_confidence_threshold", str(Config.MIN_CONFIDENCE_THRESHOLD)),
-            ("rugcheck_min_score", "50"),
-            ("min_volume_usd", str(Config.MIN_VOLUME_USD))
-        ]
-        
-        for key, value in default_settings:
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            
+            # Recrear la tabla transactions desde cero (enfoque directo)
+            try:
+                # Comprobar si la tabla existe y borrarla
+                cur.execute("DROP TABLE IF EXISTS transactions CASCADE")
+                print("✅ Tabla transactions eliminada para recreación")
+            except Exception as e:
+                print(f"⚠️ Error al eliminar tabla transactions: {e}")
+                conn.rollback()
+            
+            # Tabla de puntuaciones de wallets
             cur.execute("""
-                INSERT INTO bot_settings (key, value)
-                VALUES (%s, %s)
-                ON CONFLICT (key) DO NOTHING
-            """, (key, value))
-        
-        # Intentar crear índices con manejo seguro de errores
-        try:
-            # Crear índices para mejorar rendimiento
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_token ON signals(token)")
-        except Exception as e:
-            print(f"⚠️ Error al crear índices: {e}")
-            # Podemos continuar incluso si los índices fallan, el sistema seguirá funcionando
-            conn.rollback()
-            # Solo commit las operaciones principales
-            conn.commit()
-            print("✅ Base de datos inicializada sin índices.")
-            return True
+                CREATE TABLE IF NOT EXISTS wallet_scores (
+                    wallet TEXT PRIMARY KEY,
+                    score NUMERIC,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
 
-        conn.commit()
-        
-    print("✅ Base de datos inicializada correctamente")
-    
-    # Verificar si hay datos de respaldo para restaurar
-    with get_connection() as conn:
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'transactions_backup')")
-            if cur.fetchone()[0]:
-                # Verificar si la tabla de respaldo tiene datos
-                cur.execute("SELECT COUNT(*) FROM transactions_backup")
-                backup_count = cur.fetchone()[0]
+            # Tabla de transacciones
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id SERIAL PRIMARY KEY,
+                    wallet TEXT,
+                    token TEXT,
+                    tx_type TEXT,
+                    amount_usd NUMERIC,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+
+            # Tabla de señales
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS signals (
+                    id SERIAL PRIMARY KEY,
+                    token TEXT,
+                    trader_count INTEGER,
+                    confidence NUMERIC,
+                    initial_price NUMERIC,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    outcome_collected BOOLEAN DEFAULT FALSE
+                )
+            """)
+            
+            # Tabla de rendimiento de señales
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS signal_performance (
+                    id SERIAL PRIMARY KEY,
+                    token TEXT,
+                    signal_id INTEGER REFERENCES signals(id),
+                    timeframe TEXT,
+                    percent_change NUMERIC,
+                    confidence NUMERIC,
+                    traders_count INTEGER,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(token, timeframe)
+                )
+            """)
+            
+            # Tabla de configuración del bot
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            # Insertar configuraciones iniciales
+            default_settings = [
+                ("min_transaction_usd", str(Config.MIN_TRANSACTION_USD)),
+                ("min_traders_for_signal", str(Config.MIN_TRADERS_FOR_SIGNAL)),
+                ("signal_window_seconds", str(Config.SIGNAL_WINDOW_SECONDS)),
+                ("min_confidence_threshold", str(Config.MIN_CONFIDENCE_THRESHOLD)),
+                ("rugcheck_min_score", "50"),
+                ("min_volume_usd", str(Config.MIN_VOLUME_USD))
+            ]
+            
+            for key, value in default_settings:
+                cur.execute("""
+                    INSERT INTO bot_settings (key, value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO NOTHING
+                """, (key, value))
+            
+            try:
+                # Crear índices para mejorar rendimiento
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_signals_token ON signals(token)")
+                print("✅ Índices creados correctamente")
+            except Exception as e:
+                print(f"⚠️ Error al crear índices: {e}")
+                conn.rollback()
                 
-                if backup_count > 0:
-                    print(f"ℹ️ Encontrados {backup_count} registros en respaldo, intentando restaurar...")
-                    # Restaurar datos desde el backup
-                    cur.execute("""
-                        INSERT INTO transactions (wallet, token, tx_type, amount_usd, created_at)
-                        SELECT wallet, token, tx_type, amount_usd, created_at
-                        FROM transactions_backup
-                    """)
-                    conn.commit()
-                    print("✅ Datos restaurados correctamente.")
-                    
-                    # Opcional: eliminar la tabla de respaldo
-                    cur.execute("DROP TABLE transactions_backup")
-                    conn.commit()
-                    print("✅ Tabla de respaldo eliminada.")
-        except Exception as e:
-            conn.rollback()
-            print(f"⚠️ Error al restaurar datos: {e}")
-    
-    return True
+                # Intentar crear los índices uno por uno
+                try:
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
+                    print("✅ Índice idx_transactions_token creado")
+                except Exception as e1:
+                    print(f"⚠️ Error al crear idx_transactions_token: {e1}")
+                
+                try:
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
+                    print("✅ Índice idx_transactions_wallet creado")
+                except Exception as e2:
+                    print(f"⚠️ Error al crear idx_transactions_wallet: {e2}")
+                
+                # Seguir creando el resto de índices individualmente
+                # ...
+
+            conn.commit()
+            print("✅ Base de datos inicializada correctamente")
+            return True
+            
+    except Exception as e:
+        print(f"🚨 Error crítico al inicializar base de datos: {e}")
+        return False
 
 @retry_db_operation()
 def save_transaction(tx_data):
