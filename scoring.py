@@ -20,6 +20,25 @@ class ScoringSystem:
         self.wallet_tx_count = {}
         # Cache de boosters
         self.boosters = {}  # {wallet: {'active': bool, 'multiplier': float, 'expires': timestamp}}
+        # Score de boosters por tipo de token
+        self.token_type_scores = {}  # {token_type: multiplier}
+        
+        # Inicializar boosters de tipos de token
+        self._init_token_type_boosters()
+        
+    def _init_token_type_boosters(self):
+        """
+        Inicializa boosters por tipo de token.
+        """
+        # Tokens conocidos con historiales de éxito tienen mayor boost
+        self.token_type_scores = {
+            "meme": 1.2,  # Tokens meme suelen tener más pump inicial
+            "defi": 1.1,  # DeFi tokens
+            "nft": 1.15,  # NFT relacionados
+            "gaming": 1.1,  # Gaming tokens
+            "ai": 1.2,     # AI tokens (tendencia actual)
+            "new": 1.25    # Tokens nuevos (<24h)
+        }
 
     def get_score(self, wallet):
         """
@@ -101,17 +120,20 @@ class ScoringSystem:
         if time.time() - self.last_cache_cleanup > 3600:  # Cada hora
             self.cleanup_cache()
 
-    def compute_confidence(self, wallet_scores, volume_1h, market_cap):
+    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0, token_type=None):
         """
-        Calcula un nivel de confianza basado en:
-        1. Promedio de scores de los traders
-        2. Volumen en la última hora
-        3. Market cap (penaliza extremos)
+        Calcula un nivel de confianza basado en múltiples factores:
+        1. Calidad y diversidad de traders
+        2. Volumen y market cap
+        3. Crecimiento de volumen reciente
+        4. Tipo de token
         
         Args:
             wallet_scores: Lista de scores de wallets
             volume_1h: Volumen en la última hora en USD
             market_cap: Market cap en USD
+            recent_volume_growth: Crecimiento de volumen en porcentaje (ej: 0.05 = 5%)
+            token_type: Tipo de token para aplicar boosters
             
         Returns:
             float: Nivel de confianza entre 0.0 y 1.0
@@ -119,36 +141,51 @@ class ScoringSystem:
         if not wallet_scores:
             return 0.0
 
-        # 1. Factor de score (0.0 - 1.0)
+        # 1. Factor de calidad y diversidad de traders (0.0 - 1.0)
         avg_score = sum(wallet_scores) / len(wallet_scores)
         score_factor = avg_score / Config.MAX_SCORE
         
-        # Bonificación si hay traders de alto score
-        high_score_traders = sum(1 for score in wallet_scores if score > 8.0)
-        if high_score_traders >= 2:
-            score_factor = min(1.0, score_factor * 1.2)  # +20% si hay al menos 2 buenos traders
+        # Factor de diversidad - valorar más carteras diversas
+        unique_wallets = len(wallet_scores)
+        wallet_diversity = min(unique_wallets / 10, 1.0)  # Máximo con 10 wallets
         
-        # 2. Factor de market cap (0.0 - 1.0)
-        # Penaliza si es muy pequeño (< MIN_MARKETCAP) o muy grande (> MAX_MARKETCAP)
+        # Calidad de wallets - dar más peso a carteras con traders de alta calidad
+        high_quality_traders = sum(1 for score in wallet_scores if score > 8.0)
+        quality_factor = min(high_quality_traders / 3, 1.0)  # Máximo con 3 traders de calidad
+        
+        # Combinar factores de wallet
+        wallet_factor = score_factor * 0.5 + wallet_diversity * 0.3 + quality_factor * 0.2
+        
+        # 2. Factor de mercado (volumen y market cap)
+        # Normalizar volumen, con máximo en Config.VOL_NORMALIZATION_FACTOR USD
+        vol_factor = min(volume_1h / Config.VOL_NORMALIZATION_FACTOR, 1.0)
+        
+        # Penalizar market caps muy pequeños o muy grandes
         if market_cap < Config.MIN_MARKETCAP:
-            mc_factor = 0.3  # Penalización, pero no 0 total
+            mc_factor = 0.3  # Penalización para mcap muy bajo
         elif market_cap > Config.MAX_MARKETCAP:
             mc_factor = 0.5  # Penalización moderada para tokens grandes
         else:
             # Curva que favorece market caps medios
             normalized_mc = (market_cap - Config.MIN_MARKETCAP) / (Config.MAX_MARKETCAP - Config.MIN_MARKETCAP)
-            # Fórmula que da valores más altos a market caps entre 0.2 y 0.8 del rango
             mc_factor = 1.0 - 2.0 * (normalized_mc - 0.5) ** 2
         
-        # 3. Factor de volumen (0.0 - 1.0)
-        # Normaliza, con máximo en Config.VOL_NORMALIZATION_FACTOR USD
-        vol_factor = min(volume_1h / Config.VOL_NORMALIZATION_FACTOR, 1.0)
+        # Factor de crecimiento reciente
+        growth_factor = min(recent_volume_growth / 0.2, 1.0)  # Máximo con 20% crecimiento
         
-        # Dar más peso al factor de score
-        weighted_score = score_factor * 0.5 + mc_factor * 0.3 + vol_factor * 0.2
+        # Combinar factores de mercado
+        market_factor = vol_factor * 0.4 + mc_factor * 0.4 + growth_factor * 0.2
+        
+        # 3. Calcular confianza final - dar más peso a wallets
+        weighted_score = wallet_factor * 0.6 + market_factor * 0.4
+        
+        # 4. Aplicar booster de tipo de token si existe
+        if token_type and token_type.lower() in self.token_type_scores:
+            weighted_score *= self.token_type_scores[token_type.lower()]
+            print(f"🏷️ Booster aplicado para tipo {token_type}: x{self.token_type_scores[token_type.lower()]}")
         
         # Redondear a 3 decimales
-        return round(weighted_score, 3)
+        return round(min(weighted_score, 1.0), 3)
 
     def cleanup_cache(self, max_size=1000):
         """
