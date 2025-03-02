@@ -24,14 +24,19 @@ class SignalLogic:
         self.scoring_system = scoring_system
         self.dex_client = dex_client
         self.rugcheck_jwt = rugcheck_jwt
+        
         # Tokens actuales que estamos monitoreando
         self.candidates = {}
+        
         # Para evitar emitir señales duplicadas
         self.signaled_tokens = set()
+        
         # Tiempo de limpieza
         self.last_cleanup = time.time()
-        # Seguimiento de rendimiento
+        
+        # Seguimiento de rendimiento con intervalos específicos
         self.performance_tracker = PerformanceTracker(dex_client)
+        
         # Historial de señales
         self.signals_history = []  # [(token, timestamp, confidence), ...]
 
@@ -254,7 +259,7 @@ class SignalLogic:
             f"• Precio: ${current_price:.10f}\n"
             f"• Confianza: *{confidence:.2f}* {confidence_emoji}\n\n"
             f"⏰ Detectado en ventana de {Config.SIGNAL_WINDOW_SECONDS/60:.1f} minutos\n\n"
-            f"📊 *Seguimiento*: Se reportarán resultados a 24h, 48h y 1 semana"
+            f"📊 *Seguimiento*: 10m, 30m, 1h, 2h, 4h y 24h"
         )
         
         # Enviar mensaje a Telegram
