@@ -26,9 +26,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(os.path.join(
-            os.path.dirname(Config.DATABASE_PATH), 'chipatrading.log'
-        ) if os.path.dirname(Config.DATABASE_PATH) else 'chipatrading.log')
+        logging.FileHandler('chipatrading.log')  # Simple path in the current directory
     ]
 )
 logger = logging.getLogger("chipatrading")
