@@ -14,11 +14,11 @@ from cielo_api import CieloAPI
 from dexscreener_api import DexScreenerClient
 from scoring import ScoringSystem
 from signal_logic import SignalLogic
-from telegram_utils import send_telegram_message
+from telegram_utils import send_telegram_message, process_telegram_commands
 from performance_tracker import PerformanceTracker
 from ml_preparation import MLDataPreparation
 from signal_predictor import SignalPredictor
-from rugcheck import login_rugcheck_solana, RugCheckAPI
+from rugcheck import RugCheckAPI
 
 # Configurar logging
 logging.basicConfig(
@@ -26,7 +26,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('chipatrading.log')
+        logging.FileHandler(os.path.join(
+            os.path.dirname(Config.DATABASE_PATH), 'chipatrading.log'
+        ) if os.path.dirname(Config.DATABASE_PATH) else 'chipatrading.log')
     ]
 )
 logger = logging.getLogger("chipatrading")
@@ -36,6 +38,7 @@ wallets_list = []
 running = True
 signal_predictor = None
 ml_data_preparation = None
+is_bot_active = None
 
 # Variables para monitoreo
 message_counter = 0
@@ -117,6 +120,21 @@ async def daily_summary_task(signal_logic, signal_predictor=None):
                 f"• Tokens actualmente monitoreados: `{active_tokens}`\n"
                 f"• Total de transacciones procesadas: `{tx_today}`\n"
             )
+            
+            # Obtener estadísticas de rendimiento
+            try:
+                stats = db.get_signals_performance_stats()
+                if stats:
+                    summary_msg += "\n*📊 Rendimiento de Señales*\n"
+                    for stat in stats:
+                        timeframe = stat["timeframe"]
+                        success_rate = stat["success_rate"]
+                        avg_percent = stat["avg_percent_change"]
+                        
+                        emoji = "🟢" if success_rate >= 60 else "🟡" if success_rate >= 50 else "🔴"
+                        summary_msg += f"{emoji} *{timeframe}*: {success_rate}% éxito, {avg_percent}% promedio\n"
+            except Exception as e:
+                logger.error(f"Error obteniendo estadísticas para resumen: {e}")
             
             # Añadir información del modelo ML si está disponible
             if signal_predictor and signal_predictor.model:
@@ -210,10 +228,18 @@ async def monitoring_task():
                 f"• Transacciones procesadas: `{transaction_counter}`\n"
                 f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
                 f"• Tiempo desde inicio: `{(now - last_heartbeat)/3600:.1f}h`\n"
+                f"• Estado: `{'Activo' if is_bot_active and is_bot_active() else 'Inactivo'}`\n"
             )
             
             send_telegram_message(msg)
             logger.info(f"📊 Mensajes: {message_counter}, Transacciones: {transaction_counter} en los últimos {elapsed_since_last_log/60:.1f} minutos")
+            
+            # Verificar si hay suficientes mensajes - posible problema de conexión
+            if message_counter < 5 and elapsed_since_last_log > 300:
+                send_telegram_message(
+                    "⚠️ *Advertencia*: Pocos mensajes recibidos en los últimos minutos. "
+                    "Posible problema de conexión con Cielo API."
+                )
             
             # Resetear contadores
             message_counter = 0
@@ -274,11 +300,52 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
             logger.error(f"⚠️ Error en tareas ML: {e}")
             await asyncio.sleep(interval)
 
+async def maintenance_check_task():
+    """
+    Monitoriza el estado del sistema y envía alertas si hay problemas.
+    """
+    global message_counter, last_counter_log
+    
+    last_processed_msg_time = time.time()
+    
+    while running:
+        try:
+            await asyncio.sleep(900)  # Verificar cada 15 minutos
+            
+            now = time.time()
+            # Si no se han procesado mensajes en 30 minutos, puede haber un problema
+            if now - last_processed_msg_time > 1800 and message_counter < 5:
+                send_telegram_message(
+                    "⚠️ *Alerta de Mantenimiento*\n"
+                    "No se han recibido suficientes mensajes en los últimos 30 minutos.\n"
+                    "Posible problema de conexión con Cielo API."
+                )
+            
+            # Verificar conexión a BD
+            try:
+                db.count_signals_today()
+                # Actualizar tiempo si todo funciona
+                if message_counter > 0:
+                    last_processed_msg_time = now
+            except Exception as e:
+                send_telegram_message(
+                    f"⚠️ *Alerta de Base de Datos*\n"
+                    f"Error al conectar con la base de datos: {e}"
+                )
+        except Exception as e:
+            logger.error(f"Error en tarea de mantenimiento: {e}")
+            # No hacer nada más, simplemente continuar en la próxima iteración
+
 async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
     """
     Procesa los mensajes recibidos de Cielo.
     """
-    global message_counter, transaction_counter, wallets_list
+    global message_counter, transaction_counter, wallets_list, is_bot_active
+    
+    # Verificar si el bot está activo
+    if is_bot_active and not is_bot_active():
+        logger.info("⏸️ Bot en modo inactivo, ignorando mensaje")
+        return
     
     # Incrementar contador de mensajes
     message_counter += 1
@@ -362,8 +429,9 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                     return
                 
                 # Si no hay valor USD, ignorar la transacción
-                if usd_value <= 0:
-                    logger.info(f"⚠️ Transacción sin valor USD, ignorando")
+                min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
+                if usd_value <= 0 or usd_value < min_tx_usd:
+                    logger.info(f"⚠️ Transacción con valor insuficiente (${usd_value}), ignorando")
                     return
                 
                 # Incrementar contador
@@ -399,8 +467,7 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
         logger.warning(f"⚠️ Error al decodificar JSON: {e}")
     except Exception as e:
         logger.error(f"🚨 Error en on_cielo_message: {e}", exc_info=True)
-
-async def log_raw_message(message):
+        async def log_raw_message(message):
     """
     Registra el mensaje completo recibido para debugging.
     """
@@ -457,6 +524,12 @@ def handle_shutdown(sig, frame):
     except Exception as e:
         print(f"⚠️ Error guardando estados: {e}")
     
+    # Enviar mensaje de apagado
+    try:
+        send_telegram_message("🛑 *ChipaTrading Bot se está apagando*\nEl servicio está siendo detenido o reiniciado.")
+    except:
+        pass
+    
     print("👋 ChipaTrading Bot finalizado")
     sys.exit(0)
 
@@ -464,7 +537,7 @@ async def main():
     """
     Función principal que inicializa y ejecuta el bot.
     """
-    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat
+    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat, is_bot_active
     
     try:
         # Registrar inicio para heartbeat
@@ -510,7 +583,6 @@ async def main():
         
         dex_client = DexScreenerClient()
         scoring_system = ScoringSystem()
-        signal_logic = SignalLogic(scoring_system, dex_client, rugcheck_api)
         
         # 7. Inicializar componentes de ML
         logger.info("🧠 Inicializando componentes de Machine Learning...")
@@ -532,7 +604,23 @@ async def main():
             logger.warning("⚠️ No se cargaron wallets, verificar traders_data.json")
             send_telegram_message("⚠️ *Advertencia*: No se cargaron wallets para monitorear. Verificar `traders_data.json`")
         
-        # 9. Iniciar tareas periódicas en segundo plano
+        # 9. Inicializar SignalLogic con todos los componentes
+        signal_logic = SignalLogic(
+            scoring_system=scoring_system, 
+            dex_client=dex_client, 
+            rugcheck_api=rugcheck_api,
+            ml_predictor=signal_predictor
+        )
+        
+        # 10. Iniciar bot de comandos de Telegram
+        logger.info("🤖 Iniciando bot de comandos de Telegram...")
+        is_bot_active = await process_telegram_commands(
+            Config.TELEGRAM_BOT_TOKEN,
+            Config.TELEGRAM_CHAT_ID,
+            signal_logic
+        )
+        
+        # 11. Iniciar tareas periódicas en segundo plano
         logger.info("🔄 Iniciando tareas periódicas...")
         
         # Tarea de verificación de señales
@@ -550,12 +638,15 @@ async def main():
         # Tarea de monitoreo
         asyncio.create_task(monitoring_task())
         
-        # 10. Configurar callback para mensajes de Cielo
+        # Tarea de verificación de mantenimiento
+        asyncio.create_task(maintenance_check_task())
+        
+        # 12. Configurar callback para mensajes de Cielo
         async def handle_message(msg):
             await log_raw_message(msg)  # Primero hacer log del mensaje completo
             await on_cielo_message(msg, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor)
         
-        # 11. Conectar a Cielo API y suscribir wallets
+        # 13. Conectar a Cielo API y suscribir wallets
         logger.info("🔄 Conectando a Cielo API...")
         cielo = CieloAPI(Config.CIELO_API_KEY)
         
@@ -565,16 +656,17 @@ async def main():
             # Ya no filtramos por valor mínimo en la suscripción
         }
         
-        # 12. Enviar mensaje de inicio exitoso
+        # 14. Enviar mensaje de inicio exitoso
         send_telegram_message(
             "🚀 *ChipaTrading Bot Iniciado*\n\n"
             f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
             f"• Validación RugCheck: `{'Activa' if rugcheck_api else 'Inactiva'}`\n"
-            f"• Modelo ML: `{'Cargado' if model_loaded else 'Pendiente'}`\n\n"
+            f"• Modelo ML: `{'Cargado' if model_loaded else 'Pendiente'}`\n"
+            f"• Comando bot: `/status` para ver estado actual\n\n"
             "Sistema listo para detectar señales Daily Runner. ¡Buenas operaciones! 📊"
         )
         
-        # 13. Ejecutar el WebSocket (esto bloquea indefinidamente)
+        # 15. Ejecutar el WebSocket (esto bloquea indefinidamente)
         logger.info("📡 Iniciando suscripción a wallets...")
         await cielo.run_forever_wallets(wallets_list, handle_message, filter_params)
         
