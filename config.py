@@ -12,7 +12,8 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
     CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
-    DATABASE_PATH = os.environ.get("DATABASE_PATH", "")
+    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" 
+                                   if os.path.exists("/data") else "tradingbot.db")
 
     # Configuración de Rugcheck
     RUGCHECK_PRIVATE_KEY = os.environ.get("RUGCHECK_PRIVATE_KEY", "")
@@ -21,7 +22,7 @@ class Config:
     # Configuración de las señales (valores por defecto)
     MIN_TRANSACTION_USD = 300
     MIN_TRADERS_FOR_SIGNAL = 3
-    SIGNAL_WINDOW_SECONDS = 120
+    SIGNAL_WINDOW_SECONDS = 540  # 9 minutos como solicitaste
     MIN_CONFIDENCE_THRESHOLD = 0.4
     MIN_VOLUME_USD = 5000
 
@@ -36,6 +37,11 @@ class Config:
     MIN_MARKETCAP = 100000
     MAX_MARKETCAP = 500_000_000
     VOL_NORMALIZATION_FACTOR = 10000.0
+    
+    # Nuevas configuraciones
+    SIGNAL_THROTTLING = 10  # Máximo de señales por hora
+    ADAPT_CONFIDENCE_THRESHOLD = True  # Ajustar umbrales según rendimiento
+    HIGH_QUALITY_TRADER_SCORE = 7.0  # Umbral para traders de alta calidad
     
     # Valores dinámicos desde base de datos
     _dynamic_config = {}
@@ -108,3 +114,27 @@ class Config:
             sys.exit(1)
         
         print("✅ Configuración requerida verificada correctamente")
+        
+    @classmethod
+    def update_setting(cls, key, value):
+        """
+        Actualiza un valor de configuración en memoria.
+        No persiste el cambio en la base de datos.
+        
+        Args:
+            key: Clave de configuración
+            value: Nuevo valor
+        """
+        cls._dynamic_config[key] = value
+        
+        # También actualizar atributo de clase si existe
+        if hasattr(cls, key.upper()):
+            attr_value = getattr(cls, key.upper())
+            
+            # Convertir al tipo correcto
+            if isinstance(attr_value, int):
+                setattr(cls, key.upper(), int(value))
+            elif isinstance(attr_value, float):
+                setattr(cls, key.upper(), float(value))
+            else:
+                setattr(cls, key.upper(), value)
