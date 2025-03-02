@@ -37,6 +37,12 @@ running = True
 signal_predictor = None
 ml_data_preparation = None
 
+# Variables para monitoreo
+message_counter = 0
+transaction_counter = 0
+last_counter_log = time.time()
+last_heartbeat = time.time()
+
 def load_wallets():
     """
     Carga las wallets desde traders_data.json
@@ -183,6 +189,41 @@ async def refresh_wallets_task(interval=3600):
             logger.error(f"⚠️ Error actualizando wallets: {e}")
             await asyncio.sleep(interval)
 
+async def monitoring_task():
+    """
+    Tarea periódica para monitorizar el estado del bot y enviar alertas.
+    """
+    global message_counter, transaction_counter, last_counter_log, last_heartbeat, running
+    
+    while running:
+        try:
+            # Esperar 10 minutos
+            await asyncio.sleep(600)
+            
+            now = time.time()
+            elapsed_since_last_log = now - last_counter_log
+            
+            # Enviar estadísticas cada 10 minutos
+            msg = (
+                "*📊 Estado del Bot*\n\n"
+                f"• Mensajes recibidos (últimos {elapsed_since_last_log/60:.1f} min): `{message_counter}`\n"
+                f"• Transacciones procesadas: `{transaction_counter}`\n"
+                f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
+                f"• Tiempo desde inicio: `{(now - last_heartbeat)/3600:.1f}h`\n"
+            )
+            
+            send_telegram_message(msg)
+            logger.info(f"📊 Mensajes: {message_counter}, Transacciones: {transaction_counter} en los últimos {elapsed_since_last_log/60:.1f} minutos")
+            
+            # Resetear contadores
+            message_counter = 0
+            transaction_counter = 0
+            last_counter_log = now
+            
+        except Exception as e:
+            logger.error(f"⚠️ Error en monitoring_task: {e}")
+            await asyncio.sleep(60)  # Esperar 1 minuto en caso de error
+
 async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, interval=86400):
     """
     Ejecuta tareas periódicas relacionadas con Machine Learning:
@@ -236,40 +277,66 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
 async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
     """
     Procesa los mensajes recibidos de Cielo.
-    
-    Args:
-        message: Mensaje recibido de Cielo
-        signal_logic: Instancia de SignalLogic
-        ml_data_preparation: Instancia de MLDataPreparation
-        dex_client: Instancia de DexScreenerClient
-        scoring_system: Instancia de ScoringSystem
-        signal_predictor: Instancia de SignalPredictor o None
     """
+    global message_counter, transaction_counter
+    
+    # Incrementar contador de mensajes
+    message_counter += 1
+    
     try:
         data = json.loads(message)
+        
+        # Loguear tipo de mensaje
+        if "type" in data:
+            logger.info(f"📡 Mensaje tipo: {data['type']}")
+        
         if "transactions" in data:
+            tx_count = len(data["transactions"])
+            logger.info(f"📦 Mensaje con {tx_count} transacciones recibido")
+            
             for tx in data["transactions"]:
                 tx_type = tx.get("type", "")
                 usd_value = float(tx.get("amount_usd", 0))
                 wallet = tx.get("wallet", "")
                 token = tx.get("token", "")
                 
+                # Log básico de cada transacción para depuración
+                logger.info(f"📝 Tx: {tx_type}, {usd_value}$, Token: {token}, Wallet: {wallet[:8]}...")
+                
                 # Filtrar transacciones relevantes
                 min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
                 
-                if tx_type in ["BUY", "SELL"] and usd_value >= min_tx_usd:
-                    logger.info(f"💵 Transacción relevante: {tx_type} {usd_value}$ en {token} por {wallet}")
+                # Para nuestro propósito, consideramos "swap" y "transfer" como transacciones relevantes
+                if tx_type in ["swap", "transfer"] and usd_value >= min_tx_usd:
+                    # Determinar si es compra o venta
+                    # Por defecto consideramos "swap" como compra y necesitamos 
+                    # analizar más datos para determinar la dirección
+                    
+                    actual_tx_type = "BUY"  # Valor predeterminado
+                    
+                    # Si es swap, necesitamos ver el detalle de la transacción
+                    if tx_type == "swap":
+                        # Determinar si es compra o venta según los datos disponibles
+                        if "direction" in tx:
+                            if tx["direction"] == "out":
+                                actual_tx_type = "SELL"
+                    
+                    # Incrementar contador
+                    transaction_counter += 1
+                    
+                    logger.info(f"💵 Transacción relevante: {actual_tx_type} {usd_value}$ en {token} por {wallet}")
                     
                     # Guardar en la BD
-                    db.save_transaction({
+                    tx_data = {
                         "wallet": wallet,
                         "token": token,
-                        "type": tx_type,
+                        "type": actual_tx_type,
                         "amount_usd": usd_value
-                    })
+                    }
+                    db.save_transaction(tx_data)
                     
                     # Añadir a la lógica de señales
-                    signal_logic.add_transaction(wallet, token, usd_value, tx_type)
+                    signal_logic.add_transaction(wallet, token, usd_value, actual_tx_type)
                     
                     # Si es una transacción grande, extraer features para ML
                     if usd_value >= min_tx_usd * 2:  # Doble del mínimo para enfocarnos en transacciones significativas
@@ -313,9 +380,12 @@ async def main():
     """
     Función principal que inicializa y ejecuta el bot.
     """
-    global wallets_list, signal_predictor, ml_data_preparation
+    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat
     
     try:
+        # Registrar inicio para heartbeat
+        last_heartbeat = time.time()
+        
         # Registrar manejador de señales para cierre ordenado
         signal.signal(signal.SIGINT, handle_shutdown)
         signal.signal(signal.SIGTERM, handle_shutdown)
@@ -388,6 +458,9 @@ async def main():
         # Tarea de Machine Learning
         asyncio.create_task(ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor))
         
+        # Tarea de monitoreo
+        asyncio.create_task(monitoring_task())
+        
         # 10. Configurar callback para mensajes de Cielo
         async def handle_message(msg):
             await on_cielo_message(msg, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor)
@@ -398,7 +471,7 @@ async def main():
         
         filter_params = {
             "chains": ["solana"],
-            "tx_types": ["swap"],
+            "tx_types": ["swap", "transfer"],  # Incluir swaps y transferencias
             "min_usd_value": float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
         }
         
