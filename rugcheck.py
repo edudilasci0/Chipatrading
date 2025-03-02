@@ -253,3 +253,7 @@ def validar_seguridad_contrato(jwt_token, token_mint, min_score=50):
     # Si pasó todas las validaciones, es seguro
     print(f"✅ Token {token_mint} pasó la validación de RugCheck con score {score}")
     return True
+        
+    # Si pasó todas las validaciones, es seguro
+    print(f"✅ Token {token_mint} pasó la validación de RugCheck con score {score}")
+    return True
