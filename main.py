@@ -299,14 +299,13 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
             logger.info(f"📦 Mensaje de transacción recibido: {json.dumps(tx_data)[:200]}...")
             
             try:
-                # Verificar que tenemos los campos mínimos necesarios
-                if "wallet" not in tx_data or "contract_address" not in tx_data:
-                    logger.warning("⚠️ Transacción sin wallet o token, ignorando")
+                # Verificar que tenemos wallet
+                if "wallet" not in tx_data:
+                    logger.warning("⚠️ Transacción sin wallet, ignorando")
                     return
                 
-                # Mapear campos del nuevo formato al formato esperado por el resto del código
+                # Extraer wallet
                 wallet = tx_data.get("wallet", "unknown_wallet")
-                token = tx_data.get("contract_address", "")
                 
                 # Verificar si la wallet está en nuestra lista - Solo procesar si está
                 if wallet not in wallets_list:
@@ -315,38 +314,52 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                 
                 # Determinar tipo de transacción
                 tx_type = tx_data.get("tx_type", "unknown_type")
-                actual_tx_type = "BUY" # Valor predeterminado
+                token = None
+                actual_tx_type = None
+                usd_value = 0.0
                 
-                # Determinar dirección de la transacción (compra o venta)
+                # Procesar según tipo de transacción
                 if tx_type == "transfer":
+                    # Para transferencias, usar contract_address
+                    token = tx_data.get("contract_address")
+                    
                     # En transferencias, si la wallet está en 'to', es BUY; si está en 'from', es SELL
                     if wallet == tx_data.get("to"):
                         actual_tx_type = "BUY"
                     elif wallet == tx_data.get("from"):
                         actual_tx_type = "SELL"
-                elif tx_type == "swap":
-                    # Para swaps, necesitamos verificar qué token está involucrado
-                    # Si está en token0_address, suele ser SELL; en token1_address, suele ser BUY
-                    token0 = tx_data.get("token0_address", "")
-                    token1 = tx_data.get("token1_address", "")
                     
-                    if token == token0:
-                        # Si el token de interés es token0, entonces es SELL (salida)
-                        actual_tx_type = "SELL"
-                    elif token == token1:
-                        # Si el token de interés es token1, entonces es BUY (entrada)
-                        actual_tx_type = "BUY"
-                
-                # Obtener valor USD - intentar diferentes campos
-                usd_value = 0.0
-                # Buscar los campos posibles de valor monetario en el nuevo formato
-                if actual_tx_type == "BUY" and "token1_amount_usd" in tx_data:
-                    usd_value = float(tx_data.get("token1_amount_usd", 0))
-                elif actual_tx_type == "SELL" and "token0_amount_usd" in tx_data:
-                    usd_value = float(tx_data.get("token0_amount_usd", 0))
-                else:
-                    # Intentar con amount_usd general
+                    # Obtener valor USD
                     usd_value = float(tx_data.get("amount_usd", 0))
+                    
+                elif tx_type == "swap":
+                    # Para swaps, necesitamos determinar qué token y dirección
+                    token0 = tx_data.get("token0_address")
+                    token1 = tx_data.get("token1_address")
+                    
+                    # Si ambos están presentes, determinar dirección y token
+                    if token0 and token1:
+                        # SOL y tokens comunes generalmente son token1 en swaps
+                        sol_token = "So11111111111111111111111111111111111111112"
+                        usdc_token = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                        usdt_token = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+                        common_tokens = [sol_token, usdc_token, usdt_token]
+                        
+                        if token1 in common_tokens:
+                            # Si token1 es SOL/USDC/USDT, entonces token0 es el token de interés
+                            token = token0
+                            actual_tx_type = "SELL"  # Vendiendo token por SOL/stablecoin
+                            usd_value = float(tx_data.get("token0_amount_usd", 0))
+                        else:
+                            # En otro caso, token1 es probablemente el token de interés
+                            token = token1
+                            actual_tx_type = "BUY"  # Comprando token con SOL/stablecoin
+                            usd_value = float(tx_data.get("token1_amount_usd", 0))
+                    
+                # Si no pudimos determinar token o tipo, ignorar
+                if not token or not actual_tx_type:
+                    logger.warning("⚠️ No se pudo determinar token o tipo de transacción, ignorando")
+                    return
                 
                 # Si no hay valor USD, ignorar la transacción
                 if usd_value <= 0:
@@ -404,7 +417,14 @@ async def log_raw_message(message):
             
             # Mostrar detalles relevantes
             logger.info(f"  Wallet: {tx_data.get('wallet', 'N/A')}")
-            logger.info(f"  Token: {tx_data.get('contract_address', 'N/A')}")
+            
+            # Mostrar token según el tipo de transacción
+            if tx_data.get("tx_type") == "transfer":
+                logger.info(f"  Token: {tx_data.get('contract_address', 'N/A')}")
+            elif tx_data.get("tx_type") == "swap":
+                logger.info(f"  Token0: {tx_data.get('token0_address', 'N/A')}")
+                logger.info(f"  Token1: {tx_data.get('token1_address', 'N/A')}")
+            
             logger.info(f"  Tipo: {tx_data.get('tx_type', 'N/A')}")
             
             # Mostrar detalles de valor
