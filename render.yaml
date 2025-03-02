@@ -4,3 +4,20 @@ services:
     env: python
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
+    disk:
+      name: trading-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/database.db
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: CIELO_API_KEY
+        sync: false
+      - key: RUGCHECK_PRIVATE_KEY
+        sync: false
+      - key: RUGCHECK_WALLET_PUBKEY
+        sync: false
