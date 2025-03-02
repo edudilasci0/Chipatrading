@@ -1,7 +1,51 @@
+import logging
+import requests
+from config import Config
+
+# Set up logger
+logger = logging.getLogger("chipatrading")
+
+def send_telegram_message(message):
+    """
+    Envía un mensaje a través del bot de Telegram.
+    
+    Args:
+        message: Mensaje a enviar (soporta formato Markdown)
+    """
+    try:
+        bot_token = Config.TELEGRAM_BOT_TOKEN
+        chat_id = Config.TELEGRAM_CHAT_ID
+        
+        if not bot_token or not chat_id:
+            logger.warning("⚠️ No se puede enviar mensaje a Telegram: faltan credenciales")
+            return False
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        
+        response = requests.post(url, data=data, timeout=10)
+        
+        if response.status_code == 200:
+            logger.debug(f"✅ Mensaje enviado a Telegram: {message[:50]}...")
+            return True
+        else:
+            logger.warning(f"⚠️ Error enviando mensaje a Telegram: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"🚨 Error en send_telegram_message: {e}")
+        return False
+
 async def process_telegram_commands(bot_token, chat_id, signal_logic):
     """
     Procesa comandos recibidos por Telegram.
     """
+    # Import db inside the function to avoid circular imports
+    import db
+    
     try:
         # Para usar python-telegram-bot
         from telegram import ParseMode
