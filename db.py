@@ -66,14 +66,7 @@ def init_db():
         with get_connection() as conn:
             cur = conn.cursor()
             
-            # Recrear la tabla transactions desde cero (enfoque directo)
-            try:
-                # Comprobar si la tabla existe y borrarla
-                cur.execute("DROP TABLE IF EXISTS transactions CASCADE")
-                print("✅ Tabla transactions eliminada para recreación")
-            except Exception as e:
-                print(f"⚠️ Error al eliminar tabla transactions: {e}")
-                conn.rollback()
+            # Crear tablas solo si no existen (no hacer DROP TABLE)
             
             # Tabla de puntuaciones de wallets
             cur.execute("""
@@ -109,7 +102,7 @@ def init_db():
                 )
             """)
             
-            # Tabla de rendimiento de señales - MODIFICADA
+            # Tabla de rendimiento de señales
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS signal_performance (
                     id SERIAL PRIMARY KEY,
@@ -133,14 +126,17 @@ def init_db():
                 )
             """)
             
-            # Insertar configuraciones iniciales
+            # Insertar configuraciones iniciales (solo si no existen)
             default_settings = [
                 ("min_transaction_usd", str(Config.MIN_TRANSACTION_USD)),
                 ("min_traders_for_signal", str(Config.MIN_TRADERS_FOR_SIGNAL)),
-                ("signal_window_seconds", str(Config.SIGNAL_WINDOW_SECONDS)),
+                ("signal_window_seconds", str(540)),  # 9 minutos como solicitaste
                 ("min_confidence_threshold", str(Config.MIN_CONFIDENCE_THRESHOLD)),
                 ("rugcheck_min_score", "50"),
-                ("min_volume_usd", str(Config.MIN_VOLUME_USD))
+                ("min_volume_usd", str(Config.MIN_VOLUME_USD)),
+                ("signal_throttling", "10"),  # Nueva configuración: máximo de señales por hora
+                ("adapt_confidence_threshold", "true"),  # Nueva configuración: ajuste automático
+                ("high_quality_trader_score", "7.0")  # Umbral para traders de alta calidad
             ]
             
             for key, value in default_settings:
@@ -175,8 +171,7 @@ def init_db():
                 except Exception as e2:
                     print(f"⚠️ Error al crear idx_transactions_wallet: {e2}")
                 
-                # Seguir creando el resto de índices individualmente
-                # ...
+                # ... (resto de índices)
 
             conn.commit()
             print("✅ Base de datos inicializada correctamente")
@@ -272,6 +267,22 @@ def count_signals_today():
     return row[0] if row else 0
 
 @retry_db_operation()
+def count_signals_last_hour():
+    """
+    Cuenta cuántas señales se han emitido en la última hora.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        sql = """
+        SELECT COUNT(*) FROM signals
+        WHERE created_at > NOW() - INTERVAL '1 HOUR'
+        """
+        cur.execute(sql)
+        row = cur.fetchone()
+        
+    return row[0] if row else 0
+
+@retry_db_operation()
 def count_transactions_today():
     """
     Cuenta las transacciones guardadas hoy.
@@ -308,6 +319,32 @@ def get_token_transactions(token, hours=24):
     for tx in transactions:
         result.append({
             "wallet": tx[0],
+            "type": tx[1],
+            "amount_usd": float(tx[2]),
+            "created_at": tx[3].isoformat()
+        })
+    return result
+
+@retry_db_operation()
+def get_wallet_recent_transactions(wallet, hours=24):
+    """
+    Obtiene todas las transacciones recientes de una wallet.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        sql = """
+        SELECT token, tx_type, amount_usd, created_at
+        FROM transactions
+        WHERE wallet = %s AND created_at > NOW() - INTERVAL '%s HOUR'
+        ORDER BY created_at DESC
+        """
+        cur.execute(sql, (wallet, hours))
+        transactions = cur.fetchall()
+    
+    result = []
+    for tx in transactions:
+        result.append({
+            "token": tx[0],
             "type": tx[1],
             "amount_usd": float(tx[2]),
             "created_at": tx[3].isoformat()
@@ -363,8 +400,6 @@ def save_signal_performance(token, signal_id, timeframe, percent_change, confide
     print(f"✅ Rendimiento guardado para {token} en {timeframe}: {percent_change:.2f}%")
     return True
 
-# Resto de métodos permanecen igual
-
 @retry_db_operation()
 def get_signals_without_outcomes(hours=48):
     """
@@ -409,6 +444,33 @@ def mark_signal_outcome_collected(signal_id):
         conn.commit()
 
 @retry_db_operation()
+def get_signal_by_token(token):
+    """
+    Obtiene la última señal emitida para un token específico.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        sql = """
+        SELECT id, trader_count, confidence, initial_price, created_at
+        FROM signals
+        WHERE token = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+        cur.execute(sql, (token,))
+        signal = cur.fetchone()
+    
+    if signal:
+        return {
+            "id": signal[0],
+            "trader_count": signal[1],
+            "confidence": signal[2],
+            "initial_price": signal[3],
+            "created_at": signal[4].isoformat()
+        }
+    return None
+
+@retry_db_operation()
 def get_all_settings():
     """
     Obtiene todas las configuraciones de la base de datos.
@@ -440,3 +502,115 @@ def update_setting(key, value):
         cur.execute(sql, (key, value))
         conn.commit()
     return True
+
+@retry_db_operation()
+def save_failed_token(token, reason):
+    """
+    Guarda un token que falló en la detección de señales.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Crear tabla si no existe
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS failed_tokens (
+            token TEXT PRIMARY KEY,
+            reason TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """)
+        
+        # Insertar o actualizar
+        sql = """
+        INSERT INTO failed_
+        @retry_db_operation()
+def save_failed_token(token, reason):
+    """
+    Guarda un token que falló en la detección de señales.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Crear tabla si no existe
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS failed_tokens (
+            token TEXT PRIMARY KEY,
+            reason TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """)
+        
+        # Insertar o actualizar
+        sql = """
+        INSERT INTO failed_tokens (token, reason)
+        VALUES (%s, %s)
+        ON CONFLICT (token) 
+        DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
+        """
+        cur.execute(sql, (token, reason))
+        conn.commit()
+    return True
+
+@retry_db_operation()
+def get_failed_token(token):
+    """
+    Verifica si un token está en la lista de fallos recientes.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Verificar si existe la tabla
+        cur.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_name = 'failed_tokens'
+        )
+        """)
+        table_exists = cur.fetchone()[0]
+        
+        if not table_exists:
+            return None
+        
+        # Buscar token
+        sql = """
+        SELECT reason, created_at
+        FROM failed_tokens
+        WHERE token = %s AND created_at > NOW() - INTERVAL '24 HOUR'
+        """
+        cur.execute(sql, (token,))
+        result = cur.fetchone()
+    
+    if result:
+        return {
+            "reason": result[0],
+            "timestamp": result[1].isoformat()
+        }
+    return None
+
+@retry_db_operation()
+def get_signals_performance_stats():
+    """
+    Obtiene estadísticas de rendimiento de las señales.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        sql = """
+        SELECT 
+            timeframe,
+            COUNT(*) as total_signals,
+            ROUND(AVG(percent_change), 2) as avg_percent_change,
+            ROUND(AVG(CASE WHEN percent_change > 0 THEN 1 ELSE 0 END) * 100, 2) as success_rate
+        FROM signal_performance
+        WHERE timestamp > NOW() - INTERVAL '30 DAY'
+        GROUP BY timeframe
+        ORDER BY timeframe
+        """
+        cur.execute(sql)
+        stats = cur.fetchall()
+    
+    result = []
+    for stat in stats:
+        result.append({
+            "timeframe": stat[0],
+            "total_signals": stat[1],
+            "avg_percent_change": stat[2],
+            "success_rate": stat[3]
+        })
+    return result
