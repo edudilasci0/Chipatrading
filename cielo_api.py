@@ -21,6 +21,38 @@ class CieloAPI:
         self.last_connection_attempt = 0
         self.connection_failures = 0
 
+    async def log_raw_message(self, message):
+        """
+        Registra el mensaje completo recibido para debugging.
+        """
+        try:
+            # Intentar parsear como JSON para un formato más legible
+            data = json.loads(message)
+            print(f"\n-------- MENSAJE CIELO RECIBIDO --------")
+            print(f"Tipo de mensaje: {data.get('type', 'No type')}")
+            
+            # Si contiene transacciones, mostrar información resumida
+            if "transactions" in data:
+                txs = data["transactions"]
+                print(f"Contiene {len(txs)} transacciones")
+                
+                # Mostrar detalles de las primeras 3 transacciones como ejemplo
+                for i, tx in enumerate(txs[:3]):
+                    print(f"\nTransacción #{i+1}:")
+                    print(f"  Tipo: {tx.get('type', 'N/A')}")
+                    print(f"  Wallet: {tx.get('wallet', 'N/A')}")
+                    print(f"  Token: {tx.get('token', 'N/A')}")
+                    print(f"  USD: {tx.get('amount_usd', 'N/A')}")
+                    
+                # Si hay más de 3, indicarlo
+                if len(txs) > 3:
+                    print(f"... y {len(txs) - 3} transacciones más")
+                    
+            print("----------------------------------------\n")
+        except Exception as e:
+            print(f"Error al loguear mensaje: {e}")
+            print(f"Mensaje original: {message[:200]}...")
+
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
         """
         Suscribe a múltiples wallets en la misma conexión WebSocket.
@@ -30,11 +62,19 @@ class CieloAPI:
             wallets: Lista de direcciones de wallets
             filter_params: Diccionario con parámetros de filtro
         """
-        if filter_params is None:
-            filter_params = {}
+        # Según documentación, los filtros se aplican así:
+        subscription_params = {
+            "chains": ["solana"],  # Solo Solana de momento
+            "tx_types": ["swap", "transfer"],  # Incluir también transferencias
+        }
+        
+        # Añadir filtro de valor mínimo si existe
+        min_usd = filter_params.get("min_usd_value") if filter_params else None
+        if min_usd:
+            subscription_params["min_usd_value"] = min_usd
         
         # Registrar la suscripción
-        print(f"🔄 Suscribiendo a {len(wallets)} wallets...")
+        print(f"🔄 Suscribiendo a {len(wallets)} wallets con filtros: {subscription_params}")
         
         # Suscribir wallets en bloques para no saturar la API
         chunk_size = 50  # Suscribir de 50 en 50
@@ -44,7 +84,7 @@ class CieloAPI:
                 msg = {
                     "type": "subscribe_wallet",
                     "wallet": wallet,
-                    "filter": filter_params
+                    "filter": subscription_params  # Usar los parámetros formateados correctamente
                 }
                 await ws.send(json.dumps(msg))
             
@@ -54,6 +94,24 @@ class CieloAPI:
                 await asyncio.sleep(0.5)
         
         print("✅ Todas las wallets han sido suscritas")
+        
+    async def _ping_periodically(self, ws):
+        """
+        Envía un mensaje tipo ping periódicamente para mantener la conexión viva.
+        """
+        while True:
+            try:
+                # Esperar 5 minutos
+                await asyncio.sleep(300)
+                # Enviar mensaje de ping (formato según documento)
+                ping_message = {"type": "ping"}
+                await ws.send(json.dumps(ping_message))
+                print("📤 Ping enviado a Cielo WebSocket")
+            except Exception as e:
+                print(f"⚠️ Error enviando ping: {e}")
+                # Si hay error al enviar ping, esperamos 
+                # que el error de conexión sea detectado por el bucle principal
+                break
 
     async def run_forever_wallets(self, wallets, on_message_callback, filter_params=None):
         """
@@ -83,10 +141,20 @@ class CieloAPI:
                     
                     # Suscribir todas las wallets
                     await self.subscribe_to_wallets(ws, wallets, filter_params)
+                    
+                    # Crear tarea para enviar ping periódico (cada 5 minutos)
+                    ping_task = asyncio.create_task(self._ping_periodically(ws))
 
                     # Procesar mensajes entrantes
-                    async for message in ws:
-                        await on_message_callback(message)
+                    try:
+                        async for message in ws:
+                            # Log para depuración
+                            await self.log_raw_message(message)
+                            # Procesar mensaje
+                            await on_message_callback(message)
+                    finally:
+                        # Cancelar tarea de ping al salir del bucle
+                        ping_task.cancel()
                         
             except (websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
@@ -139,10 +207,20 @@ class CieloAPI:
                     }
                     await ws.send(json.dumps(subscribe_message))
                     print(f"📡 Suscrito con filtros => {filter_params}")
+                    
+                    # Crear tarea para enviar ping periódico
+                    ping_task = asyncio.create_task(self._ping_periodically(ws))
 
                     # Procesar mensajes entrantes
-                    async for message in ws:
-                        await on_message_callback(message)
+                    try:
+                        async for message in ws:
+                            # Log para depuración
+                            await self.log_raw_message(message)
+                            # Procesar mensaje
+                            await on_message_callback(message)
+                    finally:
+                        # Cancelar tarea de ping al salir del bucle
+                        ping_task.cancel()
                         
             except (websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
