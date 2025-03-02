@@ -31,10 +31,18 @@ class CieloAPI:
             print(f"\n-------- MENSAJE CIELO RECIBIDO --------")
             print(f"Tipo de mensaje: {data.get('type', 'No type')}")
             
+            # Mostrar el mensaje completo para diagnóstico
+            print(f"MENSAJE COMPLETO: {json.dumps(data)[:1000]}...")
+            
             # Si contiene transacciones, mostrar información resumida
             if "transactions" in data:
                 txs = data["transactions"]
                 print(f"Contiene {len(txs)} transacciones")
+                
+                # Mostrar detalles completos de la primera transacción como ejemplo
+                if len(txs) > 0:
+                    print(f"\nTransacción completa #1:")
+                    print(json.dumps(txs[0], indent=2))
                 
                 # Mostrar detalles de las primeras 3 transacciones como ejemplo
                 for i, tx in enumerate(txs[:3]):
@@ -42,7 +50,16 @@ class CieloAPI:
                     print(f"  Tipo: {tx.get('type', 'N/A')}")
                     print(f"  Wallet: {tx.get('wallet', 'N/A')}")
                     print(f"  Token: {tx.get('token', 'N/A')}")
-                    print(f"  USD: {tx.get('amount_usd', 'N/A')}")
+                    
+                    # Buscar cualquier campo que pueda contener valores
+                    value_fields = [k for k in tx.keys() if 'amount' in k.lower() or 'value' in k.lower() or 'usd' in k.lower()]
+                    for field in value_fields:
+                        print(f"  {field}: {tx.get(field, 'N/A')}")
+                    
+                    # Mostrar todos los demás campos
+                    other_fields = [k for k in tx.keys() if k not in ['type', 'wallet', 'token'] and k not in value_fields]
+                    for field in other_fields:
+                        print(f"  {field}: {tx.get(field, 'N/A')}")
                     
                 # Si hay más de 3, indicarlo
                 if len(txs) > 3:
@@ -51,7 +68,7 @@ class CieloAPI:
             print("----------------------------------------\n")
         except Exception as e:
             print(f"Error al loguear mensaje: {e}")
-            print(f"Mensaje original: {message[:200]}...")
+            print(f"Mensaje original: {message[:500]}...")
 
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
         """
