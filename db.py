@@ -109,13 +109,13 @@ def init_db():
                 )
             """)
             
-            # Tabla de rendimiento de señales
+            # Tabla de rendimiento de señales - MODIFICADA
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS signal_performance (
                     id SERIAL PRIMARY KEY,
                     token TEXT,
                     signal_id INTEGER REFERENCES signals(id),
-                    timeframe TEXT,
+                    timeframe TEXT CHECK (timeframe IN ('10m', '30m', '1h', '2h', '4h', '24h')),
                     percent_change NUMERIC,
                     confidence NUMERIC,
                     traders_count INTEGER,
@@ -318,12 +318,31 @@ def get_token_transactions(token, hours=24):
 def save_signal_performance(token, signal_id, timeframe, percent_change, confidence, traders_count):
     """
     Guarda el rendimiento de una señal en un timeframe específico.
+    
+    Args:
+        token: Dirección del token
+        signal_id: ID de la señal (opcional)
+        timeframe: Intervalo de tiempo ('10m', '30m', '1h', '2h', '4h', '24h')
+        percent_change: Porcentaje de cambio
+        confidence: Nivel de confianza
+        traders_count: Número de traders
     """
+    allowed_timeframes = ['10m', '30m', '1h', '2h', '4h', '24h']
+    if timeframe not in allowed_timeframes:
+        print(f"⚠️ Timeframe no válido: {timeframe}")
+        return False
+    
     with get_connection() as conn:
         cur = conn.cursor()
         sql = """
-        INSERT INTO signal_performance (token, signal_id, timeframe, percent_change, confidence, traders_count)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO signal_performance (
+            token, 
+            signal_id, 
+            timeframe, 
+            percent_change, 
+            confidence, 
+            traders_count
+        ) VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (token, timeframe)
         DO UPDATE SET 
             percent_change = EXCLUDED.percent_change,
@@ -331,8 +350,20 @@ def save_signal_performance(token, signal_id, timeframe, percent_change, confide
             traders_count = EXCLUDED.traders_count,
             timestamp = NOW()
         """
-        cur.execute(sql, (token, signal_id, timeframe, percent_change, confidence, traders_count))
+        cur.execute(sql, (
+            token, 
+            signal_id, 
+            timeframe, 
+            percent_change, 
+            confidence, 
+            traders_count
+        ))
         conn.commit()
+    
+    print(f"✅ Rendimiento guardado para {token} en {timeframe}: {percent_change:.2f}%")
+    return True
+
+# Resto de métodos permanecen igual
 
 @retry_db_operation()
 def get_signals_without_outcomes(hours=48):
