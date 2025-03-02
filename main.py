@@ -18,7 +18,7 @@ from telegram_utils import send_telegram_message
 from performance_tracker import PerformanceTracker
 from ml_preparation import MLDataPreparation
 from signal_predictor import SignalPredictor
-from rugcheck import login_rugcheck_solana
+from rugcheck import login_rugcheck_solana, RugCheckAPI
 
 # Configurar logging
 logging.basicConfig(
@@ -293,106 +293,94 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
         if "type" in data:
             logger.info(f"📡 Mensaje tipo: {data['type']}")
         
-        if "transactions" in data:
-            tx_count = len(data["transactions"])
-            logger.info(f"📦 Mensaje con {tx_count} transacciones recibido")
+        # Procesar transacción si es un mensaje de tipo 'tx'
+        if data.get("type") == "tx" and "data" in data:
+            tx_data = data["data"]
+            logger.info(f"📦 Mensaje de transacción recibido: {json.dumps(tx_data)[:200]}...")
             
-            # Log detallado del primer mensaje para diagnóstico
-            if tx_count > 0:
-                logger.info(f"Primera transacción completa: {json.dumps(data['transactions'][0])}")
-            
-            for tx in data["transactions"]:
+            try:
+                # Verificar que tenemos los campos mínimos necesarios
+                if "wallet" not in tx_data or "contract_address" not in tx_data:
+                    logger.warning("⚠️ Transacción sin wallet o token, ignorando")
+                    return
+                
+                # Mapear campos del nuevo formato al formato esperado por el resto del código
+                wallet = tx_data.get("wallet", "unknown_wallet")
+                token = tx_data.get("contract_address", "")
+                
+                # Verificar si la wallet está en nuestra lista - Solo procesar si está
+                if wallet not in wallets_list:
+                    logger.info(f"⚠️ Wallet {wallet[:8]}... no está en la lista de seguimiento, ignorando")
+                    return
+                
+                # Determinar tipo de transacción
+                tx_type = tx_data.get("tx_type", "unknown_type")
+                actual_tx_type = "BUY" # Valor predeterminado
+                
+                # Determinar dirección de la transacción (compra o venta)
+                if tx_type == "transfer":
+                    # En transferencias, si la wallet está en 'to', es BUY; si está en 'from', es SELL
+                    if wallet == tx_data.get("to"):
+                        actual_tx_type = "BUY"
+                    elif wallet == tx_data.get("from"):
+                        actual_tx_type = "SELL"
+                elif tx_type == "swap":
+                    # Para swaps, necesitamos verificar qué token está involucrado
+                    # Si está en token0_address, suele ser SELL; en token1_address, suele ser BUY
+                    token0 = tx_data.get("token0_address", "")
+                    token1 = tx_data.get("token1_address", "")
+                    
+                    if token == token0:
+                        # Si el token de interés es token0, entonces es SELL (salida)
+                        actual_tx_type = "SELL"
+                    elif token == token1:
+                        # Si el token de interés es token1, entonces es BUY (entrada)
+                        actual_tx_type = "BUY"
+                
+                # Obtener valor USD - intentar diferentes campos
+                usd_value = 0.0
+                # Buscar los campos posibles de valor monetario en el nuevo formato
+                if actual_tx_type == "BUY" and "token1_amount_usd" in tx_data:
+                    usd_value = float(tx_data.get("token1_amount_usd", 0))
+                elif actual_tx_type == "SELL" and "token0_amount_usd" in tx_data:
+                    usd_value = float(tx_data.get("token0_amount_usd", 0))
+                else:
+                    # Intentar con amount_usd general
+                    usd_value = float(tx_data.get("amount_usd", 0))
+                
+                # Si no hay valor USD, ignorar la transacción
+                if usd_value <= 0:
+                    logger.info(f"⚠️ Transacción sin valor USD, ignorando")
+                    return
+                
+                # Incrementar contador
+                transaction_counter += 1
+                
+                logger.info(f"💵 Transacción relevante: {actual_tx_type} {usd_value}$ en {token} por {wallet}")
+                
+                # Guardar en la BD
+                tx_for_db = {
+                    "wallet": wallet,
+                    "token": token,
+                    "type": actual_tx_type,
+                    "amount_usd": usd_value
+                }
+                
                 try:
-                    # Muy útil para diagnóstico - log de toda la transacción
-                    logger.info(f"Procesando transacción: {json.dumps(tx)}")
-                    
-                    # Verificar que tenemos al menos un token (lo mínimo necesario)
-                    if "token" not in tx:
-                        logger.warning(f"⚠️ Transacción sin token, ignorando")
-                        continue
-                    
-                    # Intentar obtener wallet y tipo, con valores por defecto si no existen
-                    wallet = tx.get("wallet", "unknown_wallet")
-                    tx_type = tx.get("type", "unknown_type")
-                    token = tx.get("token", "")
-                    
-                    # Verificar si la wallet está en nuestra lista - Solo procesar si está
-                    if wallet not in wallets_list:
-                        logger.info(f"⚠️ Wallet {wallet[:8]}... no está en la lista de seguimiento, ignorando")
-                        continue
-                    
-                    # Obtener valor USD - vamos a ser muy flexibles
-                    usd_value = 0.0
-                    amount_field = None
-                    
-                    # Buscar cualquier campo que pueda contener un valor monetario
-                    for field in tx.keys():
-                        if ('amount' in field.lower() or 'value' in field.lower() or 'usd' in field.lower() 
-                            or 'price' in field.lower() or 'cost' in field.lower()):
-                            try:
-                                val = float(tx[field])
-                                if val > 0:
-                                    usd_value = val
-                                    amount_field = field
-                                    break
-                            except (ValueError, TypeError):
-                                pass
-                    
-                    # Si no encontramos un valor, intentamos usar un campo básico
-                    if usd_value == 0 and "amount" in tx:
-                        try:
-                            amount = float(tx["amount"])
-                            # Valor arbitrario para tener algo que rastrear
-                            usd_value = amount * 100
-                            amount_field = "amount"
-                            logger.info(f"⚠️ Usando estimación para amount: {amount} -> ${usd_value}")
-                        except (ValueError, TypeError):
-                            pass
-                    
-                    # Log detallado de lo que encontramos
-                    logger.info(f"📝 Tx: {tx_type}, Valor: {usd_value}$ (de campo {amount_field}), Token: {token}, Wallet: {wallet}")
-                    
-                    # Determinar si es compra o venta (con lógica muy flexible)
-                    actual_tx_type = "BUY"  # Valor predeterminado
-                    
-                    # Buscar cualquier campo que pueda indicar dirección
-                    for field in ['direction', 'side', 'action', 'transaction_type']:
-                        if field in tx:
-                            field_value = str(tx[field]).lower()
-                            if field_value in ['out', 'sell', 'selling', 'sold', 'output']:
-                                actual_tx_type = "SELL"
-                                logger.info(f"Detectado SELL basado en campo {field} = {field_value}")
-                                break
-                    
-                    # Incrementar contador
-                    transaction_counter += 1
-                    
-                    logger.info(f"💵 Transacción relevante: {actual_tx_type} {usd_value}$ en {token} por {wallet}")
-                    
-                    # Guardar en la BD
-                    tx_data = {
-                        "wallet": wallet,
-                        "token": token,
-                        "type": actual_tx_type,
-                        "amount_usd": usd_value
-                    }
-                    
-                    try:
-                        db.save_transaction(tx_data)
-                        logger.info(f"✅ Transacción guardada en BD")
-                    except Exception as e:
-                        logger.error(f"🚨 Error guardando transacción en BD: {e}")
-                    
-                    # Añadir a la lógica de señales
-                    try:
-                        signal_logic.add_transaction(wallet, token, usd_value, actual_tx_type)
-                        logger.info(f"✅ Transacción añadida a lógica de señales")
-                    except Exception as e:
-                        logger.error(f"🚨 Error añadiendo transacción a señales: {e}")
-                    
-                except Exception as tx_e:
-                    logger.error(f"🚨 Error procesando transacción individual: {tx_e}", exc_info=True)
-                    continue  # Continuamos con la siguiente transacción
+                    db.save_transaction(tx_for_db)
+                    logger.info(f"✅ Transacción guardada en BD")
+                except Exception as e:
+                    logger.error(f"🚨 Error guardando transacción en BD: {e}")
+                
+                # Añadir a la lógica de señales
+                try:
+                    signal_logic.add_transaction(wallet, token, usd_value, actual_tx_type)
+                    logger.info(f"✅ Transacción añadida a lógica de señales")
+                except Exception as e:
+                    logger.error(f"🚨 Error añadiendo transacción a señales: {e}")
+                
+            except Exception as tx_e:
+                logger.error(f"🚨 Error procesando transacción individual: {tx_e}", exc_info=True)
     
     except json.JSONDecodeError as e:
         logger.warning(f"⚠️ Error al decodificar JSON: {e}")
@@ -409,39 +397,23 @@ async def log_raw_message(message):
         logger.info(f"\n-------- MENSAJE CIELO RECIBIDO --------")
         logger.info(f"Tipo de mensaje: {data.get('type', 'No type')}")
         
-        # Si contiene transacciones, mostrar información resumida
-        if "transactions" in data:
-            txs = data["transactions"]
-            logger.info(f"Contiene {len(txs)} transacciones")
+        # Si contiene datos de transacción en el nuevo formato
+        if data.get("type") == "tx" and "data" in data:
+            tx_data = data["data"]
+            logger.info(f"Contiene datos de transacción")
             
-            # Mostrar detalles de las primeras 3 transacciones como ejemplo
-            for i, tx in enumerate(txs[:3]):
-                logger.info(f"\nTransacción #{i+1}:")
-                logger.info(f"  Tipo: {tx.get('type', 'N/A')}")
-                logger.info(f"  Wallet: {tx.get('wallet', 'N/A')}")
-                logger.info(f"  Token: {tx.get('token', 'N/A')}")
-                
-                # Intentar diferentes formatos de valor
-                valor = None
-                if "amount_usd" in tx:
-                    valor = f"{tx.get('amount_usd')} USD"
-                elif "value_usd" in tx:
-                    valor = f"{tx.get('value_usd')} USD"
-                elif "usd_value" in tx:
-                    valor = f"{tx.get('usd_value')} USD"
-                elif "usd_amount" in tx:
-                    valor = f"{tx.get('usd_amount')} USD"
-                elif "amount" in tx:
-                    valor = f"{tx.get('amount')} (unidad no especificada)"
-                
-                logger.info(f"  Valor: {valor}")
-                
-                if 'direction' in tx:
-                    logger.info(f"  Dirección: {tx.get('direction', 'N/A')}")
-                
-            # Si hay más de 3, indicarlo
-            if len(txs) > 3:
-                logger.info(f"... y {len(txs) - 3} transacciones más")
+            # Mostrar detalles relevantes
+            logger.info(f"  Wallet: {tx_data.get('wallet', 'N/A')}")
+            logger.info(f"  Token: {tx_data.get('contract_address', 'N/A')}")
+            logger.info(f"  Tipo: {tx_data.get('tx_type', 'N/A')}")
+            
+            # Mostrar detalles de valor
+            if "amount_usd" in tx_data:
+                logger.info(f"  Valor USD: {tx_data.get('amount_usd')} USD")
+            if "token0_amount_usd" in tx_data:
+                logger.info(f"  Valor token0: {tx_data.get('token0_amount_usd')} USD")
+            if "token1_amount_usd" in tx_data:
+                logger.info(f"  Valor token1: {tx_data.get('token1_amount_usd')} USD")
                 
         logger.info("----------------------------------------\n")
     except Exception as e:
@@ -495,25 +467,30 @@ async def main():
         # 4. Enviar secuencia de inicio a Telegram
         await send_boot_sequence()
         
-        # 5. Configurar RugCheck si hay credenciales
-        rugcheck_jwt = None
+        # 5. Configurar RugCheck a través de la clase RugCheckAPI
+        rugcheck_api = None
         if Config.RUGCHECK_PRIVATE_KEY and Config.RUGCHECK_WALLET_PUBKEY:
             try:
-                logger.info("🔐 Conectando con RugCheck...")
-                rugcheck_jwt = login_rugcheck_solana()
+                logger.info("🔐 Inicializando RugCheck API...")
+                rugcheck_api = RugCheckAPI()
+                # Intentamos autenticar para verificar que funciona
+                jwt_token = rugcheck_api.authenticate()
                 
-                if not rugcheck_jwt:
+                if not jwt_token:
                     logger.warning("⚠️ No se pudo obtener token JWT de RugCheck")
                     send_telegram_message("⚠️ *Advertencia*: No se pudo conectar con RugCheck para validar tokens")
+                else:
+                    logger.info("✅ RugCheck API inicializada correctamente")
             except Exception as e:
                 logger.error(f"⚠️ Error al configurar RugCheck: {e}")
+                rugcheck_api = None
         
         # 6. Inicializar componentes principales
         logger.info("⚙️ Inicializando componentes...")
         
         dex_client = DexScreenerClient()
         scoring_system = ScoringSystem()
-        signal_logic = SignalLogic(scoring_system, dex_client, rugcheck_jwt)
+        signal_logic = SignalLogic(scoring_system, dex_client, rugcheck_api)
         
         # 7. Inicializar componentes de ML
         logger.info("🧠 Inicializando componentes de Machine Learning...")
@@ -572,7 +549,7 @@ async def main():
         send_telegram_message(
             "🚀 *ChipaTrading Bot Iniciado*\n\n"
             f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
-            f"• Validación RugCheck: `{'Activa' if rugcheck_jwt else 'Inactiva'}`\n"
+            f"• Validación RugCheck: `{'Activa' if rugcheck_api else 'Inactiva'}`\n"
             f"• Modelo ML: `{'Cargado' if model_loaded else 'Pendiente'}`\n\n"
             "Sistema listo para detectar señales Daily Runner. ¡Buenas operaciones! 📊"
         )
