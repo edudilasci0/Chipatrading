@@ -2,8 +2,10 @@ import os
 import requests
 import time
 import logging
-import json  # Añadido para usar json.dumps en send_telegram_button
+import json
+import asyncio
 from config import Config
+import db
 
 # Configurar logging
 logging.basicConfig(
@@ -190,3 +192,148 @@ def send_telegram_button(text, button_text, button_url, parse_mode="Markdown"):
     except Exception as e:
         logger.error(f"🚨 Excepción al enviar mensaje con botón: {e}")
         return False
+
+async def process_telegram_commands(bot_token, chat_id, signal_logic):
+    """
+    Procesa comandos recibidos por Telegram.
+    
+    Args:
+        bot_token: Token del bot de Telegram
+        chat_id: ID del chat autorizado
+        signal_logic: Instancia de SignalLogic para controlar
+        
+    Returns:
+        function: Función para verificar si el bot está activo
+    """
+    try:
+        # Para usar python-telegram-bot
+        from telegram import Update, ForceReply, ParseMode
+        from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+    except ImportError:
+        logger.error("❌ No se pudo importar python-telegram-bot. Instalarlo con pip install python-telegram-bot==13.15")
+        # Devolver una función dummy que siempre retorna True
+        return lambda: True
+    
+    # Estado global del bot
+    bot_status = {"active": True}
+    
+    # Función para verificar si el chat es autorizado
+    def authorized_only(func):
+        async def wrapped(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                await update.message.reply_text("⛔️ No estás autorizado para este comando.")
+                return
+            return await func(update, context)
+        return wrapped
+    
+    # Comandos de control
+    @authorized_only
+    async def start_command(update, context):
+        bot_status["active"] = True
+        await update.message.reply_text("✅ Bot activado. Procesando transacciones y emitiendo señales.")
+    
+    @authorized_only
+    async def stop_command(update, context):
+        bot_status["active"] = False
+        await update.message.reply_text("🛑 Bot desactivado. No se procesarán nuevas transacciones ni señales.")
+    
+    @authorized_only
+    async def status_command(update, context):
+        status = "✅ Activo" if bot_status["active"] else "🛑 Inactivo"
+        active_tokens = signal_logic.get_active_candidates_count()
+        signals_today = db.count_signals_today()
+        signals_hour = db.count_signals_last_hour()
+        
+        stats = await get_performance_stats()
+        
+        await update.message.reply_text(
+            f"*Estado del Bot:* {status}\n\n"
+            f"*Monitoreo:*\n"
+            f"• Tokens actualmente monitoreados: `{active_tokens}`\n"
+            f"• Señales emitidas hoy: `{signals_today}`\n"
+            f"• Señales en la última hora: `{signals_hour}`\n\n"
+            f"*Rendimiento:*\n{stats}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    @authorized_only
+    async def config_command(update, context):
+        # Obtener y mostrar configuración actual
+        settings = db.get_all_settings()
+        config_text = "*Configuración Actual:*\n\n"
+        
+        for key, value in settings.items():
+            config_text += f"• `{key}`: `{value}`\n"
+        
+        await update.message.reply_text(config_text, parse_mode=ParseMode.MARKDOWN)
+    
+    @authorized_only
+    async def set_command(update, context):
+        # Actualizar un valor de configuración
+        if len(context.args) != 2:
+            await update.message.reply_text(
+                "⚠️ Uso incorrecto. Formato: /set clave valor\n"
+                "Ejemplo: `/set min_traders_for_signal 3`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        key = context.args[0]
+        value = context.args[1]
+        
+        try:
+            db.update_setting(key, value)
+            await update.message.reply_text(f"✅ Configuración actualizada: `{key}` = `{value}`", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error al actualizar configuración: {e}")
+    
+    @authorized_only
+    async def stats_command(update, context):
+        stats = await get_performance_stats()
+        await update.message.reply_text(
+            f"*Estadísticas de Rendimiento:*\n\n{stats}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    async def get_performance_stats():
+        try:
+            stats = db.get_signals_performance_stats()
+            if not stats:
+                return "No hay datos de rendimiento disponibles."
+            
+            stats_text = ""
+            for stat in stats:
+                timeframe = stat["timeframe"]
+                success_rate = stat["success_rate"]
+                avg_percent = stat["avg_percent_change"]
+                total = stat["total_signals"]
+                
+                emoji = "🟢" if success_rate >= 60 else "🟡" if success_rate >= 50 else "🔴"
+                stats_text += f"{emoji} *{timeframe}*: {success_rate}% éxito, {avg_percent}% promedio ({total} señales)\n"
+            
+            return stats_text
+        except Exception as e:
+            logger.error(f"Error obteniendo estadísticas: {e}")
+            return "Error al obtener estadísticas."
+    
+    # Configurar el dispatcher para comandos
+    updater = Updater(bot_token)
+    dispatcher = updater.dispatcher
+    
+    # Registrar comandos
+    dispatcher.add_handler(CommandHandler("start", start_command))
+    dispatcher.add_handler(CommandHandler("stop", stop_command))
+    dispatcher.add_handler(CommandHandler("status", status_command))
+    dispatcher.add_handler(CommandHandler("config", config_command))
+    dispatcher.add_handler(CommandHandler("set", set_command))
+    dispatcher.add_handler(CommandHandler("stats", stats_command))
+    
+    # Iniciar el bot
+    updater.start_polling()
+    logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
+    
+    # Devolver función para verificar estado
+    def is_bot_active():
+        return bot_status["active"]
+    
+    return is_bot_active
