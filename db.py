@@ -521,25 +521,6 @@ def save_failed_token(token, reason):
         
         # Insertar o actualizar
         sql = """
-        INSERT INTO failed_
-        @retry_db_operation()
-def save_failed_token(token, reason):
-    """
-    Guarda un token que falló en la detección de señales.
-    """
-    with get_connection() as conn:
-        cur = conn.cursor()
-        # Crear tabla si no existe
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS failed_tokens (
-            token TEXT PRIMARY KEY,
-            reason TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-        """)
-        
-        # Insertar o actualizar
-        sql = """
         INSERT INTO failed_tokens (token, reason)
         VALUES (%s, %s)
         ON CONFLICT (token) 
