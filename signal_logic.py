@@ -1,6 +1,7 @@
 import time
 import json
 import asyncio
+import hashlib
 from datetime import datetime
 from telegram_utils import send_telegram_message
 import db
@@ -43,7 +44,7 @@ class SignalLogic:
         self.performance_tracker = PerformanceTracker(dex_client)
         
         # Historial de señales
-        self.signals_history = []  # [(token, timestamp, confidence), ...]
+        self.signals_history = []  # [(token, timestamp, confidence, signal_id), ...]
         
         # Límite de señales por hora (throttling)
         self.signal_throttling = int(Config.get("signal_throttling", 10))
@@ -233,10 +234,14 @@ class SignalLogic:
             )
             
             # Aplicar predicción ML si está disponible
+            ml_confidence = None
             if self.ml_predictor and self.ml_predictor.model:
                 try:
                     features = self._extract_signal_features(token, info, vol_1h, market_cap)
                     success_probability = self.ml_predictor.predict_success(features)
+                    
+                    # Guardar confianza ML para reportarla separada
+                    ml_confidence = success_probability
                     
                     # Combinar confianza basada en reglas con predicción ML
                     combined_confidence = (confidence * 0.7) + (success_probability * 0.3)
@@ -260,13 +265,16 @@ class SignalLogic:
                 continue
             
             # Si pasa todas las validaciones, emitir señal
-            self.emit_signal(token, info, confidence, vol_1h, market_cap, current_price)
+            signal_id = self.emit_signal(token, info, confidence, vol_1h, market_cap, current_price, ml_confidence)
             self.signaled_tokens.add(token)
-            self.signals_history.append((token, now, confidence))
+            
+            # Añadir a historial con ID de señal
+            self.signals_history.append((token, now, confidence, signal_id))
             self.signals_last_hour.append((token, now))
             
-            # Iniciar seguimiento de rendimiento
+            # Iniciar seguimiento de rendimiento con ID
             signal_info = {
+                "signal_id": signal_id,
                 "confidence": confidence,
                 "traders_count": trader_count,
                 "total_volume": info["usd_total"]
@@ -359,8 +367,85 @@ class SignalLogic:
         }
         
         return features
+    
+    def _generate_signal_id(self, token):
+        """
+        Genera un ID único para una señal basado en el token y un timestamp.
+        
+        Args:
+            token: Dirección del token
+            
+        Returns:
+            str: ID único para la señal
+        """
+        timestamp = str(int(time.time()))
+        token_short = token[:6]  # Primeros 6 caracteres
+        # Crear un hash corto
+        hash_input = token + timestamp
+        hash_obj = hashlib.md5(hash_input.encode())
+        hash_short = hash_obj.hexdigest()[:4]
+        
+        # Formato: #{hash_corto}-{token_short}
+        return f"#{hash_short}-{token_short}"
+    
+    def _get_token_type(self, market_cap, vol_1h, vol_growth_5m):
+        """
+        Determina el tipo de token basado en sus métricas.
+        
+        Args:
+            market_cap: Market cap del token
+            vol_1h: Volumen 1h
+            vol_growth_5m: Crecimiento 5m
+            
+        Returns:
+            tuple: (tipo, emoji)
+        """
+        # Por defecto
+        token_type = "Standard"
+        emoji = "📊"
+        
+        # Micro cap
+        if market_cap < 300000:
+            token_type = "Micro Cap"
+            emoji = "💎"
+        # Pump rápido
+        elif vol_growth_5m > 0.2 and vol_1h > 10000:
+            token_type = "Pump Rápido"
+            emoji = "🚀"
+        # Token con liquidez
+        elif market_cap > 1000000 and vol_1h > 50000:
+            token_type = "Alta Liquidez"
+            emoji = "💰"
+        # Volumen creciente
+        elif vol_growth_5m > 0.1:
+            token_type = "Momentum"
+            emoji = "📈"
+            
+        return (token_type, emoji)
+    
+    def _get_risk_level(self, market_cap, vol_1h):
+        """
+        Determina el nivel de riesgo basado en market cap y volumen.
+        
+        Args:
+            market_cap: Market cap del token
+            vol_1h: Volumen 1h
+            
+        Returns:
+            tuple: (nivel_riesgo, emoji, descripción)
+        """
+        if market_cap < 200000:
+            return ("ALTO", "🔴", "Market cap extremadamente bajo")
+        elif market_cap < 500000 and vol_1h < 5000:
+            return ("ALTO", "🔴", "Baja liquidez")
+        elif market_cap < 1000000:
+            return ("MEDIO", "🟠", "Market cap bajo")
+        elif vol_1h < 10000:
+            return ("MEDIO", "🟠", "Volumen moderado")
+        else:
+            return ("BAJO", "🟢", "Buena liquidez")
                 
-    def emit_signal(self, token, info, confidence, vol_1h, market_cap, current_price):
+    def emit_signal(self, token, info, confidence, vol_1h, market_cap, current_price, ml_confidence=None):
         """
         Envía un mensaje a Telegram con la información de la señal.
         
@@ -371,7 +456,21 @@ class SignalLogic:
             vol_1h: Volumen de la última hora
             market_cap: Market cap del token
             current_price: Precio actual del token
+            ml_confidence: Confianza calculada por ML (opcional)
+            
+        Returns:
+            str: ID de la señal
         """
+        # Generar ID único para la señal
+        signal_id = self._generate_signal_id(token)
+        
+        # Obtener tipo de token
+        vol_growth = self.dex_client.get_volume_growth(token)
+        token_type, type_emoji = self._get_token_type(market_cap, vol_1h, vol_growth.get("growth_5m", 0))
+        
+        # Obtener nivel de riesgo
+        risk_level, risk_emoji, risk_desc = self._get_risk_level(market_cap, vol_1h)
+        
         traders_list = ", ".join([f"`{w[:8]}...{w[-6:]}`" for w in info["traders"]])
         usd_total = info["usd_total"]
         usd_per_trader = usd_total / len(info["traders"]) if info["traders"] else 0
@@ -400,9 +499,16 @@ class SignalLogic:
         high_quality_traders = [w for w in info["traders"] if self.scoring_system.get_score(w) >= 7.0]
         high_quality_count = len(high_quality_traders)
         
+        # Crear enlaces para exploradores
+        dexscreener_link = f"https://dexscreener.com/solana/{token}"
+        birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
+        
+        # Construir mensaje
         msg = (
-            "*🚀 Señal Daily Runner Detectada*\n\n"
-            f"Token: `{token}`\n\n"
+            f"*🚀 Señal Daily Runner {signal_id}*\n\n"
+            f"Token: `{token}`\n"
+            f"{type_emoji} Tipo: *{token_type}*\n"
+            f"{risk_emoji} Riesgo: *{risk_level}* ({risk_desc})\n\n"
             f"👥 *Traders Involucrados ({len(info['traders'])})*:\n{traders_list}\n"
             f"🎯 Traders de calidad: {high_quality_count}\n\n"
             f"💰 Volumen Total: {formatted_usd}\n"
@@ -412,18 +518,33 @@ class SignalLogic:
             f"• Vol. 1h: {formatted_vol}\n"
             f"• Market Cap: {formatted_mcap}\n"
             f"• Precio: ${current_price:.10f}\n"
-            f"• Confianza: *{confidence:.2f}* {confidence_emoji}\n\n"
+        )
+        
+        # Añadir información de confianza
+        if ml_confidence is not None:
+            msg += (
+                f"• Confianza Sistema: *{confidence:.2f}* {confidence_emoji}\n"
+                f"• Confianza ML: *{ml_confidence:.2f}*\n\n"
+            )
+        else:
+            msg += f"• Confianza: *{confidence:.2f}* {confidence_emoji}\n\n"
+        
+        # Añadir enlaces y otros detalles
+        msg += (
+            f"🔗 *Enlaces*:\n"
+            f"• [DexScreener]({dexscreener_link})\n"
+            f"• [Birdeye]({birdeye_link})\n\n"
             f"⏰ Detectado en ventana de {Config.get('signal_window_seconds', Config.SIGNAL_WINDOW_SECONDS)/60:.1f} minutos\n\n"
-            f"📊 *Seguimiento*: 10m, 30m, 1h, 2h, 4h y 24h"
+            f"📊 *Seguimiento* {signal_id}: 10m, 30m, 1h, 2h, 4h y 24h"
         )
         
         # Enviar mensaje a Telegram
         send_telegram_message(msg)
         
         # Guardar señal en la base de datos
-        signal_id = db.save_signal(token, len(info["traders"]), confidence, current_price)
+        db_signal_id = db.save_signal(token, len(info["traders"]), confidence, current_price)
         
-        print(f"📢 Señal emitida para el token {token} con confianza {confidence:.2f}")
+        print(f"📢 Señal {signal_id} emitida para el token {token} con confianza {confidence:.2f}")
         
         # Retornar el ID de la señal para futuras referencias
         return signal_id
@@ -461,10 +582,10 @@ class SignalLogic:
             hours: Horas hacia atrás para buscar señales
             
         Returns:
-            list: Lista de tuplas (token, timestamp, confidence)
+            list: Lista de tuplas (token, timestamp, confidence, signal_id)
         """
         now = time.time()
         cutoff = now - (hours * 3600)
         
-        return [(token, ts, conf) for token, ts, conf in self.signals_history 
+        return [(token, ts, conf, sig_id) for token, ts, conf, sig_id in self.signals_history 
                 if ts > cutoff]
