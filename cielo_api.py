@@ -68,11 +68,7 @@ class CieloAPI:
             "tx_types": ["swap", "transfer"],  # Incluir también transferencias
         }
         
-        # Añadir filtro de valor mínimo si existe
-        min_usd = filter_params.get("min_usd_value") if filter_params else None
-        if min_usd:
-            subscription_params["min_usd_value"] = min_usd
-        
+        # Ya no aplicamos filtro de valor mínimo
         # Registrar la suscripción
         print(f"🔄 Suscribiendo a {len(wallets)} wallets con filtros: {subscription_params}")
         
