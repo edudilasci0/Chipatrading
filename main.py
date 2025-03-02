@@ -467,7 +467,8 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
         logger.warning(f"⚠️ Error al decodificar JSON: {e}")
     except Exception as e:
         logger.error(f"🚨 Error en on_cielo_message: {e}", exc_info=True)
-        async def log_raw_message(message):
+
+async def log_raw_message(message):
     """
     Registra el mensaje completo recibido para debugging.
     """
