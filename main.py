@@ -278,12 +278,15 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
     """
     Procesa los mensajes recibidos de Cielo.
     """
-    global message_counter, transaction_counter
+    global message_counter, transaction_counter, wallets_list
     
     # Incrementar contador de mensajes
     message_counter += 1
     
     try:
+        # Log para depuración
+        logger.debug(f"Mensaje recibido: {message[:200]}...")
+        
         data = json.loads(message)
         
         # Loguear tipo de mensaje
@@ -294,67 +297,154 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
             tx_count = len(data["transactions"])
             logger.info(f"📦 Mensaje con {tx_count} transacciones recibido")
             
+            # Debuguear contenido completo de las primeras transacciones
+            if tx_count > 0:
+                logger.info(f"Ejemplo transacción: {json.dumps(data['transactions'][0])}")
+            
             for tx in data["transactions"]:
-                tx_type = tx.get("type", "")
-                usd_value = float(tx.get("amount_usd", 0))
-                wallet = tx.get("wallet", "")
-                token = tx.get("token", "")
-                
-                # Log básico de cada transacción para depuración
-                logger.info(f"📝 Tx: {tx_type}, {usd_value}$, Token: {token}, Wallet: {wallet[:8]}...")
-                
-                # Filtrar transacciones relevantes
-                min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
-                
-                # Para nuestro propósito, consideramos "swap" y "transfer" como transacciones relevantes
-                if tx_type in ["swap", "transfer"] and usd_value >= min_tx_usd:
-                    # Determinar si es compra o venta
-                    # Por defecto consideramos "swap" como compra y necesitamos 
-                    # analizar más datos para determinar la dirección
+                try:
+                    # Verificar campos obligatorios mínimos
+                    if not ("type" in tx and "wallet" in tx and "token" in tx):
+                        logger.warning(f"⚠️ Transacción con campos faltantes: {tx.keys()}")
+                        continue
+                        
+                    tx_type = tx.get("type", "")
+                    wallet = tx.get("wallet", "")
+                    token = tx.get("token", "")
                     
-                    actual_tx_type = "BUY"  # Valor predeterminado
+                    # Obtener valor USD - vamos a ser flexibles con este campo
+                    usd_value = 0.0
+                    if "amount_usd" in tx:
+                        usd_value = float(tx.get("amount_usd", 0))
+                    elif "value_usd" in tx:
+                        usd_value = float(tx.get("value_usd", 0))
+                    elif "usd_value" in tx:
+                        usd_value = float(tx.get("usd_value", 0))
+                    elif "usd_amount" in tx:
+                        usd_value = float(tx.get("usd_amount", 0))
+                    elif "amount" in tx:
+                        # Si solo tenemos 'amount' pero no en USD, aceptamos la transacción de todas formas
+                        # y le asignamos un valor USD aproximado o de referencia
+                        amount = float(tx.get("amount", 0))
+                        # Asumimos que es SOL o similar con valor significativo
+                        usd_value = amount * 100  # valor aproximado, ajustar según necesidad
+                        logger.info(f"⚠️ Usando estimación para amount: {amount} -> ${usd_value}")
                     
-                    # Si es swap, necesitamos ver el detalle de la transacción
-                    if tx_type == "swap":
-                        # Determinar si es compra o venta según los datos disponibles
-                        if "direction" in tx:
+                    # Log básico de cada transacción para depuración
+                    logger.info(f"📝 Tx: {tx_type}, {usd_value}$, Token: {token[:10]}..., Wallet: {wallet[:8]}...")
+                    
+                    # Para nuestro propósito, no filtramos por valor mínimo ahora
+                    # Consideramos "swap" y "transfer" como transacciones relevantes
+                    if tx_type in ["swap", "transfer"]:
+                        # Determinar si es compra o venta
+                        actual_tx_type = "BUY"  # Valor predeterminado
+                        
+                        # Si es swap, necesitamos ver el detalle de la transacción
+                        if tx_type == "swap" and "direction" in tx:
                             if tx["direction"] == "out":
                                 actual_tx_type = "SELL"
-                    
-                    # Incrementar contador
-                    transaction_counter += 1
-                    
-                    logger.info(f"💵 Transacción relevante: {actual_tx_type} {usd_value}$ en {token} por {wallet}")
-                    
-                    # Guardar en la BD
-                    tx_data = {
-                        "wallet": wallet,
-                        "token": token,
-                        "type": actual_tx_type,
-                        "amount_usd": usd_value
-                    }
-                    db.save_transaction(tx_data)
-                    
-                    # Añadir a la lógica de señales
-                    signal_logic.add_transaction(wallet, token, usd_value, actual_tx_type)
-                    
-                    # Si es una transacción grande, extraer features para ML
-                    if usd_value >= min_tx_usd * 2:  # Doble del mínimo para enfocarnos en transacciones significativas
-                        # Extraer características para ML
-                        features = ml_data_preparation.extract_signal_features(token, dex_client, scoring_system)
                         
-                        # Si hay modelo ML y features extraídas, predecir éxito
-                        if signal_predictor and signal_predictor.model and features:
-                            success_prob = signal_predictor.predict_success(features)
-                            
-                            # Log de predicción
-                            if success_prob > 0.7:
-                                logger.info(f"🧠 Alta probabilidad de éxito para {token}: {success_prob:.2f}")
+                        # Verificar si la wallet está en nuestra lista de seguimiento
+                        if wallet not in wallets_list:
+                            logger.info(f"⚠️ Wallet {wallet[:8]}... no está en la lista de seguimiento, ignorando")
+                            continue
+                        
+                        # Incrementar contador
+                        transaction_counter += 1
+                        
+                        logger.info(f"💵 Transacción relevante: {actual_tx_type} {usd_value}$ en {token} por {wallet[:10]}...")
+                        
+                        # Guardar en la BD
+                        tx_data = {
+                            "wallet": wallet,
+                            "token": token,
+                            "type": actual_tx_type,
+                            "amount_usd": usd_value
+                        }
+                        
+                        try:
+                            db.save_transaction(tx_data)
+                            logger.info(f"✅ Transacción guardada en BD")
+                        except Exception as e:
+                            logger.error(f"🚨 Error guardando transacción en BD: {e}")
+                        
+                        # Añadir a la lógica de señales
+                        try:
+                            signal_logic.add_transaction(wallet, token, usd_value, actual_tx_type)
+                            logger.info(f"✅ Transacción añadida a lógica de señales")
+                        except Exception as e:
+                            logger.error(f"🚨 Error añadiendo transacción a señales: {e}")
+                        
+                        # Si la transacción tiene un valor USD significativo, extraer features para ML
+                        if usd_value >= 50:  # Umbral menor para asegurar que se procesen
+                            try:
+                                # Extraer características para ML
+                                features = ml_data_preparation.extract_signal_features(token, dex_client, scoring_system)
+                                
+                                # Si hay modelo ML y features extraídas, predecir éxito
+                                if signal_predictor and signal_predictor.model and features:
+                                    success_prob = signal_predictor.predict_success(features)
+                                    logger.info(f"🧠 Probabilidad de éxito para {token[:10]}...: {success_prob:.2f}")
+                            except Exception as e:
+                                logger.error(f"🚨 Error en procesamiento ML: {e}")
+                                
+                except Exception as tx_e:
+                    logger.error(f"🚨 Error procesando transacción individual: {tx_e}")
+                    continue  # Continuamos con la siguiente transacción
     
     except json.JSONDecodeError as e:
         logger.warning(f"⚠️ Error al decodificar JSON: {e}")
     except Exception as e:
-        logger.error(f"🚨 Error en on_cielo_message: {e}")
+        logger.error(f"🚨 Error en on_cielo_message: {e}", exc_info=True)
+
+async def log_raw_message(message):
+    """
+    Registra el mensaje completo recibido para debugging.
+    """
+    try:
+        # Intentar parsear como JSON para un formato más legible
+        data = json.loads(message)
+        logger.info(f"\n-------- MENSAJE CIELO RECIBIDO --------")
+        logger.info(f"Tipo de mensaje: {data.get('type', 'No type')}")
+        
+        # Si contiene transacciones, mostrar información resumida
+        if "transactions" in data:
+            txs = data["transactions"]
+            logger.info(f"Contiene {len(txs)} transacciones")
+            
+            # Mostrar detalles de las primeras 3 transacciones como ejemplo
+            for i, tx in enumerate(txs[:3]):
+                logger.info(f"\nTransacción #{i+1}:")
+                logger.info(f"  Tipo: {tx.get('type', 'N/A')}")
+                logger.info(f"  Wallet: {tx.get('wallet', 'N/A')}")
+                logger.info(f"  Token: {tx.get('token', 'N/A')}")
+                
+                # Intentar diferentes formatos de valor
+                valor = None
+                if "amount_usd" in tx:
+                    valor = f"{tx.get('amount_usd')} USD"
+                elif "value_usd" in tx:
+                    valor = f"{tx.get('value_usd')} USD"
+                elif "usd_value" in tx:
+                    valor = f"{tx.get('usd_value')} USD"
+                elif "usd_amount" in tx:
+                    valor = f"{tx.get('usd_amount')} USD"
+                elif "amount" in tx:
+                    valor = f"{tx.get('amount')} (unidad no especificada)"
+                
+                logger.info(f"  Valor: {valor}")
+                
+                if 'direction' in tx:
+                    logger.info(f"  Dirección: {tx.get('direction', 'N/A')}")
+                
+            # Si hay más de 3, indicarlo
+            if len(txs) > 3:
+                logger.info(f"... y {len(txs) - 3} transacciones más")
+                
+        logger.info("----------------------------------------\n")
+    except Exception as e:
+        logger.error(f"Error al loguear mensaje: {e}")
+        logger.info(f"Mensaje original: {message[:200]}...")
 
 def handle_shutdown(sig, frame):
     """
@@ -463,6 +553,7 @@ async def main():
         
         # 10. Configurar callback para mensajes de Cielo
         async def handle_message(msg):
+            await log_raw_message(msg)  # Primero hacer log del mensaje completo
             await on_cielo_message(msg, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor)
         
         # 11. Conectar a Cielo API y suscribir wallets
@@ -472,14 +563,13 @@ async def main():
         filter_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],  # Incluir swaps y transferencias
-            "min_usd_value": float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
+            # Ya no filtramos por valor mínimo en la suscripción
         }
         
         # 12. Enviar mensaje de inicio exitoso
         send_telegram_message(
             "🚀 *ChipaTrading Bot Iniciado*\n\n"
             f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
-            f"• Monitoreo de transacciones: `>{Config.get('min_transaction_usd')}$`\n"
             f"• Validación RugCheck: `{'Activa' if rugcheck_jwt else 'Inactiva'}`\n"
             f"• Modelo ML: `{'Cargado' if model_loaded else 'Pendiente'}`\n\n"
             "Sistema listo para detectar señales Daily Runner. ¡Buenas operaciones! 📊"
