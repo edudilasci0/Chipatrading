@@ -13,20 +13,24 @@ except ImportError:
         # Intenta la importación original
         from solana.keypair import Keypair
     except ImportError:
-        # Si ambas fallan, crea una implementación básica para evitar que el programa falle
-        print("⚠️ No se pudo importar Keypair de solana o solders.")
-        print("⚠️ La funcionalidad de RugCheck estará desactivada.")
-        
-        # Clase mock para permitir que el programa continúe sin la funcionalidad completa
-        class Keypair:
-            @staticmethod
-            def from_secret_key(secret_key):
-                class MockKeypair:
-                    def sign(self, message):
-                        class MockSignature:
-                            signature = b'0' * 64  # Firma ficticia
-                        return MockSignature()
-                return MockKeypair()
+        try:
+            # Última opción con solana.key
+            from solana.key import Keypair
+        except ImportError:
+            # Si todas fallan, crea una implementación básica para evitar que el programa falle
+            print("⚠️ No se pudo importar Keypair de solana o solders.")
+            print("⚠️ La funcionalidad de RugCheck estará desactivada.")
+            
+            # Clase mock para permitir que el programa continúe sin la funcionalidad completa
+            class Keypair:
+                @staticmethod
+                def from_secret_key(secret_key):
+                    class MockKeypair:
+                        def sign(self, message):
+                            class MockSignature:
+                                signature = b'0' * 64  # Firma ficticia
+                            return MockSignature()
+                    return MockKeypair()
 
 class RugCheckAPI:
     """
@@ -55,7 +59,11 @@ class RugCheckAPI:
             return self.jwt_token
             
         # Intentar obtener nuevo token
-        return login_rugcheck_solana()
+        self.jwt_token = login_rugcheck_solana()
+        if self.jwt_token:
+            self.token_expiry = time.time() + 3600  # Expira en 1 hora
+            
+        return self.jwt_token
     
     def get_token_report(self, token_mint):
         """
@@ -102,6 +110,13 @@ class RugCheckAPI:
         Returns:
             bool: True si es seguro, False si no
         """
+        # Autenticar si es necesario
+        if not self.jwt_token:
+            self.jwt_token = self.authenticate()
+            if not self.jwt_token:
+                print(f"⚠️ No se pudo autenticar con RugCheck para validar {token_mint}")
+                return False
+                
         return validar_seguridad_contrato(self.jwt_token, token_mint, min_score)
 
 # Implementación de funciones para mantener compatibilidad
@@ -115,9 +130,12 @@ def login_rugcheck_solana(private_key=None, wallet_public_key=None):
     # Usar valores de configuración si no se proporcionan
     if private_key is None and Config.RUGCHECK_PRIVATE_KEY:
         try:
+            # Convertir string hexadecimal a bytes
             private_key = unhexlify(Config.RUGCHECK_PRIVATE_KEY)
-        except:
-            print("⚠️ Error al decodificar RUGCHECK_PRIVATE_KEY")
+            print(f"✅ Clave privada decodificada correctamente para RugCheck")
+        except Exception as e:
+            print(f"⚠️ Error al decodificar RUGCHECK_PRIVATE_KEY: {e}")
+            print("Debe ser una cadena hexadecimal (ejemplo: '4a2c3d...')")
             return None
             
     if wallet_public_key is None:
@@ -207,7 +225,7 @@ def get_token_report_summary(jwt_token, token_mint):
                 return None
             else:
                 print(f"⚠️ Error al obtener reporte de RugCheck: {response.status_code} - {response.text}")
-                if attempt < max_attempts - 1:
+                if attempt < max_attempts - an_attempts - 1:
                     print(f"Reintentando ({attempt+1}/{max_attempts})...")
                     time.sleep(2)
                 else:
@@ -249,10 +267,6 @@ def validar_seguridad_contrato(jwt_token, token_mint, min_score=50):
     if score < min_score:
         print(f"⚠️ Token {token_mint} tiene score bajo en RugCheck: {score}")
         return False
-        
-    # Si pasó todas las validaciones, es seguro
-    print(f"✅ Token {token_mint} pasó la validación de RugCheck con score {score}")
-    return True
         
     # Si pasó todas las validaciones, es seguro
     print(f"✅ Token {token_mint} pasó la validación de RugCheck con score {score}")
