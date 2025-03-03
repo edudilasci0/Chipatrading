@@ -13,6 +13,8 @@ class PerformanceTracker:
     """
     
     TRACK_INTERVALS = [
+        (3, "3m"),        # 3 minutos
+        (5, "5m"),        # 5 minutos
         (10, "10m"),      # 10 minutos
         (30, "30m"),      # 30 minutos
         (60, "1h"),       # 1 hora
@@ -55,7 +57,8 @@ class PerformanceTracker:
             "max_gain": 0,
             "confidence": signal_info.get("confidence", 0),
             "traders_count": signal_info.get("traders_count", 0),
-            "total_volume": signal_info.get("total_volume", 0)
+            "total_volume": signal_info.get("total_volume", 0),
+            "signal_id": signal_info.get("signal_id", None)  # Guardar el ID de la señal
         }
         
         self.signal_performance[token] = performance_data
@@ -135,13 +138,25 @@ class PerformanceTracker:
         else:
             emoji = "❌"  # Muy negativo
         
+        # Obtener el ID de la señal
+        signal_id = self.signal_performance[token].get("signal_id", "")
+        
+        # Crear enlaces a exploradores
+        dexscreener_link = f"https://dexscreener.com/solana/{token}"
+        birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
+        neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
+        
         # Formatear mensaje
         message = (
-            f"*🔍 Seguimiento {timeframe}*\n\n"
+            f"*🔍 Seguimiento {timeframe} {signal_id}*\n\n"
             f"Token: `{token}`\n"
             f"Cambio: *{percent_change:.2f}%* {emoji}\n"
             f"Confianza inicial: `{self.signal_performance[token]['confidence']:.2f}`\n"
-            f"Traders involucrados: `{self.signal_performance[token]['traders_count']}`\n"
+            f"Traders involucrados: `{self.signal_performance[token]['traders_count']}`\n\n"
+            f"🔗 *Enlaces*:\n"
+            f"• [DexScreener]({dexscreener_link})\n"
+            f"• [Birdeye]({birdeye_link})\n"
+            f"• [Neo BullX]({neobullx_link})\n"
         )
         
         # Enviar mensaje a Telegram
