@@ -710,7 +710,7 @@ async def maintenance_check_task():
                     # Si ambos están presentes, determinar dirección y token
                     if token0 and token1:
                         # SOL y tokens comunes generalmente son token1 en swaps
-                        sol_token = "So11111
+                        sol_token = "So11111"
     
     # Incrementar contador de mensajes
     message_counter += 1
