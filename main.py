@@ -37,6 +37,7 @@ running = True
 signal_predictor = None
 ml_data_preparation = None
 is_bot_active = None
+cielo_ws_connection = None  # Variable para mantener la conexión WebSocket
 
 # Variables para monitoreo
 message_counter = 0
@@ -147,9 +148,9 @@ async def daily_summary_task(signal_logic, signal_predictor=None):
             # Añadir resumen de señales recientes si hay alguna
             if recent_signals:
                 summary_msg += "\n*🔍 Últimas Señales (24h)*\n"
-                for token, ts, conf in recent_signals[:5]:  # Mostrar máximo 5
+                for token, ts, conf, sig_id in recent_signals[:5]:  # Mostrar máximo 5
                     ts_str = datetime.fromtimestamp(ts).strftime('%H:%M')
-                    summary_msg += f"• `{token[:10]}...` - Confianza: {conf:.2f} ({ts_str})\n"
+                    summary_msg += f"• {sig_id} `{token[:10]}...` - Confianza: {conf:.2f} ({ts_str})\n"
                 
                 if len(recent_signals) > 5:
                     summary_msg += f"...y {len(recent_signals) - 5} más\n"
@@ -215,6 +216,11 @@ async def monitoring_task():
         try:
             # Esperar 10 minutos
             await asyncio.sleep(600)
+            
+            # Verificar si el bot está activo, si no, omitir el mensaje
+            if is_bot_active and not is_bot_active():
+                logger.info("⏸️ Bot en modo inactivo, omitiendo mensaje de estado")
+                continue
             
             now = time.time()
             elapsed_since_last_log = now - last_counter_log
@@ -309,6 +315,11 @@ async def maintenance_check_task():
     while running:
         try:
             await asyncio.sleep(900)  # Verificar cada 15 minutos
+            
+            # Verificar si el bot está activo, si no, omitir verificación
+            if is_bot_active and not is_bot_active():
+                logger.info("⏸️ Bot en modo inactivo, omitiendo verificación de mantenimiento")
+                continue
             
             now = time.time()
             # Si no se han procesado mensajes en 30 minutos, puede haber un problema
@@ -506,13 +517,52 @@ async def log_raw_message(message):
         logger.error(f"Error al loguear mensaje: {e}")
         logger.info(f"Mensaje original: {message[:200]}...")
 
+async def manage_websocket_connection(cielo_api, wallets_list, handle_message, filter_params):
+    """
+    Función que maneja la conexión WebSocket de Cielo basada en el estado del bot.
+    
+    Args:
+        cielo_api: Instancia de CieloAPI
+        wallets_list: Lista de wallets a monitorear
+        handle_message: Callback para mensajes recibidos
+        filter_params: Parámetros de filtro para la API
+    """
+    global cielo_ws_connection, is_bot_active
+    
+    while running:
+        # Verificar si el bot está activo
+        bot_active = is_bot_active and is_bot_active()
+        
+        if bot_active and cielo_ws_connection is None:
+            # Si el bot está activo y no hay conexión, iniciarla
+            logger.info("🔄 Iniciando conexión WebSocket con Cielo API...")
+            cielo_ws_connection = asyncio.create_task(
+                cielo_api.run_forever_wallets(wallets_list, handle_message, filter_params)
+            )
+            send_telegram_message("📡 *Conexión a Cielo API iniciada*\nEl bot está comenzando a procesar transacciones.")
+        
+        elif not bot_active and cielo_ws_connection is not None:
+            # Si el bot está inactivo y hay conexión, cancelarla
+            logger.info("🛑 Cancelando conexión WebSocket con Cielo API...")
+            cielo_ws_connection.cancel()
+            cielo_ws_connection = None
+            send_telegram_message("🔌 *Conexión a Cielo API detenida*\nBot en modo inactivo para ahorrar créditos API.")
+        
+        # Verificar estado cada 30 segundos
+        await asyncio.sleep(30)
+
 def handle_shutdown(sig, frame):
     """
     Maneja el cierre del programa.
     """
-    global running
+    global running, cielo_ws_connection
     print("\n🛑 Señal de cierre recibida, terminando tareas...")
     running = False
+    
+    # Cancelar conexión WebSocket si existe
+    if cielo_ws_connection is not None:
+        cielo_ws_connection.cancel()
+        cielo_ws_connection = None
     
     # Intentar guardar estados antes de salir
     try:
@@ -645,10 +695,7 @@ async def main():
             await log_raw_message(msg)  # Primero hacer log del mensaje completo
             await on_cielo_message(msg, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor)
         
-        # 13. Conectar a Cielo API y suscribir wallets
-        logger.info("🔄 Conectando a Cielo API...")
-        cielo = CieloAPI(Config.CIELO_API_KEY)
-        
+        # 13. Configurar parámetros de filtro para Cielo API
         filter_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],  # Incluir swaps y transferencias
@@ -665,9 +712,12 @@ async def main():
             "Sistema listo para detectar señales Daily Runner. ¡Buenas operaciones! 📊"
         )
         
-        # 15. Ejecutar el WebSocket (esto bloquea indefinidamente)
-        logger.info("📡 Iniciando suscripción a wallets...")
-        await cielo.run_forever_wallets(wallets_list, handle_message, filter_params)
+        # 15. Iniciar manejo de conexión WebSocket con Cielo (maneja conexión según estado del bot)
+        logger.info("📡 Iniciando gestión de conexión con Cielo API...")
+        cielo = CieloAPI(Config.CIELO_API_KEY)
+        
+        # 16. Iniciar tarea de gestión de conexión WebSocket que se activa/desactiva según estado del bot
+        await manage_websocket_connection(cielo, wallets_list, handle_message, filter_params)
         
     except Exception as e:
         logger.critical(f"🚨 Error crítico en la función principal: {e}", exc_info=True)
