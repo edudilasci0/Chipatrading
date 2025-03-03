@@ -502,6 +502,7 @@ class SignalLogic:
         # Crear enlaces para exploradores
         dexscreener_link = f"https://dexscreener.com/solana/{token}"
         birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
+        neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
         
         # Construir mensaje
         msg = (
@@ -533,7 +534,8 @@ class SignalLogic:
         msg += (
             f"🔗 *Enlaces*:\n"
             f"• [DexScreener]({dexscreener_link})\n"
-            f"• [Birdeye]({birdeye_link})\n\n"
+            f"• [Birdeye]({birdeye_link})\n"
+            f"• [Neo BullX]({neobullx_link})\n\n"
             f"⏰ Detectado en ventana de {Config.get('signal_window_seconds', Config.SIGNAL_WINDOW_SECONDS)/60:.1f} minutos\n\n"
             f"📊 *Seguimiento* {signal_id}: 10m, 30m, 1h, 2h, 4h y 24h"
         )
