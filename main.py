@@ -777,16 +777,26 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                         except Exception as e:
                             logger.error(f"Error registrando profit: {e}")
                 
+                # Actualizar score del wallet
+                try:
+                    scoring_system.update_score_on_trade(wallet, {
+                        "type": actual_tx_type,
+                        "token": token,
+                        "amount_usd": usd_value
+                    })
+                except Exception as e:
+                    logger.error(f"Error actualizando score: {e}")
+                
                 # NUEVO: Actualizar metadatos del token
                 try:
                     # Obtener precio actual
-                    _, _, current_price = await dex_client.fetch_token_data(token)
+                    price = await dex_client.get_token_price(token)
                     
                     # Actualizar metadatos si tenemos precio
-                    if current_price > 0:
-                        db.update_token_metadata(token, max_price=current_price, max_volume=usd_value)
-                except:
-                    pass
+                    if price > 0:
+                        db.update_token_metadata(token, max_price=price, max_volume=usd_value)
+                except Exception as e:
+                    logger.error(f"Error actualizando metadatos del token: {e}")
                 
                 # Añadir a la lógica de señales
                 try:
@@ -821,126 +831,6 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
         with stats_lock:
             performance_stats["errors"] += 1
             performance_stats["last_error"] = (time.time(), str(e))
-
-async def log_raw_message(message):
-    """
-    Registra el mensaje completo recibido para debugging.
-    """
-    try:
-        # Intentar parsear como JSON para un formato más legible
-        data = json.loads(message)
-        logger.debug(f"\n-------- MENSAJE CIELO RECIBIDO --------")
-        logger.debug(f"Tipo de mensaje: {data.get('type', 'No type')}")
-        
-        # Si contiene datos de transacción en el nuevo formato
-        if data.get("type") == "tx" and "data" in data:
-            tx_data = data["data"]
-            logger.debug(f"Contiene datos de transacción")
-            
-            # Mostrar detalles relevantes
-            logger.debug(f"  Wallet: {tx_data.get('wallet', 'N/A')}")
-            
-            # Mostrar token según el tipo de transacción
-            if tx_data.get("tx_type") == "transfer":
-                logger.debug(f"  Token: {tx_data.get('contract_address', 'N/A')}")
-            elif tx_data.get("tx_type") == "swap":
-                logger.debug(f"  Token0: {tx_data.get('token0_address', 'N/A')}")
-                logger.debug(f"  Token1: {tx_data.get('token1_address', 'N/A')}")
-            
-            logger.debug(f"  Tipo: {tx_data.get('tx_type', 'N/A')}")
-            
-            # Mostrar detalles de valor
-            if "amount_usd" in tx_data:
-                logger.debug(f"  Valor USD: {tx_data.get('amount_usd')} USD")
-            if "token0_amount_usd" in tx_data:
-                logger.debug(f"  Valor token0: {tx_data.get('token0_amount_usd')} USD")
-            if "token1_amount_usd" in tx_data:
-                logger.debug(f"  Valor token1: {tx_data.get('token1_amount_usd')} USD")
-                
-        logger.debug("----------------------------------------\n")
-    except Exception as e:
-        logger.error(f"Error al loguear mensaje: {e}")
-        logger.debug(f"Mensaje original: {message[:200]}...")
-
-async def manage_websocket_connection(cielo_api, wallets_list, handle_message, filter_params):
-    """
-    Función que maneja la conexión WebSocket de Cielo basada en el estado del bot.
-    Versión mejorada con mejor manejo de errores.
-    
-    Args:
-        cielo_api: Instancia de CieloAPI
-        wallets_list: Lista de wallets a monitorear
-        handle_message: Callback para mensajes recibidos
-        filter_params: Parámetros de filtro para la API
-    """
-    global cielo_ws_connection, is_bot_active
-    
-    connection_failures = 0
-    last_connection_time = 0
-    
-    while running:
-        try:
-            # Verificar si el bot está activo
-            bot_active = is_bot_active and is_bot_active()
-            
-            if bot_active and cielo_ws_connection is None:
-                # Si el bot está activo y no hay conexión, iniciarla
-                logger.info("🔄 Iniciando conexión WebSocket con Cielo API...")
-                
-                # NUEVO: Limitar frecuencia de reconexión
-                time_since_last = time.time() - last_connection_time
-                if time_since_last < 10 and connection_failures > 0:
-                    wait_time = 10 - time_since_last
-                    logger.warning(f"Demasiados intentos rápidos de conexión. Esperando {wait_time:.1f}s...")
-                    await asyncio.sleep(wait_time)
-                
-                # Actualizar timestamp de conexión
-                last_connection_time = time.time()
-                
-                try:
-                    cielo_ws_connection = asyncio.create_task(
-                        cielo_api.run_forever_wallets(wallets_list, handle_message, filter_params)
-                    )
-                    connection_failures = 0
-                    send_telegram_message("📡 *Conexión a Cielo API iniciada*\nEl bot está comenzando a procesar transacciones.")
-                except Exception as e:
-                    logger.error(f"Error iniciando conexión WebSocket: {e}")
-                    connection_failures += 1
-                    
-                    # Si hay múltiples fallos, notificar
-                    if connection_failures >= 3:
-                        send_telegram_message(
-                            "⚠️ *Problema de conexión*\n"
-                            f"Error al conectar con Cielo API: {str(e)}\n"
-                            "Reintentando automáticamente..."
-                        )
-            
-            elif not bot_active and cielo_ws_connection is not None:
-                # Si el bot está inactivo y hay conexión, cancelarla
-                logger.info("🛑 Cancelando conexión WebSocket con Cielo API...")
-                cielo_ws_connection.cancel()
-                cielo_ws_connection = None
-                send_telegram_message("🔌 *Conexión a Cielo API detenida*\nBot en modo inactivo para ahorrar créditos API.")
-            
-            # NUEVO: Verificar estado de conexión periódicamente
-            if cielo_ws_connection is not None and cielo_ws_connection.done():
-                exception = cielo_ws_connection.exception()
-                if exception:
-                    logger.error(f"Conexión WebSocket terminada con error: {exception}")
-                    cielo_ws_connection = None
-                    connection_failures += 1
-            
-            # Verificar estado cada 30 segundos
-            await asyncio.sleep(30)
-            
-        except Exception as e:
-            logger.error(f"Error en manage_websocket_connection: {e}", exc_info=True)
-            connection_failures += 1
-            
-            # Registrar error
-            with stats_lock:
-                performance_stats["errors"] += 1
-                performance_stats["last_error"] = (time.time(), str(e))
                 
             # Si hay errores repetidos, notificar
             if connection_failures >= 5:
