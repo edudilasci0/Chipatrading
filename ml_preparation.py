@@ -118,8 +118,8 @@ class MLDataPreparation:
             tx_per_trader = num_transactions / num_traders if num_traders > 0 else 0
             
             # Obtener datos de mercado
-            dex_client.update_volume_history(token)
-            vol_1h, market_cap, price = dex_client.fetch_token_data(token)
+            await dex_client.update_volume_history(token)
+vol_1h, market_cap, price = await dex_client.fetch_token_data(token)
             vol_growth = dex_client.get_volume_growth(token)
             
             # NUEVO: Features normalizados
