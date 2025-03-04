@@ -119,7 +119,7 @@ class MLDataPreparation:
             
             # Obtener datos de mercado
             await dex_client.update_volume_history(token)
-vol_1h, market_cap, price = await dex_client.fetch_token_data(token)
+            vol_1h, market_cap, price = await dex_client.fetch_token_data(token)
             vol_growth = dex_client.get_volume_growth(token)
             
             # NUEVO: Features normalizados
