@@ -225,7 +225,7 @@ def get_token_report_summary(jwt_token, token_mint):
                 return None
             else:
                 print(f"⚠️ Error al obtener reporte de RugCheck: {response.status_code} - {response.text}")
-                if attempt < max_attempts - an_attempts - 1:
+                if attempt < max_attempts - 1:
                     print(f"Reintentando ({attempt+1}/{max_attempts})...")
                     time.sleep(2)
                 else:
