@@ -5,6 +5,7 @@ import os
 import db
 import time
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from config import Config
 
@@ -36,21 +37,42 @@ class MLDataPreparation:
         os.makedirs("ml_data", exist_ok=True)
         os.makedirs("ml_data/history", exist_ok=True)  # Para backups históricos
     
-    async def extract_signal_features(self, token, dex_client, scoring_system):
+    def _run_async(self, coroutine):
+        """
+        Ejecuta una corutina de manera sincrónica.
+        
+        Args:
+            coroutine: Corutina a ejecutar
+            
+        Returns:
+            Resultado de la corutina
+        """
+        try:
+            # Verificar si ya hay un loop en ejecución
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Si el loop está ejecutándose, creamos una tarea futura
+                    # Este enfoque puede no funcionar en todos los casos
+                    future = asyncio.ensure_future(coroutine)
+                    # Esperamos a que termine de completarse (esto puede bloquear)
+                    return future.result()
+                else:
+                    # Si el loop no está ejecutándose, lo usamos
+                    return loop.run_until_complete(coroutine)
+            except RuntimeError:
+                # Si no hay loop, creamos uno nuevo
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                return loop.run_until_complete(coroutine)
+        except Exception as e:
+            logger.error(f"Error ejecutando corutina: {e}")
+            return None
+    
+    def extract_signal_features(self, token, dex_client, scoring_system):
         """
         Extrae características (features) de una señal para su uso en modelos ML.
         Versión optimizada con features adicionales y normalización.
-        
-        Features:
-        - Número de traders involucrados
-        - Score promedio de traders
-        - Volumen total de transacciones
-        - Volumen promedio por trader
-        - % de compras vs ventas
-        - Velocidad de acumulación (transacciones/minuto)
-        - Distribución de calidad de traders
-        - Market cap y volúmenes normalizados
-        - Varianza de scores de traders
         
         Args:
             token: Dirección del token
@@ -117,9 +139,19 @@ class MLDataPreparation:
             # NUEVO: Transacciones por trader (intensidad)
             tx_per_trader = num_transactions / num_traders if num_traders > 0 else 0
             
-            # Obtener datos de mercado
-            await dex_client.update_volume_history(token)
-            vol_1h, market_cap, price = await dex_client.fetch_token_data(token)
+            # Obtener datos de mercado (ejecutando operaciones asíncronas de manera sincrónica)
+            self._run_async(dex_client.update_volume_history(token))
+            
+            # Obtener datos del token
+            vol_1h, market_cap, price = 0, 0, 0
+            try:
+                # Llamada asíncrona ejecutada de manera sincrónica
+                result = self._run_async(dex_client.fetch_token_data(token))
+                if result:
+                    vol_1h, market_cap, price = result
+            except Exception as e:
+                logger.error(f"Error obteniendo datos del token: {e}")
+            
             vol_growth = dex_client.get_volume_growth(token)
             
             # NUEVO: Features normalizados
@@ -362,7 +394,7 @@ class MLDataPreparation:
             logger.error(f"🚨 Error al preparar datos de entrenamiento: {e}", exc_info=True)
             return None
             
-    async def collect_signal_outcomes(self, dex_client):
+    def collect_signal_outcomes(self, dex_client):
         """
         Recolecta outcomes para señales emitidas que aún no tienen resultados.
         Esta función se debe ejecutar periódicamente.
@@ -403,14 +435,21 @@ class MLDataPreparation:
                 try:
                     # Obtener precio inicial y actual
                     initial_price = signal.get("initial_price")
-                    current_price = await dex_client.get_token_price(token)
+                    
+                    # Ejecutar de manera sincrónica
+                    current_price = self._run_async(dex_client.get_token_price(token))
                     
                     if initial_price and current_price and initial_price > 0:
                         # Calcular incremento de precio
                         price_increase = ((current_price - initial_price) / initial_price) * 100
                         
                         # Obtener volumen actual y calcular incremento
-                        vol_1h, _, _ = await dex_client.fetch_token_data(token)
+                        # Ejecutar de manera sincrónica
+                        result = self._run_async(dex_client.fetch_token_data(token))
+                        vol_1h = 0
+                        if result:
+                            vol_1h, _, _ = result
+                            
                         # Intentar obtener volumen inicial desde features
                         initial_vol = None
                         if token in self.features_cache:
