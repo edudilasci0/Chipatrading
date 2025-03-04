@@ -833,13 +833,13 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
             performance_stats["last_error"] = (time.time(), str(e))
                 
             # Si hay errores repetidos, notificar
-            if connection_failures >= 5:
+            if performance_stats["errors"] >= 5:
                 send_telegram_message(
                     "🚨 *Error crítico de conexión*\n"
                     f"Múltiples fallos al gestionar la conexión: {str(e)}\n"
                     "Verificar logs para más detalles."
                 )
-                connection_failures = 0  # Resetear para no spammear
+                performance_stats["errors"] = 0  # Resetear para no spammear
                 
             await asyncio.sleep(60)  # Esperar 1 minuto antes de reintentar
 
@@ -885,7 +885,31 @@ def handle_shutdown(sig, frame):
     print("👋 ChipaTrading Bot finalizado")
     sys.exit(0)
 
-async def main():
+async 
+def log_raw_message(message):
+    """Registra los mensajes crudos recibidos del WebSocket."""
+    logging.debug(f"Mensaje recibido: {message}")
+
+import asyncio
+import websockets
+
+async def manage_websocket_connection(cielo, wallets_list, handle_message, filter_params):
+    """Gestiona la conexión WebSocket con Cielo API."""
+    uri = cielo.get_websocket_uri()
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                logging.info("✅ Conectado a Cielo WebSocket")
+                while True:
+                    message = await websocket.recv()
+                    log_raw_message(message)
+                    await handle_message(message, wallets_list, filter_params)
+        except Exception as e:
+            logging.error(f"⚠️ Error en la conexión WebSocket: {e}")
+            await asyncio.sleep(5)  # Espera antes de intentar reconectar
+
+
+def main():
     """
     Función principal que inicializa y ejecuta el bot.
     Versión optimizada con mejor gestión de errores y recursos.
@@ -1087,3 +1111,25 @@ if __name__ == "__main__":
             pass
             
         sys.exit(1)
+
+def log_raw_message(message):
+    """Registra los mensajes crudos recibidos del WebSocket."""
+    logging.debug(f"Mensaje recibido: {message}")
+
+import asyncio
+import websockets
+
+async def manage_websocket_connection(cielo, wallets_list, handle_message, filter_params):
+    """Gestiona la conexión WebSocket con Cielo API."""
+    uri = cielo.get_websocket_uri()
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                logging.info("✅ Conectado a Cielo WebSocket")
+                while True:
+                    message = await websocket.recv()
+                    log_raw_message(message)
+                    await handle_message(message, wallets_list, filter_params)
+        except Exception as e:
+            logging.error(f"⚠️ Error en la conexión WebSocket: {e}")
+            await asyncio.sleep(5)  # Espera antes de intentar reconectar
