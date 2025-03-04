@@ -322,7 +322,7 @@ class SignalPredictor:
                             'importance': importance
                         }
             
-            return success_probability, feature_contributions
+            return success_probability
             
         except Exception as e:
             print(f"🚨 Error en predicción: {e}")
