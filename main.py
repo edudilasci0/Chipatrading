@@ -627,17 +627,8 @@ async def maintenance_check_task():
             with stats_lock:
                 performance_stats["errors"] += 1
                 performance_stats["last_error"] = (time.time(), str(e))
-                async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
-    """
-    Procesa los mensajes recibidos de Cielo.
-    Versión optimizada con mejor manejo de errores y rastreo de rendimiento.
-    """
-    global message_counter, transaction_counter, wallets_list, is_bot_active
-    
-    # Verificar si el bot está activo
-    if is_bot_active and not is_bot_active():
-        logger.debug("⏸️ Bot en modo inactivo, ignorando mensaje")
-        return async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
+
+async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
     """
     Procesa los mensajes recibidos de Cielo.
     Versión optimizada con mejor manejo de errores y rastreo de rendimiento.
@@ -660,8 +651,7 @@ async def maintenance_check_task():
         
         # Loguear tipo de mensaje
         if "type" in data:
-            logger.debug(f"📡 Mensaje tipo: {data['type']}")
-        
+            logger.debug(f"📡 Mensaje tipo: {data['type']}")        
         # Procesar transacción si es un mensaje de tipo 'tx'
         if data.get("type") == "tx" and "data" in data:
             tx_data = data["data"]
@@ -710,71 +700,6 @@ async def maintenance_check_task():
                     # Si ambos están presentes, determinar dirección y token
                     if token0 and token1:
                         # SOL y tokens comunes generalmente son token1 en swaps
-                        sol_token = "So11111"
-    
-    # Incrementar contador de mensajes
-    message_counter += 1
-    
-    try:
-        # Log para depuración inicial del mensaje completo
-        logger.debug(f"Mensaje recibido (primeros 200 caracteres): {message[:200]}...")
-        
-        data = json.loads(message)
-        
-        # Loguear tipo de mensaje
-        if "type" in data:
-            logger.debug(f"📡 Mensaje tipo: {data['type']}")
-        
-        # Procesar transacción si es un mensaje de tipo 'tx'
-        if data.get("type") == "tx" and "data" in data:
-            tx_data = data["data"]
-            logger.debug(f"📦 Mensaje de transacción recibido: {json.dumps(tx_data)[:200]}...")
-            
-            try:
-                # Verificar que tenemos wallet
-                if "wallet" not in tx_data:
-                    logger.warning("⚠️ Transacción sin wallet, ignorando")
-                    return
-                
-                # Extraer wallet
-                wallet = tx_data.get("wallet", "unknown_wallet")
-                
-                # OPTIMIZACIÓN: Verificar lista de wallets con set para O(1)
-                wallet_set = set(wallets_list)
-                if wallet not in wallet_set:
-                    logger.debug(f"⚠️ Wallet {wallet[:8]}... no está en la lista de seguimiento, ignorando")
-                    return
-                
-                # Determinar tipo de transacción
-                tx_type = tx_data.get("tx_type", "unknown_type")
-                token = None
-                actual_tx_type = None
-                usd_value = 0.0
-                
-                # Procesar según tipo de transacción
-                if tx_type == "transfer":
-                    # Para transferencias, usar contract_address
-                    token = tx_data.get("contract_address")
-                    
-                    # En transferencias, si la wallet está en 'to', es BUY; si está en 'from', es SELL
-                    if wallet == tx_data.get("to"):
-                        actual_tx_type = "BUY"
-                    elif wallet == tx_data.get("from"):
-                        actual_tx_type = "SELL"
-                    
-                    # Obtener valor USD
-                    usd_value = float(tx_data.get("amount_usd", 0))
-                    
-                elif tx_type == "swap":
-                    # Para swaps, necesitamos determinar qué token y dirección
-                    token0 = tx_data.get("token0_address")
-                    token1 = tx_data.get("token1_address")
-                    
-                    # Si ambos están presentes, determinar dirección y token
-                    if token0 and token1:
-                        # SOL y tokens comunes generalmente son token1 en swaps
-                        sol_token = "So11111
-                    # SOL y tokens comunes generalmente son token1 en swaps
                         sol_token = "So11111111111111111111111111111111111111112"
                         usdc_token = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
                         usdt_token = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
