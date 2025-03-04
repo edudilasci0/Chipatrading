@@ -87,7 +87,7 @@ class CieloAPI:
         
         # Ya no aplicamos filtro de valor mínimo
         # Registrar la suscripción
-        print(f"🔄 Suscribiendo a {len(wallets)} wallets con filtros: {subscription_params}")
+        print(f"🔄 Suscribiendo a {len(wallets)} wallets con filtros: {filter_params}")
         
         # Suscribir wallets en bloques para no saturar la API
         chunk_size = 50  # Suscribir de 50 en 50
