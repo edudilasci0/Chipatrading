@@ -934,7 +934,9 @@ def main():
         Config.load_dynamic_config()
         
         # 4. Enviar secuencia de inicio a Telegram
-        await send_boot_sequence()
+        async def boot_and_run():
+    await send_boot_sequence()
+asyncio.run(boot_and_run())
         
         # 5. Configurar RugCheck a través de la clase RugCheckAPI
         rugcheck_api = None
