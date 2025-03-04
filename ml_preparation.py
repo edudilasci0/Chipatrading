@@ -36,7 +36,7 @@ class MLDataPreparation:
         os.makedirs("ml_data", exist_ok=True)
         os.makedirs("ml_data/history", exist_ok=True)  # Para backups históricos
     
-    def extract_signal_features(self, token, dex_client, scoring_system):
+    async def extract_signal_features(self, token, dex_client, scoring_system):
         """
         Extrae características (features) de una señal para su uso en modelos ML.
         Versión optimizada con features adicionales y normalización.
@@ -269,7 +269,7 @@ class MLDataPreparation:
             df = pd.DataFrame(list(self.outcomes_cache.values()))
             df.to_csv(filename, index=False)
             
-# NUEVO: Guardar también un backup con timestamp
+            # NUEVO: Guardar también un backup con timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_file = f"ml_data/history/outcomes_{timestamp}.csv"
             df.to_csv(backup_file, index=False)
@@ -362,7 +362,7 @@ class MLDataPreparation:
             logger.error(f"🚨 Error al preparar datos de entrenamiento: {e}", exc_info=True)
             return None
             
-    def collect_signal_outcomes(self, dex_client):
+    async def collect_signal_outcomes(self, dex_client):
         """
         Recolecta outcomes para señales emitidas que aún no tienen resultados.
         Esta función se debe ejecutar periódicamente.
@@ -403,14 +403,14 @@ class MLDataPreparation:
                 try:
                     # Obtener precio inicial y actual
                     initial_price = signal.get("initial_price")
-                    current_price = dex_client.get_token_price(token)
+                    current_price = await dex_client.get_token_price(token)
                     
                     if initial_price and current_price and initial_price > 0:
                         # Calcular incremento de precio
                         price_increase = ((current_price - initial_price) / initial_price) * 100
                         
                         # Obtener volumen actual y calcular incremento
-                        vol_1h, _, _ = dex_client.fetch_token_data(token)
+                        vol_1h, _, _ = await dex_client.fetch_token_data(token)
                         # Intentar obtener volumen inicial desde features
                         initial_vol = None
                         if token in self.features_cache:
