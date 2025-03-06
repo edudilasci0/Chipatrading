@@ -100,6 +100,7 @@ wallet_cache = {
 
 # Inicializar logger
 logger = setup_logging()
+
 def load_wallets():
     """
     Carga las wallets desde traders_data.json con cache
@@ -321,7 +322,8 @@ async def refresh_wallets_task(interval=3600):
         except Exception as e:
             logger.error(f"⚠️ Error actualizando wallets: {e}", exc_info=True)
             await asyncio.sleep(interval)
-            async def monitoring_task():
+
+async def monitoring_task():
     """
     Tarea periódica para monitorizar el estado del bot y enviar alertas.
     Versión mejorada con más métricas.
@@ -780,7 +782,8 @@ async def manage_websocket_connection(cielo, wallets_list, handle_message, filte
         await asyncio.sleep(5)
         # Reintentar la conexión recursivamente
         await manage_websocket_connection(cielo, wallets_list, handle_message, filter_params)
-        async def main():
+
+async def main():
     """
     Función principal que inicializa y ejecuta el bot.
     Versión optimizada con mejor gestión de errores y recursos.
