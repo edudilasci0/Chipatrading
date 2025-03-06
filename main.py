@@ -72,6 +72,7 @@ signal_predictor = None
 ml_data_preparation = None
 is_bot_active = None
 cielo_ws_connection = None  # Variable para mantener la conexión WebSocket
+dex_client = None  # Variable global para DexScreenerClient
 
 # Variables para monitoreo
 message_counter = 0
@@ -99,7 +100,6 @@ wallet_cache = {
 
 # Inicializar logger
 logger = setup_logging()
-
 def load_wallets():
     """
     Carga las wallets desde traders_data.json con cache
@@ -219,7 +219,6 @@ async def daily_summary_task(signal_logic, signal_predictor=None, dex_client=Non
                 f"• Transacciones totales: `{db_stats.get('transactions_count', 'N/A')}`\n"
                 f"• Estado: `{'Activo' if is_bot_active and is_bot_active() else 'Inactivo'}`\n\n"
             )
-            
             # Obtener estadísticas de rendimiento
             try:
                 stats = db.get_signals_performance_stats()
@@ -360,7 +359,6 @@ async def monitoring_task():
                 f"• Memoria: `{memory_usage:.1f} MB`\n"
                 f"• CPU: `{cpu_percent:.1f}%`\n"
             )
-            
             with stats_lock:
                 if performance_stats["last_error"]:
                     error_time, error_msg = performance_stats["last_error"]
@@ -522,120 +520,6 @@ async def maintenance_check_task():
                     )
             except:
                 pass
-            
-            if now - last_processed_msg_time > 1800 and message_counter < 5:
-                send_telegram_message(
-                    "⚠️ *Alerta de Mantenimiento*\n"
-                    "No se han recibido suficientes mensajes en los últimos 30 minutos.\n"
-                    "Posible problema de conexión con Cielo API."
-                )
-            
-            try:
-                signal_count = db.count_signals_today()
-                db_stats = db.get_db_stats()
-                if 'db_size_bytes' in db_stats and db_stats['db_size_bytes'] > 1_000_000_000:
-                    send_telegram_message(
-                        "⚠️ *Alerta de Base de Datos*\n"
-                        f"La base de datos ha crecido considerablemente: {db_stats['db_size_pretty']}\n"
-                        "Considere ejecutar tareas de limpieza."
-                    )
-                if message_counter > 0:
-                    last_processed_msg_time = now
-            except Exception as e:
-                send_telegram_message(
-                    f"⚠️ *Alerta de Base de Datos*\n"
-                    f"Error al conectar con la base de datos: {e}"
-                )
-                with stats_lock:
-                    performance_stats["errors"] += 1
-                    performance_stats["last_error"] = (time.time(), f"Error DB: {str(e)}")
-                
-        except Exception as e:
-            logger.error(f"Error en tarea de mantenimiento: {e}", exc_info=True)
-            with stats_lock:
-                performance_stats["errors"] += 1
-                performance_stats["last_error"] = (time.time(), str(e))
-
-async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
-    """
-    Procesa los mensajes recibidos de Cielo.
-    Versión optimizada con mejor manejo de errores y rastreo de rendimiento.
-    """
-    global message_counter, transaction_counter, wallets_list, is_bot_active
-    
-    if is_bot_active and not is_bot_active():
-        logger.debug("⏸️ Bot en modo inactivo, ignorando mensaje")
-        return
-    
-    message_counter += 1
-    
-    try:
-        logger.debug(f"Mensaje recibido (primeros 200 caracteres): {message[:200]}...")
-        
-        data = json.loads(message)
-        
-        if "type" in data:
-            logger.debug(f"📡 Mensaje tipo: {data['type']}")
-        
-        if data.get("type") == "tx" and "data" in data:
-            tx_data = data["data"]
-            logger.debug(f"📦 Mensaje de transacción recibido: {json.dumps(tx_data)[:200]}...")
-            
-            try:
-                if "wallet" not in tx_data:
-                    logger.warning("⚠️ Transacción sin wallet, ignorando")
-                    return
-                
-                wallet = tx_data.get("wallet", "unknown_wallet")
-                
-                wallet_set = set(wallets_list)
-                if wallet not in wallet_set:
-                    logger.debug(f"⚠️ Wallet {wallet[:8]}... no está en la lista de seguimiento, ignorando")
-                    return
-                
-                tx_type = tx_data.get("tx_type", "unknown_type")
-                token = None
-                actual_tx_type = None
-                usd_value = 0.0
-                
-                if tx_type == "transfer":
-                    token = tx_data.get("contract_address")
-                    
-                    if wallet == tx_data.get("to"):
-                        actual_tx_type = "BUY"
-                    elif wallet == tx_data.get("from"):
-                        actual_tx_type = "SELL"
-                    
-                    usd_value = float(tx_data.get("amount_usd", 0))
-                    
-                elif tx_type == "swap":
-                    token0 = tx_data.get("token0_address")
-                    token1 = tx_data.get("token1_address")
-                    
-                    if token0 and token1:
-                        sol_token = "So11111111111111111111111111111111111111112"
-                        usdc_token = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-                        usdt_token = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-                        common_tokens = [sol_token, usdc_token, usdt_token]
-                        
-                        if token1 in common_tokens:
-                            token = token0
-                            actual_tx_type = "SELL"
-                            usd_value = float(tx_data.get("token0_amount_usd", 0))
-                        else:
-                            token = token1
-                            actual_tx_type = "BUY"
-                            usd_value = float(tx_data.get("token1_amount_usd", 0))
-                    
-                if not token or not actual_tx_type:
-                    logger.warning("⚠️ No se pudo determinar token o tipo de transacción, ignorando")
-                    return
-                
-                min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
-                if usd_value <= 0 or usd_value < min_tx_usd:
-                    logger.debug(f"⚠️ Transacción con valor insuficiente (${usd_value}), ignorando")
-                    return
-                
                 start_time = time.time()
                 
                 transaction_counter += 1
@@ -727,7 +611,7 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                     "Verificar logs para más detalles."
                 )
                 performance_stats["errors"] = 0
-            await asyncio.sleep(60)
+                await asyncio.sleep(60)
 
 def handle_shutdown(sig, frame):
     """
@@ -767,34 +651,29 @@ def handle_shutdown(sig, frame):
     print("👋 ChipaTrading Bot finalizado")
     sys.exit(0)
 
-async def log_raw_message(message):
-    """Registra los mensajes crudos recibidos del WebSocket."""
-    logging.debug(f"Mensaje recibido: {message}")
-
-import websockets
-
 async def manage_websocket_connection(cielo, wallets_list, handle_message, filter_params):
     """Gestiona la conexión WebSocket con Cielo API."""
-    uri = cielo.get_websocket_uri()
-    while True:
-        try:
-            async with websockets.connect(uri) as websocket:
-                logging.info("✅ Conectado a Cielo WebSocket")
-                while True:
-                    message = await websocket.recv()
-                    await log_raw_message(message)
-                    await handle_message(message, wallets_list, filter_params)
-        except Exception as e:
-            logging.error(f"⚠️ Error en la conexión WebSocket: {e}")
-            await asyncio.sleep(5)
-
-# -------------------- FUNCIÓN PRINCIPAL --------------------
-async def main():
+    # No necesitamos obtener una URI ya que cielo.run_forever* lo gestiona internamente
+    try:
+        if len(wallets_list) > 0:
+            # Usar el método run_forever_wallets que ya existe en CieloAPI
+            logger.info(f"📡 Iniciando conexión WebSocket en modo multi-wallet con {len(wallets_list)} wallets")
+            await cielo.run_forever_wallets(wallets_list, handle_message, filter_params)
+        else:
+            # Si no hay wallets, usar el modo feed general
+            logger.info("📡 Iniciando conexión WebSocket en modo feed general")
+            await cielo.run_forever(handle_message, filter_params)
+    except Exception as e:
+        logger.error(f"⚠️ Error en la conexión WebSocket: {e}")
+        await asyncio.sleep(5)
+        # Reintentar la conexión recursivamente
+        await manage_websocket_connection(cielo, wallets_list, handle_message, filter_params)
+        async def main():
     """
     Función principal que inicializa y ejecuta el bot.
     Versión optimizada con mejor gestión de errores y recursos.
     """
-    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat, is_bot_active, dex_client
+    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat, is_bot_active, dex_client, cielo_ws_connection
     
     try:
         last_heartbeat = time.time()
@@ -855,6 +734,10 @@ async def main():
             ml_predictor=signal_predictor
         )
         
+        # Configurar PerformanceTracker
+        performance_tracker = PerformanceTracker(dex_client)
+        signal_logic.performance_tracker = performance_tracker
+        
         logger.info("🤖 Iniciando bot de comandos de Telegram...")
         is_bot_active = await process_telegram_commands(
             Config.TELEGRAM_BOT_TOKEN,
@@ -876,22 +759,24 @@ async def main():
                     await asyncio.sleep(7 * 24 * 3600)
                     logger.info("🧹 Iniciando limpieza de datos antiguos...")
                     deleted = db.cleanup_old_data(days=90)
-                    logger.info(f"🧹 Limpieza completada: {sum(deleted.values())} registros eliminados")
+                    logger.info(f"🧹 Limpieza completada: {sum(deleted.values()) if isinstance(deleted, dict) else 0} registros eliminados")
                 except Exception as e:
                     logger.error(f"Error en tarea de limpieza: {e}")
                     await asyncio.sleep(86400)
                     
         asyncio.create_task(cleanup_old_data_task())
         
+        # Definir la función para procesar mensajes
         async def handle_message(msg):
-            await log_raw_message(msg)
             await on_cielo_message(msg, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor)
         
+        # Configurar filtros para Cielo
         filter_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],
         }
         
+        # Mensaje de inicio
         send_telegram_message(
             "🚀 *ChipaTrading Bot Iniciado*\n\n"
             f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
