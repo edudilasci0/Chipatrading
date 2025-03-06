@@ -321,8 +321,7 @@ async def refresh_wallets_task(interval=3600):
         except Exception as e:
             logger.error(f"⚠️ Error actualizando wallets: {e}", exc_info=True)
             await asyncio.sleep(interval)
-
-async def monitoring_task():
+            async def monitoring_task():
     """
     Tarea periódica para monitorizar el estado del bot y enviar alertas.
     Versión mejorada con más métricas.
@@ -359,6 +358,7 @@ async def monitoring_task():
                 f"• Memoria: `{memory_usage:.1f} MB`\n"
                 f"• CPU: `{cpu_percent:.1f}%`\n"
             )
+            
             with stats_lock:
                 if performance_stats["last_error"]:
                     error_time, error_msg = performance_stats["last_error"]
@@ -459,8 +459,7 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
                             "🧠 *Actualización ML completada*\n"
                             f"Se recolectaron {outcomes_count} nuevos outcomes, pero el modelo actual sigue siendo óptimo."
                         )
-            
-            ml_data_preparation.clean_old_data(days=90)
+                        ml_data_preparation.clean_old_data(days=90)
             logger.info(f"🧠 Próxima ejecución de tareas ML en {interval/3600:.1f} horas")
             await asyncio.sleep(interval)
             
@@ -520,6 +519,119 @@ async def maintenance_check_task():
                     )
             except:
                 pass
+            
+            if now - last_processed_msg_time > 1800 and message_counter < 5:
+                send_telegram_message(
+                    "⚠️ *Alerta de Mantenimiento*\n"
+                    "No se han recibido suficientes mensajes en los últimos 30 minutos.\n"
+                    "Posible problema de conexión con Cielo API."
+                )
+            
+            try:
+                signal_count = db.count_signals_today()
+                db_stats = db.get_db_stats()
+                if 'db_size_bytes' in db_stats and db_stats['db_size_bytes'] > 1_000_000_000:
+                    send_telegram_message(
+                        "⚠️ *Alerta de Base de Datos*\n"
+                        f"La base de datos ha crecido considerablemente: {db_stats['db_size_pretty']}\n"
+                        "Considere ejecutar tareas de limpieza."
+                    )
+                if message_counter > 0:
+                    last_processed_msg_time = now
+            except Exception as e:
+                send_telegram_message(
+                    f"⚠️ *Alerta de Base de Datos*\n"
+                    f"Error al conectar con la base de datos: {e}"
+                )
+                with stats_lock:
+                    performance_stats["errors"] += 1
+                    performance_stats["last_error"] = (time.time(), f"Error DB: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Error en tarea de mantenimiento: {e}", exc_info=True)
+            with stats_lock:
+                performance_stats["errors"] += 1
+                performance_stats["last_error"] = (time.time(), str(e))
+
+async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
+    """
+    Procesa los mensajes recibidos de Cielo.
+    Versión optimizada con mejor manejo de errores y rastreo de rendimiento.
+    """
+    global message_counter, transaction_counter, wallets_list, is_bot_active
+    
+    if is_bot_active and not is_bot_active():
+        logger.debug("⏸️ Bot en modo inactivo, ignorando mensaje")
+        return
+    
+    message_counter += 1
+    
+    try:
+        logger.debug(f"Mensaje recibido (primeros 200 caracteres): {message[:200]}...")
+        
+        data = json.loads(message)
+        
+        if "type" in data:
+            logger.debug(f"📡 Mensaje tipo: {data['type']}")
+        
+        if data.get("type") == "tx" and "data" in data:
+            tx_data = data["data"]
+            logger.debug(f"📦 Mensaje de transacción recibido: {json.dumps(tx_data)[:200]}...")
+            try:
+                if "wallet" not in tx_data:
+                    logger.warning("⚠️ Transacción sin wallet, ignorando")
+                    return
+                
+                wallet = tx_data.get("wallet", "unknown_wallet")
+                
+                wallet_set = set(wallets_list)
+                if wallet not in wallet_set:
+                    logger.debug(f"⚠️ Wallet {wallet[:8]}... no está en la lista de seguimiento, ignorando")
+                    return
+                
+                tx_type = tx_data.get("tx_type", "unknown_type")
+                token = None
+                actual_tx_type = None
+                usd_value = 0.0
+                
+                if tx_type == "transfer":
+                    token = tx_data.get("contract_address")
+                    
+                    if wallet == tx_data.get("to"):
+                        actual_tx_type = "BUY"
+                    elif wallet == tx_data.get("from"):
+                        actual_tx_type = "SELL"
+                    
+                    usd_value = float(tx_data.get("amount_usd", 0))
+                    
+                elif tx_type == "swap":
+                    token0 = tx_data.get("token0_address")
+                    token1 = tx_data.get("token1_address")
+                    
+                    if token0 and token1:
+                        sol_token = "So11111111111111111111111111111111111111112"
+                        usdc_token = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                        usdt_token = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+                        common_tokens = [sol_token, usdc_token, usdt_token]
+                        
+                        if token1 in common_tokens:
+                            token = token0
+                            actual_tx_type = "SELL"
+                            usd_value = float(tx_data.get("token0_amount_usd", 0))
+                        else:
+                            token = token1
+                            actual_tx_type = "BUY"
+                            usd_value = float(tx_data.get("token1_amount_usd", 0))
+                    
+                if not token or not actual_tx_type:
+                    logger.warning("⚠️ No se pudo determinar token o tipo de transacción, ignorando")
+                    return
+                
+                min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
+                if usd_value <= 0 or usd_value < min_tx_usd:
+                    logger.debug(f"⚠️ Transacción con valor insuficiente (${usd_value}), ignorando")
+                    return
+                
                 start_time = time.time()
                 
                 transaction_counter += 1
