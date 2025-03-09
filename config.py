@@ -20,11 +20,11 @@ class Config:
     RUGCHECK_WALLET_PUBKEY = os.environ.get("RUGCHECK_WALLET_PUBKEY", "")
 
     # Configuración de las señales (valores por defecto)
-    MIN_TRANSACTION_USD = 300
-    MIN_TRADERS_FOR_SIGNAL = 3
+    MIN_TRANSACTION_USD = 200  # Reducido de 300
+    MIN_TRADERS_FOR_SIGNAL = 2  # Reducido de 3
     SIGNAL_WINDOW_SECONDS = 540  # 9 minutos como solicitaste
-    MIN_CONFIDENCE_THRESHOLD = 0.4
-    MIN_VOLUME_USD = 5000
+    MIN_CONFIDENCE_THRESHOLD = 0.3  # Reducido de 0.4
+    MIN_VOLUME_USD = 2000  # Reducido de 5000
 
     # Configuración de scoring
     DEFAULT_SCORE = 5.0
@@ -42,6 +42,39 @@ class Config:
     SIGNAL_THROTTLING = 10  # Máximo de señales por hora
     ADAPT_CONFIDENCE_THRESHOLD = True  # Ajustar umbrales según rendimiento
     HIGH_QUALITY_TRADER_SCORE = 7.0  # Umbral para traders de alta calidad
+    
+    # Lista de tokens especiales a ignorar
+    IGNORE_TOKENS = [
+        "native",  # Token genérico
+        "So11111111111111111111111111111111111111112",  # SOL token
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC token
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"   # USDT token
+    ]
+
+    # Tokens conocidos (para evitar errores y añadir información)
+    KNOWN_TOKENS = {
+        "So11111111111111111111111111111111111111112": {
+            "name": "SOL", 
+            "price": 0,  # Se actualizará dinámicamente
+            "market_cap": 15000000000,
+            "vol_1h": 1000000
+        },
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+            "name": "USDC", 
+            "price": 1,
+            "market_cap": 35000000000,
+            "vol_1h": 2000000
+        },
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
+            "name": "USDT", 
+            "price": 1,
+            "market_cap": 40000000000,
+            "vol_1h": 3000000
+        }
+    }
+
+    # Flag para habilitar/deshabilitar el filtrado por RugCheck
+    ENABLE_RUGCHECK_FILTERING = False
     
     # Valores dinámicos desde base de datos
     _dynamic_config = {}
