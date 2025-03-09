@@ -457,3 +457,38 @@ class DexScreenerClient:
     async def prefetch_token_data(self, tokens):
         """
         NUEVO: Prefetch de datos para una lista de tokens en paralelo.
+        Útil para precalentar la caché antes de operaciones intensivas.
+        
+        Args:
+            tokens: Lista de tokens a precargar
+            
+        Returns:
+            int: Número de tokens cargados exitosamente
+        """
+        if not tokens:
+            return 0
+            
+        logger.info(f"Precargando datos para {len(tokens)} tokens...")
+        successful = 0
+        
+        # Limitar a máximo 20 tokens para no sobrecargar
+        tokens_to_fetch = tokens[:20]
+        
+        for token in tokens_to_fetch:
+            try:
+                _, _, _ = await self.fetch_token_data(token)
+                successful += 1
+                # Pequeña pausa para evitar ráfagas
+                await asyncio.sleep(0.2)
+            except:
+                pass
+        
+        logger.info(f"Precarga completada: {successful}/{len(tokens_to_fetch)} tokens")
+        return successful
+    
+    def shutdown(self):
+        """
+        NUEVO: Limpia recursos al terminar.
+        """
+        self.executor.shutdown(wait=False)
+        logger.info("DexScreenerClient apagado correctamente")
