@@ -44,19 +44,34 @@ class DexScreenerClient:
     async def fetch_token_data(self, token):
         """
         Llama a DexScreener para obtener datos como volumen/h1, market cap, etc.
-        Versión asíncrona y optimizada con cache inteligente.
+        Versión mejorada para manejar tokens especiales y errores.
         
         Returns:
             tuple: (volumen_1h, market_cap, precio)
         """
-        # Verificar caché primero
+        # NUEVO: Manejar tokens especiales o conocidos
+        from config import Config
+        
+        # Si es un token a ignorar, registrar advertencia y retornar ceros
+        if token in Config.IGNORE_TOKENS:
+            logger.debug(f"Token ignorado por configuración: {token}")
+            return 0.0, 0.0, 0.0
+        
+        # Si es un token conocido, usar valores predefinidos
+        if token in Config.KNOWN_TOKENS:
+            known_data = Config.KNOWN_TOKENS[token]
+            logger.debug(f"Usando datos predefinidos para token conocido: {token} ({known_data['name']})")
+            return known_data['vol_1h'], known_data['market_cap'], known_data['price']
+        
+        # Verificar caché primero con más detalle en logs
         if token in self.market_cap_cache and token in self.price_cache:
             mc_timestamp, mcap = self.market_cap_cache[token]
             price_timestamp, price = self.price_cache[token]
             
             # Si los datos son recientes, usarlos
-            if (time.time() - mc_timestamp < self.cache_expiry and 
-                time.time() - price_timestamp < self.cache_expiry):
+            cache_age = time.time() - mc_timestamp
+            if cache_age < self.cache_expiry:
+                logger.debug(f"Usando caché para {token} (edad: {cache_age:.1f}s)")
                 
                 # Buscar volumen en el historial si existe
                 vol_1h = 0
@@ -64,111 +79,174 @@ class DexScreenerClient:
                     vol_1h = self.volume_history[token][-1][1]
                 
                 return vol_1h, mcap, price
+            else:
+                logger.debug(f"Caché expirada para {token} (edad: {cache_age:.1f}s)")
         
-        # NUEVO: Verificar tokens con errores recientes
+        # MEJORADO: Verificar tokens con errores recientes
         if token in self.error_tokens:
             last_error, error_count = self.error_tokens[token]
-            # Si ha habido múltiples errores recientes, esperar más tiempo
-            if error_count > 3 and time.time() - last_error < 300:  # 5 minutos
+            error_age = time.time() - last_error
+            
+            # Si ha habido múltiples errores recientes, usar caché expirada o retornar ceros
+            if error_count > 2 and error_age < 300:  # Reducido de 3 a 2 errores y 300 segundos
                 logger.warning(f"Omitiendo token con errores recurrentes: {token}")
+                
+                # Retornar valores de caché aunque estén expirados
+                if token in self.market_cap_cache and token in self.price_cache:
+                    _, mcap = self.market_cap_cache[token]
+                    _, price = self.price_cache[token]
+                    vol_1h = 0
+                    if token in self.volume_history and self.volume_history[token]:
+                        vol_1h = self.volume_history[token][-1][1]
+                    return vol_1h, mcap, price
+                
+                # Si no hay caché, retornar ceros pero permitir procesar el token
                 return 0.0, 0.0, 0.0
         
-        # NUEVO: Aplicar rate limiting mejorado
-        await self._apply_rate_limiting()
-        
-        # Intentar obtener los datos
+        # MEJORADO: Aplicar rate limiting más inteligente
         try:
-            url = f"https://api.dexscreener.com/latest/dex/tokens/{token}"
+            await self._apply_rate_limiting()
             
-            # NUEVO: Ejecutar la petición en un hilo para no bloquear
-            loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(
-                self.executor, 
-                lambda: requests.get(url, timeout=5)
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "pairs" in data and data["pairs"]:
-                    # Tomar el primer par (generalmente el principal)
-                    active_pair = data["pairs"][0]
+            # Intentar obtener los datos con reintento
+            max_retries = 2
+            for retry in range(max_retries + 1):
+                try:
+                    url = f"https://api.dexscreener.com/latest/dex/tokens/{token}"
                     
-                    # Extraer datos
-                    h1_vol = float(active_pair["volume"].get("h1", 0))
-                    mcap = float(active_pair.get("marketCap", 0))
-                    price = float(active_pair.get("priceUsd", 0))
+                    # MEJORADO: Ejecutar la petición en un hilo para no bloquear
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(
+                        self.executor, 
+                        lambda: requests.get(url, timeout=5)
+                    )
                     
-                    # Actualizar caché
-                    now = time.time()
-                    self.market_cap_cache[token] = (now, mcap)
-                    self.price_cache[token] = (now, price)
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        # NUEVO: Verificar explícitamente si pairs es None o vacío
+                        if data.get("pairs") is None or len(data.get("pairs", [])) == 0:
+                            logger.warning(f"Token {token} no tiene pares en DexScreener: {data}")
+                            self._register_token_error(token)
+                            return 0.0, 0.0, 0.0
+                            
+                        if "pairs" in data and data["pairs"]:
+                            # Tomar el par con mayor volumen (generalmente el principal)
+                            pairs = sorted(data["pairs"], 
+                                          key=lambda x: float(x["volume"].get("h24", 0)), 
+                                          reverse=True)
+                            active_pair = pairs[0]
+                            
+                            # Extraer datos
+                            h1_vol = float(active_pair["volume"].get("h1", 0))
+                            mcap = float(active_pair.get("marketCap", 0))
+                            price = float(active_pair.get("priceUsd", 0))
+                            
+                            # Actualizar caché
+                            now = time.time()
+                            self.market_cap_cache[token] = (now, mcap)
+                            self.price_cache[token] = (now, price)
+                            
+                            # MEJORADO: Calcular volatilidad para posible caché larga
+                            if token in self.price_cache:
+                                old_time, old_price = self.price_cache[token]
+                                if old_price > 0:
+                                    time_diff = now - old_time
+                                    if time_diff > 0:
+                                        price_change_pct = abs(price - old_price) / old_price
+                                        volatility = price_change_pct / time_diff * 3600  # Normalizado a cambio/hora
+                                        
+                                        # Si la volatilidad es baja, considerar para long cache
+                                        if volatility < 0.02:  # Menos de 2% por hora
+                                            self.long_cache[token] = {
+                                                'data': (h1_vol, mcap, price),
+                                                'last_update': now,
+                                                'volatility': volatility
+                                            }
+                                            logger.debug(f"Token {token} añadido a caché larga (volatilidad: {volatility:.4f})")
+                            
+                            # Si había errores previos, resetear
+                            if token in self.error_tokens:
+                                del self.error_tokens[token]
+                            
+                            return h1_vol, mcap, price
+                        else:
+                            logger.debug(f"No se encontraron pares para el token {token}")
                     
-                    # NUEVO: Calcular volatilidad para posible caché larga
-                    if token in self.price_cache:
-                        old_time, old_price = self.price_cache[token]
-                        if old_price > 0:
-                            time_diff = now - old_time
-                            if time_diff > 0:
-                                price_change_pct = abs(price - old_price) / old_price
-                                volatility = price_change_pct / time_diff * 3600  # Normalizado a cambio/hora
-                                
-                                # Si la volatilidad es baja, considerar para long cache
-                                if volatility < 0.02:  # Menos de 2% por hora
-                                    self.long_cache[token] = {
-                                        'data': (h1_vol, mcap, price),
-                                        'last_update': now,
-                                        'volatility': volatility
-                                    }
-                                    logger.debug(f"Token {token} añadido a caché larga (volatilidad: {volatility:.4f})")
+                    # MEJORADO: Manejar errores específicos
+                    if response.status_code == 429:  # Rate limit
+                        wait_time = 5 + retry * 2
+                        logger.warning(f"⚠️ Rate limit de DexScreener alcanzado, esperando {wait_time} segundos...")
+                        await asyncio.sleep(wait_time)
+                        continue  # Reintentar
+                    elif response.status_code == 404:  # Token no encontrado
+                        logger.debug(f"Token no encontrado en DexScreener: {token}")
+                    else:
+                        logger.warning(f"⚠️ Error en DexScreener: {response.status_code} - {response.text[:100]}")
                     
-                    # Si había errores previos, resetear
-                    if token in self.error_tokens:
-                        del self.error_tokens[token]
+                    # Solo registrar error si fallaron todos los reintentos
+                    if retry == max_retries:
+                        self._register_token_error(token)
+                        # Intentar usar valores de caché aunque estén expirados
+                        if token in self.market_cap_cache and token in self.price_cache:
+                            _, mcap = self.market_cap_cache[token]
+                            _, price = self.price_cache[token]
+                            vol_1h = 0
+                            if token in self.volume_history and self.volume_history[token]:
+                                vol_1h = self.volume_history[token][-1][1]
+                            return vol_1h, mcap, price
                     
-                    return h1_vol, mcap, price
-            
-            # NUEVO: Manejar errores específicos
-            if response.status_code == 429:  # Rate limit
-                logger.warning(f"⚠️ Rate limit de DexScreener alcanzado, esperando 5 segundos...")
-                await asyncio.sleep(5)
-            elif response.status_code == 404:  # Token no encontrado
-                logger.warning(f"⚠️ Token no encontrado en DexScreener: {token}")
-            else:
-                logger.warning(f"⚠️ Error en DexScreener: {response.status_code} - {response.text[:100]}")
-            
-            # Registrar error
-            self._register_token_error(token)
-            
-            return 0.0, 0.0, 0.0
+                    break  # Salir del loop si no es un error 429
+                    
+                except Exception as e:
+                    logger.warning(f"Excepción al obtener datos de DexScreener (intento {retry+1}/{max_retries+1}): {str(e)}")
+                    if retry < max_retries:
+                        await asyncio.sleep(1)
+                    else:
+                        self._register_token_error(token)
+                        # Intentar usar valores de caché aunque estén expirados
+                        if token in self.market_cap_cache and token in self.price_cache:
+                            _, mcap = self.market_cap_cache[token]
+                            _, price = self.price_cache[token]
+                            vol_1h = 0
+                            if token in self.volume_history and self.volume_history[token]:
+                                vol_1h = self.volume_history[token][-1][1]
+                            return vol_1h, mcap, price
             
         except Exception as e:
-            logger.error(f"⚠️ Excepción al obtener datos de DexScreener: {str(e)}")
+            logger.error(f"⚠️ Error crítico en fetch_token_data: {str(e)}")
             self._register_token_error(token)
-            return 0.0, 0.0, 0.0
+        
+        return 0.0, 0.0, 0.0
 
     async def _apply_rate_limiting(self):
         """
-        NUEVO: Implementa rate limiting avanzado basado en ventana deslizante.
+        MEJORADO: Implementa rate limiting adaptativo.
         """
         now = time.time()
         
         # Limpiar timestamps antiguos (más de 60 segundos)
         self.request_timestamps = [ts for ts in self.request_timestamps if now - ts < 60]
         
-        # Verificar si estamos cerca del límite
-        if len(self.request_timestamps) >= self.rate_limit:
-            # Calcular tiempo a esperar
-            oldest = min(self.request_timestamps)
-            wait_time = 60 - (now - oldest) + 0.1  # +0.1 para asegurar que pase el minuto
+        # MEJORADO: Verificar si estamos cerca del límite y aplicar espera proporcional
+        if len(self.request_timestamps) >= self.rate_limit - 1:
+            # Calcular tiempo a esperar de forma adaptativa
+            requests_per_min = len(self.request_timestamps)
+            wait_factor = min(requests_per_min / (self.rate_limit * 0.8), 1.5)  # Factor de espera proporcional
             
-            if wait_time > 0:
-                logger.info(f"⏱️ Rate limiting aplicado, esperando {wait_time:.2f}s")
+            wait_time = 1.0 * wait_factor  # Espera base ajustada
+            
+            if len(self.request_timestamps) >= self.rate_limit:
+                # Si ya alcanzamos el límite, esperar a que expire la petición más antigua
+                oldest = min(self.request_timestamps)
+                expire_wait = 60 - (now - oldest) + 0.2  # +0.2 para asegurar que pase el minuto
+                wait_time = max(wait_time, expire_wait)
+            
+            if wait_time > 0.1:  # Solo esperar si es un tiempo significativo
+                logger.debug(f"Rate limiting aplicado, esperando {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
-                # Actualizar time after sleeping
-                now = time.time()
         
         # Registrar nueva petición
-        self.request_timestamps.append(now)
+        self.request_timestamps.append(time.time())
 
     def _register_token_error(self, token):
         """
@@ -379,38 +457,3 @@ class DexScreenerClient:
     async def prefetch_token_data(self, tokens):
         """
         NUEVO: Prefetch de datos para una lista de tokens en paralelo.
-        Útil para precalentar la caché antes de operaciones intensivas.
-        
-        Args:
-            tokens: Lista de tokens a precargar
-            
-        Returns:
-            int: Número de tokens cargados exitosamente
-        """
-        if not tokens:
-            return 0
-            
-        logger.info(f"Precargando datos para {len(tokens)} tokens...")
-        successful = 0
-        
-        # Limitar a máximo 20 tokens para no sobrecargar
-        tokens_to_fetch = tokens[:20]
-        
-        for token in tokens_to_fetch:
-            try:
-                _, _, _ = await self.fetch_token_data(token)
-                successful += 1
-                # Pequeña pausa para evitar ráfagas
-                await asyncio.sleep(0.2)
-            except:
-                pass
-        
-        logger.info(f"Precarga completada: {successful}/{len(tokens_to_fetch)} tokens")
-        return successful
-    
-    def shutdown(self):
-        """
-        NUEVO: Limpia recursos al terminar.
-        """
-        self.executor.shutdown(wait=False)
-        logger.info("DexScreenerClient apagado correctamente")
