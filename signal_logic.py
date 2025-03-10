@@ -321,8 +321,6 @@ class SignalLogic:
         ml_prediction = candidate.get("ml_prediction", 0.5)
         
         # Enlaces a exploradores
-        dexscreener_link = f"https://dexscreener.com/solana/{token}"
-        birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
         neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
         
         if confidence > 0.8:
