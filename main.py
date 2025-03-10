@@ -21,6 +21,9 @@ from performance_tracker import PerformanceTracker
 from ml_preparation import MLDataPreparation
 from signal_predictor import SignalPredictor
 from rugcheck import RugCheckAPI
+from helius_client import HeliusClient
+# Opcional: módulo feedback ya importado desde db.py (si se usa en algún comando o tarea)
+#from feedback import registrar_feedback, obtener_feedback, analizar_feedback
 
 def setup_logging():
     """
@@ -90,7 +93,7 @@ wallet_cache = {
 
 def load_wallets():
     """
-    Carga las wallets desde traders_data.json con cache.
+    Carga las wallets desde traders_data.json con caché.
     """
     global wallet_cache
     cache_age = time.time() - wallet_cache["last_update"]
@@ -103,7 +106,6 @@ def load_wallets():
         file_mod_time = os.path.getmtime(file_path)
         if wallet_cache["wallets"] and file_mod_time < wallet_cache["last_update"]:
             return wallet_cache["wallets"]
-            
         with open(file_path, "r") as f:
             data = json.load(f)
             wallets = [entry["Wallet"] for entry in data]
@@ -112,42 +114,41 @@ def load_wallets():
             wallet_cache["last_update"] = time.time()
             return wallets
     except FileNotFoundError:
-        logger.warning("⚠️ No se encontró el archivo traders_data.json")
+        logger.warning("⚠️ No se encontró traders_data.json")
         return wallet_cache["wallets"] if wallet_cache["wallets"] else []
     except json.JSONDecodeError:
-        logger.error("🚨 Error decodificando JSON en traders_data.json")
+        logger.error("🚨 Error decodificando traders_data.json")
         return wallet_cache["wallets"] if wallet_cache["wallets"] else []
     except Exception as e:
-        logger.error(f"🚨 Error al cargar traders_data.json: {e}")
+        logger.error(f"🚨 Error al cargar wallets: {e}")
         return wallet_cache["wallets"] if wallet_cache["wallets"] else []
 
 async def send_boot_sequence():
     """
-    Envía una secuencia de mensajes de inicio a Telegram.
+    Envía mensajes de inicio a Telegram.
     """
     boot_messages = [
         "**🚀 Iniciando ChipaTrading Bot**\nPreparando servicios y verificaciones...",
         "**📡 Módulos de Monitoreo Activados**\nEscaneando wallets definidas para transacciones relevantes...",
         "**📊 Cargando Parámetros de Mercado**\nConectando con DexScreener para datos de volumen...",
-        "**🔒 Verificando Seguridad**\nConectando con RugCheck para verificar tokens...",
+        "**🔒 Verificando Seguridad**\nConectando con RugCheck para validar tokens...",
         "**⚙️ Inicializando Lógica de Señales**\nConfigurando reglas de scoring y agrupación de traders...",
         "**✅ Sistema Operativo**\nListo para monitorear transacciones y generar alertas."
     ]
-    
     for msg in boot_messages:
         send_telegram_message(msg)
         await asyncio.sleep(2)
 
 async def daily_summary_task(signal_logic, signal_predictor=None, dex_client=None):
     """
-    Envía un resumen diario de actividad mejorado con estadísticas.
+    Envía un resumen diario de actividad.
     """
     while running:
         try:
             now = datetime.now()
             next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             seconds_until_midnight = (next_midnight - now).total_seconds()
-            logger.info(f"⏰ Programando resumen diario para dentro de {seconds_until_midnight/3600:.1f} horas")
+            logger.info(f"⏰ Resumen diario en {seconds_until_midnight/3600:.1f} horas")
             await asyncio.sleep(seconds_until_midnight)
             
             import psutil
@@ -172,19 +173,6 @@ async def daily_summary_task(signal_logic, signal_predictor=None, dex_client=Non
                 f"• Transacciones totales: `{db_stats.get('transactions_count', 'N/A')}`\n"
                 f"• Estado: `{'Activo' if is_bot_active and is_bot_active() else 'Inactivo'}`\n\n"
             )
-            
-            try:
-                stats = db.get_signals_performance_stats()
-                if stats:
-                    summary_msg += "*📊 Rendimiento de Señales*\n"
-                    for stat in stats:
-                        timeframe = stat["timeframe"]
-                        success_rate = stat["success_rate"]
-                        avg_percent = stat["avg_percent_change"]
-                        emoji = "🟢" if success_rate >= 60 else "🟡" if success_rate >= 50 else "🔴"
-                        summary_msg += f"{emoji} *{timeframe}*: {success_rate}% éxito, {avg_percent}% promedio\n"
-            except Exception as e:
-                logger.error(f"Error obteniendo estadísticas para resumen: {e}")
             
             if recent_signals:
                 summary_msg += "\n*🔍 Últimas Señales (24h)*\n"
@@ -211,36 +199,31 @@ async def refresh_wallets_task(interval=3600):
         try:
             new_wallets = load_wallets()
             if not new_wallets:
-                logger.warning("⚠️ No se pudieron cargar wallets, manteniendo lista actual")
+                logger.warning("⚠️ No se pudieron cargar wallets; se mantiene la lista actual")
                 await asyncio.sleep(interval)
                 continue
-            
             if wallets_list:
                 original_count = len(wallets_list)
                 new_count = len(new_wallets)
                 if abs(new_count - original_count) > 10 or new_count == 0:
                     logger.warning(f"Cambio significativo en wallets: {original_count} → {new_count}")
                     if new_count < original_count * 0.5 and original_count > 20:
-                        logger.error("⚠️ Reducción drástica en wallets! (más del 50%) Manteniendo lista anterior")
+                        logger.error("⚠️ Reducción drástica en wallets; se mantiene la lista anterior")
                         send_telegram_message(
-                            "⚠️ *Alerta de Seguridad*\n\n"
-                            f"Detectada reducción drástica en la lista de wallets: {original_count} → {new_count}.\n"
-                            "Por precaución, se mantiene la lista anterior."
+                            "⚠️ *Alerta de Seguridad*\nDetectada reducción drástica en la lista de wallets; se mantiene la lista anterior."
                         )
                         await asyncio.sleep(interval)
                         continue
-            
             added_count = 0
             for wallet in new_wallets:
                 if wallet not in wallets_list:
                     wallets_list.append(wallet)
                     added_count += 1
-            
             if added_count > 0:
-                logger.info(f"📋 Se añadieron {added_count} nuevas wallets, total: {len(wallets_list)}")
+                logger.info(f"📋 Se añadieron {added_count} nuevas wallets; total: {len(wallets_list)}")
                 if added_count >= 5:
                     send_telegram_message(
-                        f"*📋 Actualización de Wallets*\nSe han añadido {added_count} nuevas wallets para monitorear.\nTotal: {len(wallets_list)} wallets"
+                        f"*📋 Actualización de Wallets*\nSe añadieron {added_count} nuevas wallets.\nTotal: {len(wallets_list)} wallets"
                     )
             await asyncio.sleep(interval)
         except Exception as e:
@@ -249,16 +232,15 @@ async def refresh_wallets_task(interval=3600):
 
 async def monitoring_task():
     """
-    Tarea periódica para monitorear el estado del bot y enviar alertas.
+    Monitorea el estado del bot y envía alertas periódicas.
     """
     global message_counter, transaction_counter, last_counter_log, last_heartbeat, running
     while running:
         try:
             await asyncio.sleep(600)
             if is_bot_active and not is_bot_active():
-                logger.info("⏸️ Bot inactivo, omitiendo mensaje de estado")
+                logger.info("⏸️ Bot inactivo; se omite el estado")
                 continue
-            
             now = time.time()
             elapsed = now - last_counter_log
             
@@ -266,35 +248,31 @@ async def monitoring_task():
             process = psutil.Process(os.getpid())
             memory_usage = process.memory_info().rss / 1024 / 1024
             cpu_percent = process.cpu_percent(interval=1.0)
-            
             with stats_lock:
                 performance_stats["memory_usage"] = memory_usage
             
             msg = (
                 "*📊 Estado del Bot*\n\n"
-                f"• Mensajes recibidos (últimos {elapsed/60:.1f} min): `{message_counter}`\n"
-                f"• Transacciones procesadas: `{transaction_counter}`\n"
-                f"• Wallets monitoreadas: `{len(wallets_list)}`\n"
-                f"• Tiempo desde inicio: `{(now - last_heartbeat)/3600:.1f}h`\n"
+                f"• Mensajes (últimos {elapsed/60:.1f} min): `{message_counter}`\n"
+                f"• Transacciones: `{transaction_counter}`\n"
+                f"• Wallets: `{len(wallets_list)}`\n"
+                f"• Uptime: `{(now - last_heartbeat)/3600:.1f}h`\n"
                 f"• Estado: `{'Activo' if is_bot_active and is_bot_active() else 'Inactivo'}`\n\n"
                 f"*🖥️ Recursos:*\n"
                 f"• Memoria: `{memory_usage:.1f} MB`\n"
                 f"• CPU: `{cpu_percent:.1f}%`\n"
             )
-            
             with stats_lock:
                 if performance_stats["last_error"]:
                     error_time, error_msg = performance_stats["last_error"]
                     time_since_error = now - error_time
                     if time_since_error < 3600:
-                        msg += f"\n⚠️ *Último error* ({time_since_error/60:.0f}m atrás):\n`{error_msg[:100]}`\n"
-            
+                        msg += f"\n⚠️ *Último error* ({time_since_error/60:.0f}m atrás): `{error_msg[:100]}`\n"
             send_telegram_message(msg)
             logger.info(f"Estado: {message_counter} msgs, {transaction_counter} tx en {elapsed/60:.1f} min")
             if message_counter < 5 and elapsed > 300:
                 send_telegram_message(
-                    "⚠️ *Advertencia*: Pocos mensajes recibidos en los últimos minutos. "
-                    "Posible problema de conexión con Cielo API."
+                    "⚠️ *Advertencia*: Pocos mensajes en los últimos 5 minutos. Verificar conexión con Cielo API."
                 )
             message_counter = 0
             transaction_counter = 0
@@ -308,14 +286,13 @@ async def monitoring_task():
 
 async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, interval=86400):
     """
-    Ejecuta tareas periódicas relacionadas con Machine Learning.
+    Ejecuta tareas periódicas de Machine Learning.
     """
     while running:
         try:
             logger.info("🧠 Ejecutando tareas periódicas de ML...")
             send_telegram_message(
-                "🧠 *Iniciando actualización del modelo ML*\n"
-                "Recolectando outcomes y preparando datos de entrenamiento..."
+                "🧠 *Actualizando Modelo ML*\nRecolectando outcomes y preparando datos..."
             )
             start_time = time.time()
             outcomes_count = ml_data_preparation.collect_signal_outcomes(dex_client)
@@ -323,19 +300,16 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
             
             old_accuracy = signal_predictor.accuracy if signal_predictor and signal_predictor.model else None
             model_improvement = "N/A"
-            
             if outcomes_count >= 3:
-                logger.info(f"🧠 Intentando entrenar modelo con {outcomes_count} nuevos outcomes...")
+                logger.info(f"🧠 Entrenando modelo con {outcomes_count} nuevos outcomes...")
                 ml_data_preparation.analyze_feature_correlations()
                 start_time = time.time()
                 training_df = ml_data_preparation.prepare_training_data()
                 prepare_time = time.time() - start_time
-                
                 if training_df is not None and len(training_df) >= 20:
                     start_time = time.time()
                     trained = signal_predictor.train_model(force=(outcomes_count >= 5))
                     train_time = time.time() - start_time
-                    
                     if trained:
                         new_accuracy = signal_predictor.accuracy
                         if old_accuracy:
@@ -350,9 +324,8 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
                             f"• Precision: `{model_info.get('precision', 'N/A'):.2f}`\n"
                             f"• Recall: `{model_info.get('recall', 'N/A'):.2f}`\n"
                             f"• F1-Score: `{model_info.get('f1_score', 'N/A'):.2f}`\n"
-                            f"• Ejemplos: `{model_info['sample_count']}`\n\n"
+                            f"• Muestras: `{model_info['sample_count']}`\n\n"
                         )
-                        
                         if feature_analysis and 'top_features' in feature_analysis:
                             msg += "*Features más importantes:*\n"
                             for i, (feature, importance) in enumerate(feature_analysis['top_features'][:5]):
@@ -361,16 +334,15 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
                             msg += "\n*Insights del modelo:*\n"
                             for insight in feature_analysis['insights']:
                                 msg += f"• {insight}\n"
-                        msg += "\nEl modelo se usará para evaluar la calidad de nuevas señales."
+                        msg += "\nEl modelo se usará para evaluar nuevas señales."
                         send_telegram_message(msg)
                     else:
-                        logger.info("🧠 No fue necesario reentrenar el modelo")
+                        logger.info("🧠 Modelo actual sigue siendo óptimo")
                         send_telegram_message(
-                            "🧠 *Actualización ML completada*\n"
-                            f"Se recolectaron {outcomes_count} nuevos outcomes, pero el modelo actual sigue siendo óptimo."
+                            "🧠 *Actualización ML completada*\nNuevos outcomes recolectados, pero el modelo actual sigue siendo óptimo."
                         )
                         ml_data_preparation.clean_old_data(days=90)
-            logger.info(f"🧠 Próxima ejecución de tareas ML en {interval/3600:.1f} horas")
+            logger.info(f"🧠 Próxima actualización ML en {interval/3600:.1f} horas")
             await asyncio.sleep(interval)
         except Exception as e:
             logger.error(f"⚠️ Error en tareas ML: {e}", exc_info=True)
@@ -378,15 +350,13 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
                 performance_stats["errors"] += 1
                 performance_stats["last_error"] = (time.time(), f"Error ML: {str(e)}")
             send_telegram_message(
-                "⚠️ *Error en proceso ML*\n"
-                f"Ocurrió un error durante la actualización del modelo: `{str(e)[:100]}`\n"
-                "Se reintentará en la próxima ejecución."
+                "⚠️ *Error en proceso ML*\nOcurrió un error durante la actualización del modelo.\nSe reintentará en la próxima ejecución."
             )
             await asyncio.sleep(interval)
 
 async def maintenance_check_task():
     """
-    Monitoriza el estado del sistema y envía alertas si hay problemas.
+    Monitorea el estado del sistema y envía alertas si se detectan problemas.
     """
     global message_counter, last_counter_log
     last_processed_msg_time = time.time()
@@ -394,7 +364,7 @@ async def maintenance_check_task():
         try:
             await asyncio.sleep(900)
             if is_bot_active and not is_bot_active():
-                logger.info("⏸️ Bot inactivo, omitiendo verificación de mantenimiento")
+                logger.info("⏸️ Bot inactivo; se omite verificación de mantenimiento")
                 continue
             now = time.time()
             try:
@@ -402,47 +372,36 @@ async def maintenance_check_task():
                 cpu_percent = psutil.cpu_percent(interval=1)
                 if cpu_percent > 80:
                     send_telegram_message(
-                        "⚠️ *Alerta de Recursos*\n"
-                        f"Uso elevado de CPU: {cpu_percent:.1f}%\n"
-                        "Esto puede afectar el rendimiento del bot."
+                        f"⚠️ *Alerta de Recursos*\nUso elevado de CPU: {cpu_percent:.1f}%\nPosible impacto en el rendimiento."
                     )
                 memory = psutil.virtual_memory()
                 if memory.percent > 85:
                     send_telegram_message(
-                        "⚠️ *Alerta de Recursos*\n"
-                        f"Uso elevado de memoria: {memory.percent:.1f}%\n"
-                        "Esto puede afectar la estabilidad del sistema."
+                        f"⚠️ *Alerta de Recursos*\nUso elevado de memoria: {memory.percent:.1f}%\nPosible impacto en la estabilidad."
                     )
                 disk = psutil.disk_usage('/')
                 if disk.percent > 90:
                     send_telegram_message(
-                        "⚠️ *Alerta de Recursos*\n"
-                        f"Espacio en disco bajo: {disk.percent:.1f}%\n"
-                        "Es recomendable liberar espacio."
+                        f"⚠️ *Alerta de Recursos*\nEspacio en disco bajo: {disk.percent:.1f}%\nSe recomienda liberar espacio."
                     )
             except:
                 pass
             if now - last_processed_msg_time > 1800 and message_counter < 5:
                 send_telegram_message(
-                    "⚠️ *Alerta de Mantenimiento*\n"
-                    "No se han recibido suficientes mensajes en los últimos 30 minutos.\n"
-                    "Posible problema de conexión con Cielo API."
+                    "⚠️ *Alerta de Mantenimiento*\nPocos mensajes recibidos en los últimos 30 minutos.\nVerificar conexión con Cielo API."
                 )
             try:
                 signal_count = db.count_signals_today()
                 db_stats = db.get_db_stats()
                 if 'db_size_bytes' in db_stats and db_stats['db_size_bytes'] > 1_000_000_000:
                     send_telegram_message(
-                        "⚠️ *Alerta de Base de Datos*\n"
-                        f"La base de datos ha crecido considerablemente: {db_stats['db_size_pretty']}\n"
-                        "Considere ejecutar tareas de limpieza."
+                        f"⚠️ *Alerta de Base de Datos*\nLa base de datos ha crecido considerablemente: {db_stats['db_size_pretty']}\nConsiderar tareas de limpieza."
                     )
                 if message_counter > 0:
                     last_processed_msg_time = now
             except Exception as e:
                 send_telegram_message(
-                    f"⚠️ *Alerta de Base de Datos*\n"
-                    f"Error al conectar con la base de datos: {e}"
+                    f"⚠️ *Alerta de Base de Datos*\nError al conectar con la BD: {e}"
                 )
                 with stats_lock:
                     performance_stats["errors"] += 1
@@ -476,7 +435,7 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                     return
                 wallet = tx_data.get("wallet", "unknown_wallet")
                 if wallet not in set(wallets_list):
-                    logger.debug(f"⚠️ Wallet {wallet[:8]}... no en lista, ignorando")
+                    logger.debug(f"⚠️ Wallet {wallet[:8]}... no está en la lista, ignorando")
                     return
                 tx_type = tx_data.get("tx_type", "unknown_type")
                 token = None
@@ -506,11 +465,11 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                             actual_tx_type = "BUY"
                             usd_value = float(tx_data.get("token1_amount_usd", 0))
                 if not token or not actual_tx_type:
-                    logger.warning("⚠️ No se determinó token o tipo, ignorando")
+                    logger.warning("⚠️ No se pudo determinar token o tipo, ignorando")
                     return
                 min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
                 if usd_value <= 0 or usd_value < min_tx_usd:
-                    logger.debug(f"⚠️ Valor insuficiente (${usd_value}), ignorando")
+                    logger.debug(f"⚠️ Transacción con valor insuficiente (${usd_value}), ignorando")
                     return
                 start_time = time.time()
                 transaction_counter += 1
@@ -542,7 +501,7 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                             if usd_value > buy_amount:
                                 profit_percent = (usd_value - buy_amount) / buy_amount
                                 db.save_wallet_profit(wallet, token, buy_amount, usd_value, profit_percent, hold_time_hours, buy_time)
-                                logger.info(f"💰 Profit registrado: {wallet} {profit_percent:.2%} en {hold_time_hours:.1f}h")
+                                logger.info(f"💰 Profit: {wallet} {profit_percent:.2%} en {hold_time_hours:.1f}h")
                         except Exception as e:
                             logger.error(f"Error registrando profit: {e}")
                 try:
@@ -561,7 +520,7 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                     logger.error(f"Error actualizando metadatos: {e}")
                 try:
                     signal_logic.add_transaction(wallet, token, usd_value, actual_tx_type)
-                    logger.debug("✅ Transacción añadida a lógica de señales")
+                    logger.debug("✅ Transacción añadida a señales")
                 except Exception as e:
                     logger.error(f"🚨 Error añadiendo a señales: {e}")
                     with stats_lock:
@@ -583,15 +542,14 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
             performance_stats["last_error"] = (time.time(), str(e))
             if performance_stats["errors"] >= 5:
                 send_telegram_message(
-                    "🚨 *Error crítico de conexión*\n"
-                    f"Múltiples fallos al gestionar la conexión: {str(e)}\nVerificar logs."
+                    "🚨 *Error crítico de conexión*\nMúltiples fallos al gestionar la conexión.\nVerificar logs."
                 )
                 performance_stats["errors"] = 0
                 await asyncio.sleep(60)
 
 def handle_shutdown(sig, frame):
     """
-    Maneja el cierre del programa con limpieza de recursos.
+    Maneja el cierre del programa.
     """
     global running, cielo_ws_connection
     print("\n🛑 Cierre recibido, terminando...")
@@ -678,17 +636,21 @@ async def main():
         else:
             logger.info("ℹ️ Modelo ML pendiente de entrenamiento")
         
+        # Inicializar cliente Helius y asignarlo a SignalLogic
+        helius_client = HeliusClient(Config.HELIUS_API_KEY)
+        
         wallets_list = load_wallets()
         logger.info(f"📋 Se cargaron {len(wallets_list)} wallets")
         if not wallets_list:
-            logger.warning("⚠️ No se cargaron wallets, verificar traders_data.json")
-            send_telegram_message("⚠️ *Advertencia*: No se cargaron wallets para monitorear")
+            logger.warning("⚠️ No se cargaron wallets; verificar traders_data.json")
+            send_telegram_message("⚠️ *Advertencia*: No se cargaron wallets para monitorear.")
         
         signal_logic = SignalLogic(
             scoring_system=scoring_system, 
             dex_client=dex_client, 
             rugcheck_api=rugcheck_api,
-            ml_predictor=signal_predictor
+            ml_predictor=signal_predictor,
+            helius_client=helius_client
         )
         
         performance_tracker = PerformanceTracker(dex_client)
@@ -717,7 +679,7 @@ async def main():
                     deleted = db.cleanup_old_data(days=90)
                     logger.info(f"🧹 Limpieza completada: {sum(deleted.values()) if isinstance(deleted, dict) else 0} registros eliminados")
                 except Exception as e:
-                    logger.error(f"Error en limpieza: {e}")
+                    logger.error(f"Error en tarea de limpieza: {e}")
                     await asyncio.sleep(86400)
         asyncio.create_task(cleanup_old_data_task())
         
@@ -753,7 +715,7 @@ async def main():
 
 def handle_shutdown(sig, frame):
     """
-    Maneja el cierre del programa.
+    Maneja el cierre del programa, liberando recursos y guardando estados.
     """
     global running, cielo_ws_connection
     print("\n🛑 Señal de cierre recibida, terminando...")
@@ -800,8 +762,7 @@ if __name__ == "__main__":
         print(f"🚨 Error crítico: {e}")
         try:
             send_telegram_message(
-                "🚨 *Error Crítico*\n"
-                f"Error no capturado: {str(e)}\nEl bot se ha detenido inesperadamente."
+                "🚨 *Error Crítico*\nError no capturado, el bot se ha detenido inesperadamente."
             )
         except:
             pass
