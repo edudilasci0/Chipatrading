@@ -320,7 +320,7 @@ class SignalLogic:
         elite_traders = candidate.get("elite_traders", 0)
         ml_prediction = candidate.get("ml_prediction", 0.5)
         
-        # Enlaces a exploradores (se mantienen los tres para referencia)
+        # Enlaces a exploradores
         dexscreener_link = f"https://dexscreener.com/solana/{token}"
         birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
         neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
@@ -337,7 +337,6 @@ class SignalLogic:
             f"Token: `{token}`\n"
             f"Confianza: *{confidence:.2f}*\n"
             f"Predicción ML: *{ml_prediction:.2f}*\n\n"
-            
             f"*📊 Datos:*\n"
             f"• Traders: `{trader_count}`\n"
             f"• Volumen: `${volume_usd:,.2f}`\n"
@@ -345,12 +344,10 @@ class SignalLogic:
             f"• % Compras: `{buy_percentage*100:.1f}%`\n"
             f"• Traders de élite: `{elite_traders}`\n"
             f"• Traders calidad: `{high_quality_traders}`\n\n"
-            
             f"*🔍 Enlaces:*\n"
             f"• [DexScreener]({dexscreener_link})\n"
             f"• [Birdeye]({birdeye_link})\n"
             f"• [Neo BullX]({neobullx_link})\n\n"
-            
             f"_Señal generada por ChipaTrading_"
         )
         return message
