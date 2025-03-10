@@ -5,21 +5,20 @@ import json
 class Config:
     """
     Clase centralizada para manejar la configuración del bot.
-    Carga los valores desde variables de entorno, base de datos o
-    valores por defecto.
+    Carga los valores desde variables de entorno, base de datos o valores por defecto.
     """
     # API Keys y URLs
-    HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
-    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
-
-    # Configuración de Rugcheck
+    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "")
     RUGCHECK_PRIVATE_KEY = os.environ.get("RUGCHECK_PRIVATE_KEY", "")
     RUGCHECK_WALLET_PUBKEY = os.environ.get("RUGCHECK_WALLET_PUBKEY", "")
+    HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")  # Nueva variable
 
-    # Configuración de las señales (valores por defecto)
+    # Configuración de la base de datos
+    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
+
+    # Configuración de señales (valores por defecto)
     MIN_TRANSACTION_USD = 200
     MIN_TRADERS_FOR_SIGNAL = 2
     SIGNAL_WINDOW_SECONDS = 540  # 9 minutos
@@ -37,58 +36,55 @@ class Config:
     MIN_MARKETCAP = 100000
     MAX_MARKETCAP = 500_000_000
     VOL_NORMALIZATION_FACTOR = 10000.0
-    
-    # Nuevas configuraciones para memecoins
+
+    # Nuevas configuraciones para señales
+    SIGNAL_THROTTLING = 10  # Máximo de señales por hora
+    ADAPT_CONFIDENCE_THRESHOLD = True
+    HIGH_QUALITY_TRADER_SCORE = 7.0
+
+    # Configuración para memecoins (nuevos parámetros)
     MEMECOIN_CONFIG = {
-        "MIN_VOLUME_USD": 1000,           # Volumen mínimo para detectar movimientos relevantes
-        "MIN_CONFIDENCE": 0.4,            # Umbral de confianza para señales en memecoins
-        "VOLUME_GROWTH_THRESHOLD": 0.3,   # 30% de crecimiento en 5 minutos
-        "TX_RATE_THRESHOLD": 10           # Transacciones por segundo (o valor relativo en la ventana)
+        "MIN_VOLUME_USD": 1000,
+        "MIN_CONFIDENCE": 0.4,
+        "VOLUME_GROWTH_THRESHOLD": 0.3,
+        "TX_RATE_THRESHOLD": 10
     }
 
-    # Booster para tipos de tokens
-    token_type_scores = {
-        "meme": 1.35,
-        "new": 1.30,
-        "defi": 1.05,
-    }
+    # Nuevo flag para Helius API requerida (reemplaza a DexScreener)
+    HELIUS_API_REQUIRED = True
 
     # Lista de tokens especiales a ignorar
     IGNORE_TOKENS = [
-        "native",  # Token genérico
-        "So11111111111111111111111111111111111111112",  # SOL
-        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
-        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"   # USDT
+        "native",
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
     ]
 
-    # Tokens conocidos (para referencia)
+    # Tokens conocidos (para evitar errores y añadir información)
     KNOWN_TOKENS = {
         "So11111111111111111111111111111111111111112": {
-            "name": "SOL", 
+            "name": "SOL",
             "price": 0,
             "market_cap": 15000000000,
             "vol_1h": 1000000
         },
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
-            "name": "USDC", 
+            "name": "USDC",
             "price": 1,
             "market_cap": 35000000000,
             "vol_1h": 2000000
         },
         "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
-            "name": "USDT", 
+            "name": "USDT",
             "price": 1,
             "market_cap": 40000000000,
             "vol_1h": 3000000
         }
     }
 
-    # Flag para habilitar/deshabilitar el filtrado por RugCheck
-    ENABLE_RUGCHECK_FILTERING = False
-
-    # Variables dinámicas desde la base de datos
     _dynamic_config = {}
-
+    
     @classmethod
     def load_dynamic_config(cls, db_connection=None):
         if not db_connection:
@@ -108,7 +104,7 @@ class Config:
                         setattr(cls, key.upper(), value)
         except Exception as e:
             print(f"⚠️ Error cargando configuración dinámica: {e}")
-
+    
     @classmethod
     def get(cls, key, default=None):
         if key in cls._dynamic_config:
@@ -116,7 +112,7 @@ class Config:
         if hasattr(cls, key.upper()):
             return getattr(cls, key.upper())
         return default
-
+        
     @classmethod
     def check_required_config(cls):
         required_vars = ["DATABASE_PATH", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "CIELO_API_KEY"]
@@ -125,7 +121,7 @@ class Config:
             print(f"🚨 ERROR: Faltan variables de entorno requeridas: {', '.join(missing)}")
             sys.exit(1)
         print("✅ Configuración requerida verificada correctamente")
-
+        
     @classmethod
     def update_setting(cls, key, value):
         cls._dynamic_config[key] = value
