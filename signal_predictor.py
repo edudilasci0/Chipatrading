@@ -3,7 +3,6 @@ import numpy as np
 import pickle
 import os
 import time
-import joblib
 from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
@@ -14,9 +13,10 @@ import math
 
 class SignalPredictor:
     """
-    Clase para predecir el éxito de señales utilizando un modelo ML real.
-    Se integra la posibilidad de incluir nuevas features (tx_rate, whale_flag, is_meme) para mejorar la detección.
+    Clase optimizada para predecir el éxito de señales basándose en datos históricos.
+    Se integra la posibilidad de usar nuevas features (tx_rate, whale_flag, is_meme) para mejorar la detección de daily runners en memecoins.
     """
+    
     def __init__(self, model_path="ml_data/models/signal_model.pkl"):
         self.model_path = model_path
         self.model = None
@@ -37,7 +37,7 @@ class SignalPredictor:
         self.f1_score = None
         self.sample_count = 0
         self.feature_importance = None
-
+    
     def load_model(self):
         try:
             if os.path.exists(self.model_path):
@@ -55,7 +55,7 @@ class SignalPredictor:
                 print(f"✅ Modelo cargado desde {self.model_path}")
                 print(f"   Exactitud: {self.accuracy:.4f}, Precision: {self.precision:.4f}, Recall: {self.recall:.4f}")
                 print(f"   Muestras: {self.sample_count}, Última actualización: {self.last_training}")
-                if self.feature_importance is not None:
+                if self.feature_importance:
                     print("   Features más importantes:")
                     for i, (feature, importance) in enumerate(self.feature_importance[:5]):
                         print(f"   {i+1}. {feature}: {importance:.4f}")
@@ -64,21 +64,21 @@ class SignalPredictor:
         except Exception as e:
             print(f"⚠️ Error cargando modelo: {e}")
             return False
-
+    
     def train_model(self, training_data_path="ml_data/training_data.csv", force=False):
         try:
             if not os.path.exists(training_data_path):
-                print(f"⚠️ No se encontró {training_data_path}")
+                print(f"⚠️ No se encontró el archivo de entrenamiento: {training_data_path}")
                 return False
             df = pd.read_csv(training_data_path)
             if len(df) < 20:
-                print(f"⚠️ Datos insuficientes: {len(df)} registros")
+                print(f"⚠️ Datos insuficientes para entrenar: {len(df)} registros")
                 return False
             if not force and self.sample_count >= len(df) * 0.9:
-                print(f"ℹ️ No hay suficientes datos nuevos para reentrenar")
+                print(f"ℹ️ No hay suficientes datos nuevos para reentrenar (actual: {len(df)}, previo: {self.sample_count})")
                 return False
             if 'success' not in df.columns:
-                print("⚠️ Falta columna 'success'")
+                print("⚠️ No se encontró la columna 'success' en los datos de entrenamiento")
                 return False
             if 'tx_rate' not in df.columns and 'num_transactions' in df.columns and 'window_seconds' in df.columns:
                 df['tx_rate'] = df['num_transactions'] / df['window_seconds']
@@ -89,7 +89,7 @@ class SignalPredictor:
             available_features = [f for f in self.features if f in df.columns]
             missing_features = [f for f in self.features if f not in df.columns]
             if missing_features:
-                print(f"⚠️ Faltan features: {missing_features}")
+                print(f"⚠️ Faltan features: {missing_features}. Usando solo los disponibles: {available_features}")
             X = df[available_features]
             y = df['success']
             from sklearn.utils import class_weight
@@ -108,8 +108,8 @@ class SignalPredictor:
             gb_model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
             rf_scores = cross_val_score(rf_model, X_train_scaled, y_train, cv=kf, scoring='f1')
             gb_scores = cross_val_score(gb_model, X_train_scaled, y_train, cv=kf, scoring='f1')
-            print(f"🔄 RF F1: {rf_scores.mean():.4f} ± {rf_scores.std():.4f}")
-            print(f"🔄 GB F1: {gb_scores.mean():.4f} ± {gb_scores.std():.4f}")
+            print(f"🔄 RandomForest F1: {rf_scores.mean():.4f} ± {rf_scores.std():.4f}")
+            print(f"🔄 GradientBoosting F1: {gb_scores.mean():.4f} ± {gb_scores.std():.4f}")
             if rf_scores.mean() >= gb_scores.mean():
                 print("✅ Seleccionando RandomForest")
                 self.model = rf_model
@@ -148,14 +148,14 @@ class SignalPredictor:
                     'feature_importance': self.feature_importance
                 }, f)
             print(f"✅ Modelo entrenado y guardado en {self.model_path}")
-            print("📊 Métricas:")
+            print("📊 Métricas del modelo:")
             print(f"   Accuracy: {accuracy:.4f}")
             print(f"   Precision: {precision:.4f}")
             print(f"   Recall: {recall:.4f}")
             print(f"   F1-Score: {f1:.4f}")
             print(f"Matriz de confusión:\n{conf_matrix}")
             report = classification_report(y_test, y_pred)
-            print(f"Reporte:\n{report}")
+            print(f"Reporte de clasificación:\n{report}")
             if self.feature_importance:
                 print("🔍 Importancia de características:")
                 for i, (feature, importance) in enumerate(self.feature_importance[:5]):
@@ -169,7 +169,7 @@ class SignalPredictor:
 
     def predict_success(self, signal_features):
         if self.model is None or self.scaler is None:
-            print("⚠️ Modelo o scaler no disponibles")
+            print("⚠️ Modelo o scaler no disponibles para predicción")
             return 0.5
         features_df = pd.DataFrame([signal_features])
         if 'tx_rate' not in features_df.columns and 'num_transactions' in features_df.columns and 'window_seconds' in features_df.columns:
@@ -201,7 +201,7 @@ class SignalPredictor:
 
     def feature_analysis(self):
         if self.model is None or self.feature_importance is None:
-            return {"error": "No hay modelo entrenado"}
+            return {"error": "No hay modelo entrenado disponible"}
         feature_categories = {
             "trader_quality": ["avg_trader_score", "max_trader_score", "min_trader_score", "high_quality_ratio", "elite_trader_count"],
             "volume_metrics": ["volume_1h", "normalized_volume", "volume_growth_5m", "volume_growth_1h", "total_volume_usd"],
@@ -227,9 +227,9 @@ class SignalPredictor:
         insights = []
         for category, stats in sorted_categories:
             if category == "trader_quality" and stats["total_importance"] > 0.3:
-                insights.append("La calidad de los traders es muy importante para el éxito de la señal.")
+                insights.append("La calidad de los traders es un factor muy importante para el éxito de la señal.")
             elif category == "volume_metrics" and stats["total_importance"] > 0.3:
-                insights.append("El volumen y su crecimiento son altamente predictivos.")
+                insights.append("El volumen y su crecimiento son altamente predictivos del rendimiento.")
             elif category == "transaction_patterns" and stats["total_importance"] > 0.3:
                 insights.append("Los patrones de transacción son buenos indicadores.")
         top_features = self.feature_importance[:5]
