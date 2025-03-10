@@ -12,19 +12,18 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
     CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
-    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" 
-                                   if os.path.exists("/data") else "tradingbot.db")
+    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
 
     # Configuración de Rugcheck
     RUGCHECK_PRIVATE_KEY = os.environ.get("RUGCHECK_PRIVATE_KEY", "")
     RUGCHECK_WALLET_PUBKEY = os.environ.get("RUGCHECK_WALLET_PUBKEY", "")
 
     # Configuración de las señales (valores por defecto)
-    MIN_TRANSACTION_USD = 200  # Reducido de 300
-    MIN_TRADERS_FOR_SIGNAL = 2  # Reducido de 3
-    SIGNAL_WINDOW_SECONDS = 540  # 9 minutos como solicitaste
-    MIN_CONFIDENCE_THRESHOLD = 0.3  # Reducido de 0.4
-    MIN_VOLUME_USD = 2000  # Reducido de 5000
+    MIN_TRANSACTION_USD = 200
+    MIN_TRADERS_FOR_SIGNAL = 2
+    SIGNAL_WINDOW_SECONDS = 540  # 9 minutos
+    MIN_CONFIDENCE_THRESHOLD = 0.3
+    MIN_VOLUME_USD = 2000
 
     # Configuración de scoring
     DEFAULT_SCORE = 5.0
@@ -38,24 +37,34 @@ class Config:
     MAX_MARKETCAP = 500_000_000
     VOL_NORMALIZATION_FACTOR = 10000.0
     
-    # Nuevas configuraciones
-    SIGNAL_THROTTLING = 10  # Máximo de señales por hora
-    ADAPT_CONFIDENCE_THRESHOLD = True  # Ajustar umbrales según rendimiento
-    HIGH_QUALITY_TRADER_SCORE = 7.0  # Umbral para traders de alta calidad
-    
+    # Nuevas configuraciones para memecoins
+    MEMECOIN_CONFIG = {
+        "MIN_VOLUME_USD": 1000,           # Volumen mínimo para detectar movimientos relevantes
+        "MIN_CONFIDENCE": 0.4,            # Umbral de confianza para señales en memecoins
+        "VOLUME_GROWTH_THRESHOLD": 0.3,   # 30% de crecimiento en 5 minutos
+        "TX_RATE_THRESHOLD": 10           # Transacciones por segundo (o valor relativo en la ventana)
+    }
+
+    # Booster para tipos de tokens
+    token_type_scores = {
+        "meme": 1.35,
+        "new": 1.30,
+        "defi": 1.05,
+    }
+
     # Lista de tokens especiales a ignorar
     IGNORE_TOKENS = [
         "native",  # Token genérico
-        "So11111111111111111111111111111111111111112",  # SOL token
-        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC token
-        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"   # USDT token
+        "So11111111111111111111111111111111111111112",  # SOL
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"   # USDT
     ]
 
-    # Tokens conocidos (para evitar errores y añadir información)
+    # Tokens conocidos (para referencia)
     KNOWN_TOKENS = {
         "So11111111111111111111111111111111111111112": {
             "name": "SOL", 
-            "price": 0,  # Se actualizará dinámicamente
+            "price": 0,
             "market_cap": 15000000000,
             "vol_1h": 1000000
         },
@@ -75,33 +84,20 @@ class Config:
 
     # Flag para habilitar/deshabilitar el filtrado por RugCheck
     ENABLE_RUGCHECK_FILTERING = False
-    
-    # Valores dinámicos desde base de datos
+
+    # Variables dinámicas desde la base de datos
     _dynamic_config = {}
-    
+
     @classmethod
     def load_dynamic_config(cls, db_connection=None):
-        """
-        Carga configuración dinámica desde la base de datos
-        """
-        # Si no tenemos conexión, usamos los valores por defecto
         if not db_connection:
             return
-            
         try:
-            # Importar aquí para evitar dependencia circular
             from db import get_all_settings
-            
-            # Obtener todas las configuraciones
             settings = get_all_settings(db_connection)
-            
-            # Actualizar valores dinámicos
             for key, value in settings.items():
                 cls._dynamic_config[key] = value
-                
-                # Actualizar atributos de clase para acceso más fácil
                 if hasattr(cls, key.upper()):
-                    # Convertir al tipo correcto
                     attr_value = getattr(cls, key.upper())
                     if isinstance(attr_value, int):
                         setattr(cls, key.upper(), int(value))
@@ -109,62 +105,31 @@ class Config:
                         setattr(cls, key.upper(), float(value))
                     else:
                         setattr(cls, key.upper(), value)
-        
         except Exception as e:
             print(f"⚠️ Error cargando configuración dinámica: {e}")
-    
+
     @classmethod
     def get(cls, key, default=None):
-        """
-        Obtiene un valor de configuración, priorizando:
-        1. Valores dinámicos cargados desde BD
-        2. Atributos de clase (variables de entorno o valores por defecto)
-        3. Valor por defecto proporcionado
-        """
-        # Primero buscar en config dinámica
         if key in cls._dynamic_config:
             return cls._dynamic_config[key]
-            
-        # Luego buscar como atributo de clase
         if hasattr(cls, key.upper()):
             return getattr(cls, key.upper())
-            
-        # Finalmente retornar valor por defecto
         return default
-        
+
     @classmethod
     def check_required_config(cls):
-        """
-        Verifica que todas las configuraciones requeridas estén presentes.
-        Sale del programa si faltan configuraciones críticas.
-        """
         required_vars = ["DATABASE_PATH", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "CIELO_API_KEY"]
         missing = [var for var in required_vars if not getattr(cls, var)]
-        
         if missing:
             print(f"🚨 ERROR: Faltan variables de entorno requeridas: {', '.join(missing)}")
-            print("Configura estas variables en tu entorno o en un archivo .env")
             sys.exit(1)
-        
         print("✅ Configuración requerida verificada correctamente")
-        
+
     @classmethod
     def update_setting(cls, key, value):
-        """
-        Actualiza un valor de configuración en memoria.
-        No persiste el cambio en la base de datos.
-        
-        Args:
-            key: Clave de configuración
-            value: Nuevo valor
-        """
         cls._dynamic_config[key] = value
-        
-        # También actualizar atributo de clase si existe
         if hasattr(cls, key.upper()):
             attr_value = getattr(cls, key.upper())
-            
-            # Convertir al tipo correcto
             if isinstance(attr_value, int):
                 setattr(cls, key.upper(), int(value))
             elif isinstance(attr_value, float):
