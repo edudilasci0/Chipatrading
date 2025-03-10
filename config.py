@@ -9,6 +9,7 @@ class Config:
     valores por defecto.
     """
     # API Keys y URLs
+    HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
     CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
