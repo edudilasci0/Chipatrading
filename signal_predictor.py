@@ -80,6 +80,7 @@ class SignalPredictor:
             if 'success' not in df.columns:
                 print("⚠️ No se encontró la columna 'success' en los datos de entrenamiento")
                 return False
+            # Generar feature tx_rate si no existe
             if 'tx_rate' not in df.columns and 'num_transactions' in df.columns and 'window_seconds' in df.columns:
                 df['tx_rate'] = df['num_transactions'] / df['window_seconds']
             if 'whale_flag' not in df.columns:
@@ -206,7 +207,7 @@ class SignalPredictor:
             "trader_quality": ["avg_trader_score", "max_trader_score", "min_trader_score", "high_quality_ratio", "elite_trader_count"],
             "volume_metrics": ["volume_1h", "normalized_volume", "volume_growth_5m", "volume_growth_1h", "total_volume_usd"],
             "market_metrics": ["market_cap", "normalized_mcap"],
-            "transaction_patterns": ["num_traders", "num_transactions", "buy_ratio", "tx_velocity", "tx_per_trader", "avg_volume_per_trader"]
+            "transaction_patterns": ["num_traders", "num_transactions", "buy_ratio", "tx_velocity", "avg_volume_per_trader"]
         }
         category_importance = {}
         for category, feats in feature_categories.items():
