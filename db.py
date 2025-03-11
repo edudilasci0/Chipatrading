@@ -5,12 +5,10 @@ import psycopg2.pool
 import psycopg2.extras
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import Config
 import threading
-import random
 
-# Configurar logging
 logger = logging.getLogger("database")
 handler = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -18,20 +16,15 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# Pool de conexiones global
 pool = None
-pool_lock = threading.Lock()  # Para operaciones seguras en multithreading
+pool_lock = threading.Lock()
 
-# Cache para consultas frecuentes
 query_cache = {}
 query_cache_timestamp = {}
 query_cache_hits = 0
 query_cache_misses = 0
 
 def init_db_pool(min_conn=1, max_conn=10):
-    """
-    Inicializa el pool de conexiones a la base de datos.
-    """
     global pool
     with pool_lock:
         if pool is None:
@@ -39,14 +32,10 @@ def init_db_pool(min_conn=1, max_conn=10):
             if not db_url:
                 raise ValueError("DATABASE_PATH no está configurado")
             pool = psycopg2.pool.SimpleConnectionPool(min_conn, max_conn, db_url)
-            logger.info(f"✅ Pool de conexiones inicializado (min={min_conn}, max={max_conn})")
+            logger.info(f"✅ Pool de conexiones a base de datos inicializado (min={min_conn}, max={max_conn})")
 
 @contextmanager
 def get_connection():
-    """
-    Obtiene una conexión del pool y la devuelve cuando termina.
-    Implementa reconexión automática en caso de error.
-    """
     global pool
     if pool is None:
         init_db_pool()
@@ -59,7 +48,7 @@ def get_connection():
         if conn:
             try:
                 pool.putconn(conn, close=True)
-            except Exception:
+            except:
                 pass
         init_db_pool()
         conn = pool.getconn()
@@ -69,11 +58,9 @@ def get_connection():
             pool.putconn(conn)
 
 def retry_db_operation(max_attempts=3, delay=1, backoff_factor=2):
-    """
-    Decorador para reintentar operaciones de BD en caso de error, con backoff exponencial.
-    """
     def decorator(func):
         def wrapper(*args, **kwargs):
+            import random
             last_error = None
             current_delay = delay
             for attempt in range(max_attempts):
@@ -97,13 +84,9 @@ def retry_db_operation(max_attempts=3, delay=1, backoff_factor=2):
 
 @retry_db_operation()
 def init_db():
-    """
-    Crea las tablas necesarias y aplica migraciones.
-    """
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            # Tabla para versiones de schema/migraciones
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
@@ -116,7 +99,6 @@ def init_db():
             current_version = result[0] if result and result[0] else 0
             logger.info(f"Versión actual del schema: {current_version}")
 
-            # Migración #1: Tablas iniciales
             if current_version < 1:
                 logger.info("Aplicando migración #1: Tablas iniciales")
                 cur.execute("""
@@ -174,7 +156,6 @@ def init_db():
                         created_at TIMESTAMP DEFAULT NOW()
                     )
                 """)
-                # Registrar migración #1
                 cur.execute("""
                     INSERT INTO schema_version (version, description)
                     VALUES (1, 'Tablas iniciales')
@@ -182,9 +163,8 @@ def init_db():
                 current_version = 1
                 logger.info("Migración #1 aplicada correctamente")
 
-            # Migración #2: Nuevas tablas para mejoras
             if current_version < 2:
-                logger.info("Aplicando migración #2: Nuevas tablas")
+                logger.info("Aplicando migración #2: Mejoras y nuevas tablas")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS wallet_profits (
                         id SERIAL PRIMARY KEY,
@@ -221,12 +201,11 @@ def init_db():
                 """)
                 cur.execute("""
                     INSERT INTO schema_version (version, description)
-                    VALUES (2, 'Nuevas tablas y mejoras')
+                    VALUES (2, 'Mejoras y nuevas tablas')
                 """)
                 current_version = 2
                 logger.info("Migración #2 aplicada correctamente")
 
-            # Crear índices para mejorar rendimiento
             try:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
@@ -241,8 +220,6 @@ def init_db():
             except Exception as e:
                 logger.error(f"⚠️ Error al crear índices: {e}")
                 conn.rollback()
-
-            # Insertar configuraciones iniciales si no existen
             default_settings = [
                 ("min_transaction_usd", str(Config.MIN_TRANSACTION_USD)),
                 ("min_traders_for_signal", str(Config.MIN_TRADERS_FOR_SIGNAL)),
@@ -250,7 +227,7 @@ def init_db():
                 ("min_confidence_threshold", str(Config.MIN_CONFIDENCE_THRESHOLD)),
                 ("rugcheck_min_score", "50"),
                 ("min_volume_usd", str(Config.MIN_VOLUME_USD)),
-                ("signal_throttling", str(Config.SIGNAL_THROTTLING)),
+                ("signal_throttling", "10"),
                 ("adapt_confidence_threshold", "true"),
                 ("high_quality_trader_score", "7.0")
             ]
@@ -264,7 +241,7 @@ def init_db():
             logger.info("✅ Base de datos inicializada correctamente")
             return True
     except Exception as e:
-        logger.error(f"🚨 Error crítico al inicializar BD: {e}", exc_info=True)
+        logger.error(f"🚨 Error crítico al inicializar base de datos: {e}", exc_info=True)
         return False
 
 def clear_query_cache():
@@ -298,7 +275,8 @@ def execute_cached_query(query, params=None, max_age=60, write_query=False):
     cache_key = f"{query}:{str(params)}"
     now = time.time()
     if cache_key in query_cache and cache_key in query_cache_timestamp:
-        if now - query_cache_timestamp[cache_key] < max_age:
+        cache_age = now - query_cache_timestamp[cache_key]
+        if cache_age < max_age:
             query_cache_hits += 1
             return query_cache[cache_key]
     query_cache_misses += 1
@@ -313,12 +291,11 @@ def execute_cached_query(query, params=None, max_age=60, write_query=False):
 @retry_db_operation()
 def save_transaction(tx_data):
     query = """
-        INSERT INTO transactions (wallet, token, tx_type, amount_usd)
-        VALUES (%s, %s, %s, %s)
+    INSERT INTO transactions (wallet, token, tx_type, amount_usd)
+    VALUES (%s, %s, %s, %s)
     """
     params = (tx_data["wallet"], tx_data["token"], tx_data["type"], tx_data["amount_usd"])
     execute_cached_query(query, params, write_query=True)
-    # Limpiar caché relacionada con transacciones
     for key in list(query_cache.keys()):
         if "transactions" in key:
             query_cache.pop(key, None)
@@ -327,10 +304,10 @@ def save_transaction(tx_data):
 @retry_db_operation()
 def update_wallet_score(wallet, new_score):
     query = """
-        INSERT INTO wallet_scores (wallet, score)
-        VALUES (%s, %s)
-        ON CONFLICT (wallet)
-        DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()
+    INSERT INTO wallet_scores (wallet, score)
+    VALUES (%s, %s)
+    ON CONFLICT (wallet)
+    DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()
     """
     execute_cached_query(query, (wallet, new_score), write_query=True)
     for key in list(query_cache.keys()):
@@ -350,16 +327,15 @@ def get_wallet_score(wallet):
 @retry_db_operation()
 def save_signal(token, trader_count, confidence, initial_price=None):
     query = """
-        INSERT INTO signals (token, trader_count, confidence, initial_price)
-        VALUES (%s, %s, %s, %s)
-        RETURNING id
+    INSERT INTO signals (token, trader_count, confidence, initial_price)
+    VALUES (%s, %s, %s, %s)
+    RETURNING id
     """
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(query, (token, trader_count, confidence, initial_price))
         signal_id = cur.fetchone()[0]
         conn.commit()
-    # Limpiar caché relacionada con signals
     for key in list(query_cache.keys()):
         if "signals" in key:
             query_cache.pop(key, None)
@@ -369,8 +345,8 @@ def save_signal(token, trader_count, confidence, initial_price=None):
 @retry_db_operation()
 def save_signal_features(signal_id, token, features):
     query = """
-        INSERT INTO signal_features (signal_id, token, feature_json)
-        VALUES (%s, %s, %s)
+    INSERT INTO signal_features (signal_id, token, feature_json)
+    VALUES (%s, %s, %s)
     """
     features_json = psycopg2.extras.Json(features)
     execute_cached_query(query, (signal_id, token, features_json), write_query=True)
@@ -379,9 +355,10 @@ def save_signal_features(signal_id, token, features):
 @retry_db_operation()
 def save_wallet_profit(wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, buy_timestamp):
     query = """
-        INSERT INTO wallet_profits (wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, buy_timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (wallet, token, buy_timestamp) DO NOTHING
+    INSERT INTO wallet_profits 
+        (wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, buy_timestamp)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (wallet, token, buy_timestamp) DO NOTHING
     """
     params = (wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, datetime.fromtimestamp(buy_timestamp))
     execute_cached_query(query, params, write_query=True)
@@ -389,8 +366,8 @@ def save_wallet_profit(wallet, token, buy_price, sell_price, profit_percent, hol
 @retry_db_operation()
 def count_signals_today():
     query = """
-        SELECT COUNT(*) FROM signals
-        WHERE created_at::date = CURRENT_DATE
+    SELECT COUNT(*) FROM signals
+    WHERE created_at::date = CURRENT_DATE
     """
     results = execute_cached_query(query, max_age=60)
     return results[0]['count'] if results else 0
@@ -398,8 +375,8 @@ def count_signals_today():
 @retry_db_operation()
 def count_signals_last_hour():
     query = """
-        SELECT COUNT(*) FROM signals
-        WHERE created_at > NOW() - INTERVAL '1 HOUR'
+    SELECT COUNT(*) FROM signals
+    WHERE created_at > NOW() - INTERVAL '1 HOUR'
     """
     results = execute_cached_query(query, max_age=60)
     return results[0]['count'] if results else 0
@@ -407,19 +384,48 @@ def count_signals_last_hour():
 @retry_db_operation()
 def count_transactions_today():
     query = """
-        SELECT COUNT(*) FROM transactions
-        WHERE created_at::date = CURRENT_DATE
+    SELECT COUNT(*) FROM transactions
+    WHERE created_at::date = CURRENT_DATE
     """
     results = execute_cached_query(query, max_age=60)
     return results[0]['count'] if results else 0
 
 @retry_db_operation()
+def get_signals_without_outcomes(hours=48):
+    query = """
+    SELECT id, token, trader_count, confidence, initial_price, created_at
+    FROM signals
+    WHERE created_at > NOW() - INTERVAL '%s HOUR'
+    AND outcome_collected = FALSE
+    """
+    results = execute_cached_query(query, (hours,), max_age=60)
+    return [
+        {
+            "id": row['id'],
+            "token": row['token'],
+            "trader_count": row['trader_count'],
+            "confidence": row['confidence'],
+            "initial_price": row['initial_price'],
+            "created_at": row['created_at'].isoformat()
+        } for row in results
+    ]
+
+@retry_db_operation()
+def mark_signal_outcome_collected(signal_id):
+    query = """
+    UPDATE signals
+    SET outcome_collected = TRUE
+    WHERE id = %s
+    """
+    execute_cached_query(query, (signal_id,), write_query=True)
+
+@retry_db_operation()
 def get_token_transactions(token, hours=24):
     query = """
-        SELECT wallet, tx_type, amount_usd, created_at
-        FROM transactions
-        WHERE token = %s AND created_at > NOW() - INTERVAL '%s HOUR'
-        ORDER BY created_at DESC
+    SELECT wallet, tx_type, amount_usd, created_at
+    FROM transactions
+    WHERE token = %s AND created_at > NOW() - INTERVAL '%s HOUR'
+    ORDER BY created_at DESC
     """
     results = execute_cached_query(query, (token, hours), max_age=30)
     return [
@@ -434,10 +440,10 @@ def get_token_transactions(token, hours=24):
 @retry_db_operation()
 def get_wallet_recent_transactions(wallet, hours=24):
     query = """
-        SELECT token, tx_type, amount_usd, created_at
-        FROM transactions
-        WHERE wallet = %s AND created_at > NOW() - INTERVAL '%s HOUR'
-        ORDER BY created_at DESC
+    SELECT token, tx_type, amount_usd, created_at
+    FROM transactions
+    WHERE wallet = %s AND created_at > NOW() - INTERVAL '%s HOUR'
+    ORDER BY created_at DESC
     """
     results = execute_cached_query(query, (wallet, hours), max_age=30)
     return [
@@ -452,14 +458,15 @@ def get_wallet_recent_transactions(wallet, hours=24):
 @retry_db_operation()
 def get_wallet_profit_stats(wallet, days=30):
     query = """
-        SELECT COUNT(*) as trade_count,
-               AVG(profit_percent) as avg_profit,
-               MAX(profit_percent) as max_profit,
-               SUM(CASE WHEN profit_percent > 0 THEN 1 ELSE 0 END) as win_count,
-               SUM(CASE WHEN profit_percent <= 0 THEN 1 ELSE 0 END) as loss_count,
-               AVG(hold_time_hours) as avg_hold_time
-        FROM wallet_profits
-        WHERE wallet = %s AND sell_timestamp > NOW() - INTERVAL '%s DAY'
+    SELECT 
+        COUNT(*) as trade_count,
+        AVG(profit_percent) as avg_profit,
+        MAX(profit_percent) as max_profit,
+        SUM(CASE WHEN profit_percent > 0 THEN 1 ELSE 0 END) as win_count,
+        SUM(CASE WHEN profit_percent <= 0 THEN 1 ELSE 0 END) as loss_count,
+        AVG(hold_time_hours) as avg_hold_time
+    FROM wallet_profits
+    WHERE wallet = %s AND sell_timestamp > NOW() - INTERVAL '%s DAY'
     """
     results = execute_cached_query(query, (wallet, days), max_age=300)
     if not results or results[0]['trade_count'] == 0:
@@ -482,88 +489,56 @@ def save_signal_performance(token, signal_id, timeframe, percent_change, confide
         logger.warning(f"⚠️ Timeframe no válido: {timeframe}")
         return False
     query = """
-        INSERT INTO signal_performance (token, signal_id, timeframe, percent_change, confidence, traders_count)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (token, timeframe)
-        DO UPDATE SET percent_change = EXCLUDED.percent_change,
-                      confidence = EXCLUDED.confidence,
-                      traders_count = EXCLUDED.traders_count,
-                      timestamp = NOW()
+    INSERT INTO signal_performance (
+        token, signal_id, timeframe, percent_change, confidence, traders_count
+    ) VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (token, timeframe)
+    DO UPDATE SET 
+        percent_change = EXCLUDED.percent_change,
+        confidence = EXCLUDED.confidence,
+        traders_count = EXCLUDED.traders_count,
+        timestamp = NOW()
     """
     execute_cached_query(query, (token, signal_id, timeframe, percent_change, confidence, traders_count), write_query=True)
     logger.info(f"✅ Rendimiento guardado para {token} en {timeframe}: {percent_change:.2f}%")
     return True
 
 @retry_db_operation()
-def get_signals_without_outcomes(hours=48):
+def get_failed_token(token):
     query = """
-        SELECT id, token, trader_count, confidence, initial_price, created_at
-        FROM signals
-        WHERE created_at > NOW() - INTERVAL '%s HOUR'
-        AND outcome_collected = FALSE
-    """
-    results = execute_cached_query(query, (hours,), max_age=60)
-    return [
-        {
-            "id": row['id'],
-            "token": row['token'],
-            "trader_count": row['trader_count'],
-            "confidence": row['confidence'],
-            "initial_price": row['initial_price'],
-            "created_at": row['created_at'].isoformat()
-        } for row in results
-    ]
-
-@retry_db_operation()
-def mark_signal_outcome_collected(signal_id):
-    query = """
-        UPDATE signals
-        SET outcome_collected = TRUE
-        WHERE id = %s
-    """
-    execute_cached_query(query, (signal_id,), write_query=True)
-
-@retry_db_operation()
-def get_signal_by_token(token):
-    query = """
-        SELECT id, trader_count, confidence, initial_price, created_at
-        FROM signals
-        WHERE token = %s
-        ORDER BY created_at DESC
-        LIMIT 1
+    SELECT reason, created_at
+    FROM failed_tokens
+    WHERE token = %s AND created_at > NOW() - INTERVAL '24 HOUR'
     """
     results = execute_cached_query(query, (token,), max_age=60)
     if results:
         row = results[0]
         return {
-            "id": row['id'],
-            "trader_count": row['trader_count'],
-            "confidence": row['confidence'],
-            "initial_price": row['initial_price'],
-            "created_at": row['created_at'].isoformat()
+            "reason": row['reason'],
+            "timestamp": row['created_at'].isoformat()
         }
     return None
 
 @retry_db_operation()
 def update_token_metadata(token, token_type=None, volatility=None, max_price=None, max_volume=None):
     query = """
-        INSERT INTO token_metadata (token, token_type, volatility, max_price, max_volume)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (token) DO UPDATE SET
-            token_type = COALESCE(EXCLUDED.token_type, token_metadata.token_type),
-            volatility = COALESCE(EXCLUDED.volatility, token_metadata.volatility),
-            max_price = GREATEST(EXCLUDED.max_price, token_metadata.max_price),
-            max_volume = GREATEST(EXCLUDED.max_volume, token_metadata.max_volume),
-            last_updated = NOW()
+    INSERT INTO token_metadata (token, token_type, volatility, max_price, max_volume)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (token) DO UPDATE SET
+        token_type = COALESCE(EXCLUDED.token_type, token_metadata.token_type),
+        volatility = COALESCE(EXCLUDED.volatility, token_metadata.volatility),
+        max_price = GREATEST(EXCLUDED.max_price, token_metadata.max_price),
+        max_volume = GREATEST(EXCLUDED.max_volume, token_metadata.max_volume),
+        last_updated = NOW()
     """
     execute_cached_query(query, (token, token_type, volatility, max_price, max_volume), write_query=True)
 
 @retry_db_operation()
 def get_token_metadata(token):
     query = """
-        SELECT token_type, volatility, max_price, max_volume, first_seen, last_updated
-        FROM token_metadata
-        WHERE token = %s
+    SELECT token_type, volatility, max_price, max_volume, first_seen, last_updated
+    FROM token_metadata
+    WHERE token = %s
     """
     results = execute_cached_query(query, (token,), max_age=300)
     if results:
@@ -588,10 +563,10 @@ def get_all_settings():
 @retry_db_operation()
 def update_setting(key, value):
     query = """
-        INSERT INTO bot_settings (key, value)
-        VALUES (%s, %s)
-        ON CONFLICT (key)
-        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    INSERT INTO bot_settings (key, value)
+    VALUES (%s, %s)
+    ON CONFLICT (key) 
+    DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     """
     execute_cached_query(query, (key, value), write_query=True)
     for cache_key in list(query_cache.keys()):
@@ -603,27 +578,10 @@ def update_setting(key, value):
 @retry_db_operation()
 def save_failed_token(token, reason):
     query = """
-        INSERT INTO failed_tokens (token, reason)
-        VALUES (%s, %s)
-        ON CONFLICT (token)
-        DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
+    INSERT INTO failed_tokens (token, reason)
+    VALUES (%s, %s)
+    ON CONFLICT (token) 
+    DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
     """
     execute_cached_query(query, (token, reason), write_query=True)
     return True
-
-@retry_db_operation()
-def get_failed_token(token):
-    query = """
-        SELECT reason, created_at
-        FROM failed_tokens
-        WHERE token = %s AND created_at > NOW() - INTERVAL '24 HOUR'
-    """
-    results = execute_cached_query(query, (token,), max_age=60)
-    if results:
-        row = results[0]
-        return {
-            "reason": row['reason'],
-            "timestamp": row['created_at'].isoformat()
-        }
-    return None
-          
