@@ -8,10 +8,11 @@ class GMGNClient:
     Cliente para interactuar con la API pública de GMGN.ai para obtener
     datos de tokens en Solana sin necesidad de API key.
     """
+
     def __init__(self):
         self.base_url = "https://api.gmgn.ai/public/v1/"
         self.cache = {}
-        self.cache_expiry = 60  # 1 minuto
+        self.cache_expiry = 60  # 1 minuto de caché
         self.logger = logging.getLogger("gmgn_client")
 
     def _get_cache(self, endpoint, params, ttl=60):
@@ -58,6 +59,7 @@ class GMGNClient:
     def get_market_data(self, token):
         """
         Obtiene datos de mercado completos para un token.
+        Se adapta a la estructura de respuesta de GMGN.
         """
         token_info = self.get_token_info(token)
         if not token_info:
@@ -92,5 +94,6 @@ class GMGNClient:
         return False
 
     def clear_cache(self):
+        """Limpia la caché de solicitudes."""
         self.cache = {}
         self.logger.info("Cache de GMGN limpiada")
