@@ -3,9 +3,13 @@ from config import Config
 
 class SignalLogic:
     def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, rugcheck_api=None, ml_predictor=None):
+        """
+        Inicializa la lógica de señales.
+        Se inyectan helius_client y gmgn_client para obtener datos de mercado.
+        """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
-        self.gmgn_client = gmgn_client  # Nuevo cliente GMGN
+        self.gmgn_client = gmgn_client  # Cliente GMGN para respaldo
         self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.performance_tracker = None
@@ -14,6 +18,10 @@ class SignalLogic:
         self.last_signal_check = time.time()
 
     async def get_token_market_data(self, token):
+        """
+        Obtiene datos de mercado utilizando múltiples fuentes con fallback.
+        Prioridad: Helius -> GMGN -> estimación a partir de transacciones.
+        """
         data = None
         source = "none"
         # 1. Intentar con Helius
@@ -39,7 +47,7 @@ class SignalLogic:
                     volume_est = sum(tx["amount_usd"] for tx in recent_txs)
                     data = {
                         "price": 0,
-                        "market_cap": 0,
+                        "market_cap": 0,  # No se puede estimar market cap sin supply
                         "volume": volume_est,
                         "volume_growth": {"growth_5m": 0, "growth_1h": 0},
                         "estimated": True
@@ -78,11 +86,12 @@ class SignalLogic:
                 if trader_count < min_traders or volume_usd < min_volume:
                     continue
 
-                # Obtener datos de mercado usando fallback
+                # Obtener datos de mercado usando el sistema de fallback
                 market_data = await self.get_token_market_data(token)
                 market_cap = market_data.get("market_cap", 0)
                 vol_growth = market_data.get("volume_growth", {})
 
+                # Calcular tx_rate (transacciones/segundo)
                 tx_rate = len(recent_txs) / window_seconds
 
                 token_type = None
@@ -100,6 +109,7 @@ class SignalLogic:
                     token_type=token_type
                 )
 
+                # Filtro para tokens de baja capitalización y alta actividad (daily runners / memecoins)
                 config = Config.MEMECOIN_CONFIG
                 is_memecoin = (tx_rate > config["TX_RATE_THRESHOLD"] and 
                                vol_growth.get("growth_5m", 0) > config["VOLUME_GROWTH_THRESHOLD"] and 
@@ -114,7 +124,7 @@ class SignalLogic:
                 candidates.append({
                     "token": token,
                     "confidence": confidence,
-                    "ml_prediction": 0.5,
+                    "ml_prediction": 0.5,  # Valor base para ML
                     "trader_count": trader_count,
                     "volume_usd": volume_usd,
                     "recent_transactions": recent_txs,
@@ -131,3 +141,9 @@ class SignalLogic:
 
         candidates.sort(key=lambda x: x["confidence"], reverse=True)
         await self._generate_signals(candidates)
+
+    async def _generate_signals(self, candidates):
+        # Implementa la generación y envío de señales según tu lógica actual.
+        for candidate in candidates:
+            # Ejemplo: guardar señal en la BD, enviar notificación por Telegram, etc.
+            print(f"✅ Señal generada para {candidate['token']} con confianza {candidate['confidence']:.2f}")
