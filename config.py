@@ -53,7 +53,7 @@ class Config:
     # Nuevo flag para Helius API requerida (reemplaza a DexScreener)
     HELIUS_API_REQUIRED = True
 
-    # **Desactivar filtrado por RugCheck**
+    # Nuevo flag para desactivar RugCheck (se recomienda desactivarlo para evitar errores)
     ENABLE_RUGCHECK_FILTERING = False
 
     # Lista de tokens especiales a ignorar
