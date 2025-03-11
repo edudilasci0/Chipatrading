@@ -80,7 +80,6 @@ class SignalPredictor:
             if 'success' not in df.columns:
                 print("⚠️ No se encontró la columna 'success' en los datos de entrenamiento")
                 return False
-            # Generar feature tx_rate si no existe
             if 'tx_rate' not in df.columns and 'num_transactions' in df.columns and 'window_seconds' in df.columns:
                 df['tx_rate'] = df['num_transactions'] / df['window_seconds']
             if 'whale_flag' not in df.columns:
