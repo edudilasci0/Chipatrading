@@ -6,32 +6,22 @@ from config import Config
 class ScoringSystem:
     """
     Sistema de scoring para evaluar la calidad de los traders
-    y calcular la confianza de las señales, integrando nuevos
-    indicadores como crecimiento reciente y clasificación tipo "meme".
+    y calcular la confianza de las señales.
     """
 
     def __init__(self):
-        # Cache local para evitar consultas repetidas a la BD
         self.local_cache = {}
         self.last_cache_cleanup = time.time()
-        # Contador de transacciones por wallet
         self.wallet_tx_count = {}
-        # Cache de boosters
         self.boosters = {}  # {wallet: {'active': bool, 'multiplier': float, 'expires': timestamp, 'reason': str}}
-        # Boosters por tipo de token
-        self.token_type_scores = {}  # {token_type: multiplier}
-        # Tracking para análisis de profit/loss
-        self.wallet_token_buys = {}  # {wallet:token: {'timestamp': time, 'amount_usd': amount}}
-        self.wallet_profits = {}     # {wallet: [{'token': token, 'profit_percent': percent, 'timestamp': time, 'hold_time_hours': h}]}
-        
+        self.token_type_scores = {}
+        self.wallet_token_buys = {}  # Tracking para análisis de profit/loss
+        self.wallet_profits = {}     # Historial de profit por wallet
         self._init_token_type_boosters()
 
     def _init_token_type_boosters(self):
-        """
-        Inicializa boosters por tipo de token.
-        """
         self.token_type_scores = {
-            "meme": 1.2,   # Booster para tokens meme
+            "meme": 1.2,
             "defi": 1.1,
             "nft": 1.15,
             "gaming": 1.1,
@@ -40,12 +30,8 @@ class ScoringSystem:
         }
 
     def get_score(self, wallet):
-        """
-        Obtiene el score actual de una wallet utilizando la cache local.
-        """
         if wallet not in self.local_cache:
             self.local_cache[wallet] = db.get_wallet_score(wallet)
-        
         base_score = self.local_cache[wallet]
         if wallet in self.boosters and self.boosters[wallet]['active']:
             if time.time() < self.boosters[wallet]['expires']:
@@ -55,20 +41,13 @@ class ScoringSystem:
         return base_score
 
     def update_score_on_trade(self, wallet, tx_data):
-        """
-        Actualiza el score de una wallet basándose en una transacción,
-        considerando el tipo de transacción, profit/loss y aplicando boosters.
-        """
         tx_type = tx_data.get("type", "")
         token = tx_data.get("token", "")
         amount_usd = tx_data.get("amount_usd", 0)
         current_score = self.get_score(wallet)
-
-        # Incrementar contador de transacciones
         if wallet not in self.wallet_tx_count:
             self.wallet_tx_count[wallet] = 0
         self.wallet_tx_count[wallet] += 1
-
         wallet_token_key = f"{wallet}:{token}"
         if tx_type == "BUY":
             self.wallet_token_buys[wallet_token_key] = {
@@ -84,7 +63,6 @@ class ScoringSystem:
             else:
                 score_increment = Config.BUY_SCORE_INCREASE
             new_score = current_score + score_increment
-
         elif tx_type == "SELL":
             profit_factor = 1.0
             if wallet_token_key in self.wallet_token_buys:
@@ -108,13 +86,13 @@ class ScoringSystem:
                         'hold_time_hours': hold_time_hours,
                         'timestamp': time.time()
                     })
-                    print(f"📈 Trader {wallet} profit: {profit_percent:.2%} en {hold_time_hours:.1f}h")
+                    print(f"📈 Trader {wallet} realizó profit de {profit_percent:.2%} en {hold_time_hours:.1f}h")
                 else:
                     loss_percent = (buy_amount - amount_usd) / buy_amount
                     profit_factor = 1.0 - (loss_percent * 0.5)
                     if hold_time_hours > 48:
                         profit_factor = max(profit_factor, 0.9)
-                    print(f"📉 Trader {wallet} loss: {loss_percent:.2%}")
+                    print(f"📉 Trader {wallet} vendió con pérdida de {loss_percent:.2%}")
             if amount_usd > 5000:
                 score_increment = Config.SELL_SCORE_INCREASE * 2 * profit_factor
             else:
@@ -128,14 +106,14 @@ class ScoringSystem:
         if new_score > mid_score:
             decay_factor = 0.995
             new_score = mid_score + (new_score - mid_score) * decay_factor
-        
+
         self.local_cache[wallet] = new_score
         db.update_wallet_score(wallet, new_score)
         self._apply_performance_boosters(wallet)
         if self.wallet_tx_count[wallet] % 50 == 0:
             self.add_score_booster(wallet, 1.2, 86400, "Actividad constante")
-            print(f"🔥 Booster para {wallet}: +20% por 24h")
-        print(f"📊 Score de {wallet}: {current_score:.1f} → {new_score:.1f}")
+            print(f"🔥 Booster de actividad para {wallet} aplicado (+20% por 24h)")
+        print(f"📊 Score de {wallet} actualizado: {current_score:.1f} → {new_score:.1f}")
         if time.time() - self.last_cache_cleanup > 3600:
             self.cleanup_cache()
 
@@ -146,28 +124,43 @@ class ScoringSystem:
         if len(recent_profits) >= 3:
             avg_profit = sum(p['profit_percent'] for p in recent_profits) / len(recent_profits)
             if avg_profit > 0.2:
-                self.add_score_booster(wallet, 1.3, 172800, f"Profit consistente ({avg_profit:.1%})")
+                boost_multiplier = 1.3
+                boost_duration = 172800
+                boost_reason = f"Profit consistente ({avg_profit:.1%})"
+                self.add_score_booster(wallet, boost_multiplier, boost_duration, boost_reason)
             quick_profits = [p for p in recent_profits if p['hold_time_hours'] < 2 and p['profit_percent'] > 0.3]
             if len(quick_profits) >= 2:
-                self.add_score_booster(wallet, 1.5, 259200, "Momentum rápido (ganancias rápidas)")
+                boost_multiplier = 1.5
+                boost_duration = 259200
+                boost_reason = "Trader de momentum (ganancias rápidas)"
+                self.add_score_booster(wallet, boost_multiplier, boost_duration, boost_reason)
 
-    def _calculate_wallet_factor(self, wallet_scores):
-        # Ponderación exponencial de los scores
+    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0, token_type=None):
+        if not wallet_scores:
+            return 0.0
+
+        # Evaluar scores usando una transformación exponencial
         exp_scores = [score ** 1.5 for score in wallet_scores]
         weighted_avg = sum(exp_scores) / (len(exp_scores) * (Config.MAX_SCORE ** 1.5)) * Config.MAX_SCORE
         score_factor = weighted_avg / Config.MAX_SCORE
+
         unique_wallets = len(wallet_scores)
         wallet_diversity = min(unique_wallets / 10, 1.0)
+
         high_quality_traders = sum(1 for score in wallet_scores if score > 7.0)
         elite_traders = sum(1 for score in wallet_scores if score > 9.0)
         quality_ratio = (high_quality_traders + (elite_traders * 2)) / max(1, len(wallet_scores))
         quality_factor = min(quality_ratio * 1.5, 1.0)
         elite_bonus = min(elite_traders * 0.1, 0.3)
-        wallet_factor = (score_factor * 0.4) + (wallet_diversity * 0.3) + (quality_factor * 0.2) + elite_bonus
-        return wallet_factor
 
-    def _calculate_market_factor(self, volume_1h, market_cap, recent_volume_growth):
-        # Cálculo del factor de mercado basado en volumen, market cap y crecimiento
+        wallet_factor = (score_factor * 0.4) + (wallet_diversity * 0.3) + (quality_factor * 0.2) + elite_bonus
+
+        if token_type == "meme":
+            growth_factor = min(recent_volume_growth * 3.0, 1.0)
+        else:
+            growth_factor = min(recent_volume_growth * 1.5, 1.0)
+
+        # Cálculo de market_factor basado en market cap, volumen y crecimiento
         if market_cap <= 0:
             mc_factor = 0.3
         else:
@@ -187,38 +180,28 @@ class ScoringSystem:
                 mc_factor = 0.5
 
         vol_factor = min(volume_1h / Config.VOL_NORMALIZATION_FACTOR, 1.0)
-        
-        if recent_volume_growth <= 0:
-            growth_factor = 0.2
-        elif recent_volume_growth < 0.05:
-            growth_factor = 0.3 + (recent_volume_growth * 4)
-        elif recent_volume_growth < 0.2:
-            growth_factor = 0.5 + (recent_volume_growth * 2)
-        else:
-            growth_factor = 0.9 + min((recent_volume_growth - 0.2) * 0.5, 0.1)
-        
-        market_factor = (vol_factor * 0.4) + (mc_factor * 0.3) + (growth_factor * 0.3)
-        return market_factor
 
-    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0, token_type=None):
-        """
-        Calcula el nivel de confianza final de una señal integrando factores de wallets y mercado.
-        Se incorpora el parámetro token_type para ajustar el crecimiento en caso de tokens "meme".
-        """
-        wallet_factor = self._calculate_wallet_factor(wallet_scores)
-        market_factor = self._calculate_market_factor(volume_1h, market_cap, recent_volume_growth)
+        if recent_volume_growth <= 0:
+            growth_factor_final = 0.2
+        elif recent_volume_growth < 0.05:
+            growth_factor_final = 0.3 + (recent_volume_growth * 4)
+        elif recent_volume_growth < 0.2:
+            growth_factor_final = 0.5 + (recent_volume_growth * 2)
+        else:
+            growth_factor_final = 0.9 + min((recent_volume_growth - 0.2) * 0.5, 0.1)
+
+        market_factor = (vol_factor * 0.4) + (mc_factor * 0.3) + (growth_factor_final * 0.3)
+
         weighted_score = (wallet_factor * 0.65) + (market_factor * 0.35)
 
-        # Aplicar booster específico según token_type
         if token_type and token_type.lower() in self.token_type_scores:
             multiplier = self.token_type_scores[token_type.lower()]
             weighted_score *= multiplier
             print(f"🏷️ Booster aplicado para tipo {token_type}: x{multiplier}")
 
-        # Normalizar el score final usando función sigmoidea
         def sigmoid_normalize(x, center=0.5, steepness=8):
             return 1 / (1 + math.exp(-steepness * (x - center)))
-        
+
         normalized = max(0.1, min(1.0, sigmoid_normalize(weighted_score, 0.5, 8)))
         return round(normalized, 3)
 
@@ -231,14 +214,14 @@ class ScoringSystem:
         for wallet in expired_wallets:
             del self.boosters[wallet]
         old_data_cutoff = now - 7776000  # 90 días
-        for wallet in list(self.wallet_profits.keys()):
+        for wallet in self.wallet_profits:
             self.wallet_profits[wallet] = [p for p in self.wallet_profits[wallet] if p['timestamp'] > old_data_cutoff]
         buy_cutoff = now - 604800  # 7 días
         keys_to_remove = [k for k, v in self.wallet_token_buys.items() if v['timestamp'] < buy_cutoff]
         for key in keys_to_remove:
             del self.wallet_token_buys[key]
         if expired_wallets or keys_to_remove:
-            print(f"🧹 Limpiados {len(expired_wallets)} boosters y {len(keys_to_remove)} registros antiguos")
+            print(f"🧹 Limpiados {len(expired_wallets)} boosters expirados y {len(keys_to_remove)} registros antiguos")
         self.last_cache_cleanup = time.time()
 
     def add_score_booster(self, wallet, multiplier, duration_seconds, reason=None):
