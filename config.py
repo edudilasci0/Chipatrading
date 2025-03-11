@@ -35,7 +35,7 @@ class Config:
     MIN_MARKETCAP = 100000
     MAX_MARKETCAP = 500_000_000
     VOL_NORMALIZATION_FACTOR = 10000.0
-    
+
     # Nuevas configuraciones para memecoins
     MEMECOIN_CONFIG = {
         "MIN_VOLUME_USD": 1000,           # Volumen mínimo para detectar movimientos relevantes
@@ -44,7 +44,7 @@ class Config:
         "TX_RATE_THRESHOLD": 10           # Transacciones por segundo (o valor relativo en la ventana)
     }
 
-    # Límite de señales permitidas por hora
+    # Límite de señales permitidas por hora (ya no se depende de DexScreener)
     SIGNAL_THROTTLING = 10
 
     # Booster para tipos de tokens
