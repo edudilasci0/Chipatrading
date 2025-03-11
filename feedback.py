@@ -48,4 +48,3 @@ def analizar_feedback():
     fracasos = total - exitos
     tasa_exito = exitos / total
     return {"total": total, "exito": exitos, "fracaso": fracasos, "tasa_exito": round(tasa_exito, 3)}
-        raise
