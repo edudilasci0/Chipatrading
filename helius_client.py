@@ -4,11 +4,16 @@ import time
 import logging
 
 class HeliusClient:
+    """
+    Cliente para interactuar con la API de Helius.
+    Obtiene datos de mercado y transacciones para tokens en Solana.
+    """
+
     def __init__(self, api_key):
         self.api_key = api_key
         self.base_url = "https://api.helius.xyz/v1/"
         self.cache = {}
-        self.cache_expiry = 60  # 1 minuto de caché
+        self.cache_expiry = 60  # TTL en segundos para caché
         self.logger = logging.getLogger("helius_client")
 
     def _get_cache(self, endpoint, params, ttl=60):
@@ -37,8 +42,11 @@ class HeliusClient:
             return None
 
     def get_token_data(self, token):
+        """
+        Obtiene datos de mercado de un token (precio, market cap, volumen, etc.).
+        Maneja tokens no encontrados o tokens nativos devolviendo valores predeterminados.
+        """
         from config import Config
-        # Manejo especial para tokens nativos o ignorados
         if token == "native" or token in Config.IGNORE_TOKENS:
             return {
                 "price": 0,
@@ -69,6 +77,9 @@ class HeliusClient:
         return data
 
     def get_token_transactions(self, token, interval="5m"):
+        """
+        Obtiene transacciones del token para un intervalo dado (ej: '1m', '5m').
+        """
         endpoint = f"tokens/{token}/transactions"
         params = {"interval": interval}
         ttl = 30 if interval == "1m" else 60
