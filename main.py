@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import db
 from config import Config
 from cielo_api import CieloAPI
-from dexscreener_api import DexScreenerClient
+# Eliminamos DexScreenerClient
 from scoring import ScoringSystem
 from signal_logic import SignalLogic
 from telegram_utils import send_telegram_message, process_telegram_commands
@@ -38,7 +38,7 @@ def setup_logging():
     file_handler.setFormatter(file_format)
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
-    for component in ["database", "dexscreener", "ml_preparation", "signal_predictor"]:
+    for component in ["database", "ml_preparation", "signal_predictor"]:
         comp_logger = logging.getLogger(component)
         comp_logger.setLevel(log_level)
         comp_logger.addHandler(console_handler)
@@ -52,8 +52,8 @@ running = True
 signal_predictor = None
 ml_data_preparation = None
 is_bot_active = None
+# Ya no usamos dex_client; usaremos HeliusClient en SignalLogic
 cielo_ws_connection = None
-dex_client = None
 
 message_counter = 0
 transaction_counter = 0
@@ -97,7 +97,7 @@ async def send_boot_sequence():
     boot_messages = [
         "**🚀 Iniciando ChipaTrading Bot**\nPreparando servicios y verificaciones...",
         "**📡 Módulos de Monitoreo Activados**\nEscaneando wallets para transacciones relevantes...",
-        "**📊 Cargando Parámetros de Mercado**\nConectando con DexScreener y Helius...",
+        "**📊 Cargando Parámetros de Mercado**\nConectando con Helius...",
         "**🔒 Verificando Seguridad**\nConectando con RugCheck...",
         "**⚙️ Inicializando Lógica de Señales**\nConfigurando scoring y agrupación de traders...",
         "**✅ Sistema Operativo**\nListo para monitorear transacciones y generar alertas."
@@ -106,7 +106,7 @@ async def send_boot_sequence():
         send_telegram_message(msg)
         await asyncio.sleep(2)
 
-async def daily_summary_task(signal_logic, signal_predictor=None, dex_client=None):
+async def daily_summary_task(signal_logic, signal_predictor=None):
     while running:
         try:
             now = datetime.now()
@@ -226,7 +226,7 @@ async def monitoring_task():
                 performance_stats["last_error"] = (time.time(), str(e))
             await asyncio.sleep(60)
 
-async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, interval=86400):
+async def ml_periodic_tasks(ml_data_preparation, signal_predictor, interval=86400):
     while running:
         try:
             logger.info("🧠 Ejecutando tareas ML periódicas...")
@@ -234,7 +234,7 @@ async def ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor, i
                 "🧠 *Actualización del modelo ML*\nRecolectando outcomes y preparando datos..."
             )
             start_time = time.time()
-            outcomes_count = ml_data_preparation.collect_signal_outcomes(dex_client)
+            outcomes_count = ml_data_preparation.collect_signal_outcomes()  # Ajusta según tu implementación
             if outcomes_count >= 3:
                 ml_data_preparation.analyze_feature_correlations()
                 start_time = time.time()
@@ -302,7 +302,7 @@ async def maintenance_check_task():
                 performance_stats["errors"] += 1
                 performance_stats["last_error"] = (time.time(), str(e))
 
-async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor=None):
+async def on_cielo_message(message, signal_logic, ml_data_preparation, scoring_system, signal_predictor=None):
     global message_counter, transaction_counter, wallets_list, is_bot_active
     if is_bot_active and not is_bot_active():
         logger.debug("⏸️ Bot inactivo, ignorando mensaje")
@@ -349,7 +349,7 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
             if not token or not actual_tx_type:
                 logger.warning("⚠️ No se determinó token o tipo, ignorando")
                 return
-            min_tx_usd = float(Config.get("min_transaction_usd", Config.MIN_TRANSACTION_USD))
+            min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", Config.MIN_TRANSACTION_USD))
             if usd_value <= 0 or usd_value < min_tx_usd:
                 logger.debug(f"⚠️ Valor insuficiente (${usd_value}), ignorando")
                 return
@@ -368,10 +368,12 @@ async def on_cielo_message(message, signal_logic, ml_data_preparation, dex_clien
                 scoring_system.update_score_on_trade(wallet, {"type": actual_tx_type, "token": token, "amount_usd": usd_value})
             except Exception as e:
                 logger.error(f"Error actualizando score: {e}")
+            # En lugar de usar DexScreener, ya no se consulta precio desde allí.
             try:
-                price = await dex_client.get_token_price(token)
-                if price > 0:
-                    db.update_token_metadata(token, max_price=price, max_volume=usd_value)
+                # Obtener datos de precio y market cap desde Helius
+                token_data = signal_logic.helius_client.get_token_data(token)
+                if token_data and token_data.get("price", 0) > 0:
+                    db.update_token_metadata(token, max_price=token_data.get("price"), max_volume=usd_value)
             except Exception as e:
                 logger.error(f"Error actualizando metadatos: {e}")
             try:
@@ -405,9 +407,8 @@ def handle_shutdown(sig, frame):
             ml_data_preparation.save_outcomes_to_csv()
         print("✅ Datos ML guardados")
         try:
-            if dex_client:
-                dex_client.shutdown()
-                print("✅ DexScreener liberado")
+            # Ya no se utiliza dex_client, por lo que esta parte puede omitirse o adaptarse.
+            pass
         except:
             print("⚠️ No se liberaron recursos de DexScreener")
     except Exception as e:
@@ -433,7 +434,7 @@ async def manage_websocket_connection(cielo, wallets_list, handle_message, filte
         await manage_websocket_connection(cielo, wallets_list, handle_message, filter_params)
 
 async def main():
-    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat, is_bot_active, dex_client, cielo_ws_connection
+    global wallets_list, signal_predictor, ml_data_preparation, last_heartbeat, is_bot_active, cielo_ws_connection
     try:
         last_heartbeat = time.time()
         signal.signal(signal.SIGINT, handle_shutdown)
@@ -444,7 +445,7 @@ async def main():
         Config.load_dynamic_config()
         await send_boot_sequence()
 
-        # Inicializar HeliusClient
+        # Inicializar HeliusClient (ya no usamos DexScreenerClient)
         helius_client = HeliusClient(Config.HELIUS_API_KEY)
 
         rugcheck_api = None
@@ -463,7 +464,6 @@ async def main():
                 rugcheck_api = None
 
         logger.info("⚙️ Inicializando componentes...")
-        dex_client = DexScreenerClient()
         scoring_system = ScoringSystem()
 
         logger.info("🧠 Inicializando componentes ML...")
@@ -483,13 +483,12 @@ async def main():
 
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
-            dex_client=dex_client,
+            helius_client=helius_client,
             rugcheck_api=rugcheck_api,
-            ml_predictor=signal_predictor,
-            helius_client=helius_client
+            ml_predictor=signal_predictor
         )
 
-        performance_tracker = PerformanceTracker(dex_client)
+        performance_tracker = PerformanceTracker(helius_client)
         signal_logic.performance_tracker = performance_tracker
 
         logger.info("🤖 Iniciando bot de comandos de Telegram...")
@@ -497,9 +496,9 @@ async def main():
 
         logger.info("🔄 Iniciando tareas periódicas...")
         asyncio.create_task(signal_logic.check_signals_periodically())
-        asyncio.create_task(daily_summary_task(signal_logic, signal_predictor, dex_client))
+        asyncio.create_task(daily_summary_task(signal_logic, signal_predictor))
         asyncio.create_task(refresh_wallets_task())
-        asyncio.create_task(ml_periodic_tasks(ml_data_preparation, dex_client, signal_predictor))
+        asyncio.create_task(ml_periodic_tasks(ml_data_preparation, signal_predictor))
         asyncio.create_task(monitoring_task())
         asyncio.create_task(maintenance_check_task())
 
@@ -516,7 +515,7 @@ async def main():
         asyncio.create_task(cleanup_old_data_task())
 
         async def handle_message(msg):
-            await on_cielo_message(msg, signal_logic, ml_data_preparation, dex_client, scoring_system, signal_predictor)
+            await on_cielo_message(msg, signal_logic, ml_data_preparation, scoring_system, signal_predictor)
 
         filter_params = {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
         send_telegram_message(
@@ -549,12 +548,6 @@ def handle_shutdown(sig, frame):
             ml_data_preparation.save_features_to_csv()
             ml_data_preparation.save_outcomes_to_csv()
         print("✅ Datos ML guardados")
-        try:
-            if dex_client:
-                dex_client.shutdown()
-                print("✅ DexScreener liberado")
-        except:
-            print("⚠️ No se liberaron recursos de DexScreener")
     except Exception as e:
         print(f"⚠️ Error en cierre: {e}")
     try:
@@ -590,4 +583,3 @@ if __name__ == "__main__":
         except:
             pass
         sys.exit(1)
-
