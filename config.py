@@ -44,6 +44,9 @@ class Config:
         "TX_RATE_THRESHOLD": 10           # Transacciones por segundo (o valor relativo en la ventana)
     }
 
+    # Límite de señales permitidas por hora
+    SIGNAL_THROTTLING = 10
+
     # Booster para tipos de tokens
     token_type_scores = {
         "meme": 1.35,
@@ -61,12 +64,27 @@ class Config:
 
     # Tokens conocidos (para referencia)
     KNOWN_TOKENS = {
-        "So11111111111111111111111111111111111111112": {"name": "SOL", "price": 0, "market_cap": 15000000000, "vol_1h": 1000000},
-        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {"name": "USDC", "price": 1, "market_cap": 35000000000, "vol_1h": 2000000},
-        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {"name": "USDT", "price": 1, "market_cap": 40000000000, "vol_1h": 3000000}
+        "So11111111111111111111111111111111111111112": {
+            "name": "SOL", 
+            "price": 0,
+            "market_cap": 15000000000,
+            "vol_1h": 1000000
+        },
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+            "name": "USDC", 
+            "price": 1,
+            "market_cap": 35000000000,
+            "vol_1h": 2000000
+        },
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
+            "name": "USDT", 
+            "price": 1,
+            "market_cap": 40000000000,
+            "vol_1h": 3000000
+        }
     }
 
-    # Flag para habilitar/deshabilitar filtrado por RugCheck
+    # Flag para habilitar/deshabilitar el filtrado por RugCheck
     ENABLE_RUGCHECK_FILTERING = False
 
     # Variable para Helius
