@@ -32,11 +32,12 @@ class PerformanceTracker:
         Inicializa el tracker de rendimiento.
         
         Args:
-            token_data_service: Servicio de datos de tokens (HeliusTokenDataService)
+            token_data_service: Servicio de datos de tokens (HeliusClient)
         """
         self.token_data_service = token_data_service
         self.signal_performance = {}  # {token: performance_data}
         self.last_prices = {}  # {token: price}
+        logger.info(f"PerformanceTracker inicializado con servicio: {type(token_data_service).__name__ if token_data_service else 'Ninguno'}")
     
     def add_signal(self, token, signal_info):
         """
@@ -69,6 +70,7 @@ class PerformanceTracker:
         
         # Iniciar seguimiento asíncrono
         asyncio.create_task(self._track_performance(token))
+        logger.info(f"Iniciado seguimiento para token {token} con precio inicial ${initial_price}")
     
     async def _track_performance(self, token):
         """
@@ -82,19 +84,21 @@ class PerformanceTracker:
                 await asyncio.sleep(minutes * 60)
                 
                 if token not in self.signal_performance:
+                    logger.warning(f"Token {token} ya no está en seguimiento, cancelando monitor")
                     break
                 
                 current_price = await self._async_get_token_price(token)
                 
                 if not current_price:
+                    logger.warning(f"No se pudo obtener precio actual para {token} en intervalo {label}")
                     continue
                 
                 initial_price = self.signal_performance[token]["initial_price"]
-                percent_change = ((current_price - initial_price) / initial_price) * 100
+                percent_change = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
                 
                 if current_price > self.signal_performance[token]["max_price"]:
                     self.signal_performance[token]["max_price"] = current_price
-                    max_gain = ((current_price - initial_price) / initial_price) * 100
+                    max_gain = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
                     self.signal_performance[token]["max_gain"] = max_gain
                 
                 performance_entry = {
@@ -107,6 +111,8 @@ class PerformanceTracker:
                 
                 self._send_performance_report(token, label, percent_change)
                 self._save_performance_data(token, label, percent_change)
+                
+                logger.info(f"Actualización de rendimiento para {token} ({label}): {percent_change:.2f}%")
                 
             except Exception as e:
                 logger.error(f"🚨 Error en seguimiento de {token} a {label}: {e}")
@@ -176,12 +182,23 @@ class PerformanceTracker:
         """
         if self.token_data_service:
             try:
-                price = await self.token_data_service.get_token_price(token)
-                if price:
-                    self.last_prices[token] = price
-                    return price
+                # Si es un cliente Helius, usamos el método específico
+                if hasattr(self.token_data_service, 'get_token_price'):
+                    price = await self.token_data_service.get_token_price(token)
+                    if price:
+                        self.last_prices[token] = price
+                        return price
+                # Si es otro tipo de servicio, intentamos con get_token_data
+                elif hasattr(self.token_data_service, 'get_token_data_async'):
+                    token_data = await self.token_data_service.get_token_data_async(token)
+                    if token_data and 'price' in token_data:
+                        price = token_data['price']
+                        if price:
+                            self.last_prices[token] = price
+                            return price
             except Exception as e:
                 logger.error(f"Error en token_data_service.get_token_price para {token}: {e}")
+        
         return self._get_token_price(token)
     
     def _get_token_price(self, token):
