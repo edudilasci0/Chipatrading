@@ -15,7 +15,7 @@ class ScoringSystem:
         self.wallet_tx_count = {}
         self.boosters = {}  # {wallet: {'active': bool, 'multiplier': float, 'expires': timestamp, 'reason': str}}
         self.token_type_scores = {}
-        self.wallet_token_buys = {}  # Tracking para análisis de profit/loss
+        self.wallet_token_buys = {}  # Tracking para profit/loss
         self.wallet_profits = {}     # Historial de profit por wallet
         self._init_token_type_boosters()
 
@@ -139,7 +139,6 @@ class ScoringSystem:
         if not wallet_scores:
             return 0.0
 
-        # Evaluar scores usando una transformación exponencial
         exp_scores = [score ** 1.5 for score in wallet_scores]
         weighted_avg = sum(exp_scores) / (len(exp_scores) * (Config.MAX_SCORE ** 1.5)) * Config.MAX_SCORE
         score_factor = weighted_avg / Config.MAX_SCORE
@@ -160,7 +159,6 @@ class ScoringSystem:
         else:
             growth_factor = min(recent_volume_growth * 1.5, 1.0)
 
-        # Cálculo de market_factor basado en market cap, volumen y crecimiento
         if market_cap <= 0:
             mc_factor = 0.3
         else:
