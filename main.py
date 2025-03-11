@@ -63,7 +63,6 @@ stats_lock = threading.Lock()
 wallet_cache = {"last_update": 0, "wallets": []}
 
 def load_wallets():
-    # Implementa la carga de wallets desde traders_data.json
     file_path = "traders_data.json"
     try:
         with open(file_path, "r") as f:
@@ -92,8 +91,7 @@ async def monitoring_task():
     while running:
         try:
             await asyncio.sleep(1800)  # Cada 30 minutos
-            # Aquí iría el código de monitoreo (por ejemplo, uso de psutil, etc.)
-            # Para evitar errores, asegúrate de que psutil esté instalado en requirements.txt
+            # Aquí se pueden agregar métricas adicionales (uso de psutil, etc.)
         except Exception as e:
             logger.error(f"⚠️ Error en monitoring_task: {e}", exc_info=True)
             await asyncio.sleep(60)
@@ -148,7 +146,7 @@ async def main():
 
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
-            helius_client=cielo_client,  # Usamos Cielo para WebSocket (o consultas push)
+            helius_client=cielo_client,  # Usamos Cielo para WebSocket o consultas push
             gmgn_client=gmgn_client,
             rugcheck_api=rugcheck_api,
             ml_predictor=signal_predictor
@@ -160,9 +158,11 @@ async def main():
         logger.info("🤖 Iniciando bot de comandos de Telegram...")
         is_bot_active = await process_telegram_commands(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
         logger.info("🔄 Iniciando tareas periódicas...")
+
+        # Asegúrate de llamar al método correcto: check_signals_periodically()
         asyncio.create_task(signal_logic.check_signals_periodically())
         asyncio.create_task(monitoring_task())
-        # Otras tareas asíncronas (p.ej., tareas ML, limpieza, etc.)
+        # Otras tareas asíncronas pueden agregarse aquí
 
         logger.info("📡 Iniciando conexión con Cielo API...")
         await cielo_client.run_forever(wallets_list, lambda msg: print(msg), {"chains": ["solana"], "tx_types": ["swap", "transfer"]})
