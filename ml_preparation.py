@@ -6,7 +6,7 @@ class MLDataPreparation:
         self.training_data_path = "training_data.csv"
 
     def get_historical_data(self):
-        # Aquí se debe implementar la consulta real a la base de datos
+        # Aquí se debe implementar la consulta real a la base de datos.
         return []
 
     def prepare_training_data(self):
@@ -31,7 +31,7 @@ class MLDataPreparation:
         print(f"Limpieza de datos anteriores a {days} días realizada.")
 
     def extract_signal_features(self, token, dex_client, scoring_system):
-        # Ejemplo simulado de extracción de features para un token
+        # Ejemplo simulado de extracción de features para un token.
         features = {
             "tx_rate": 5.0,
             "whale_flag": 0,
