@@ -1,6 +1,9 @@
 import time
 import asyncio
 from config import Config
+import logging
+
+logger = logging.getLogger("signal_logic")
 
 class SignalLogic:
     def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, rugcheck_api=None, ml_predictor=None):
@@ -18,6 +21,91 @@ class SignalLogic:
         self.recent_signals = []    # Lista de (token, timestamp, confidence, signal_id)
         self.last_signal_check = time.time()
 
+    def get_active_candidates_count(self):
+        """
+        Retorna el número de tokens candidatos que están siendo monitoreados actualmente.
+        
+        Returns:
+            int: Número de tokens candidatos activos
+        """
+        return len(self.token_candidates)
+
+    def process_transaction(self, tx_data):
+        """
+        Procesa una transacción para actualizar los candidatos de señales.
+        
+        Args:
+            tx_data: Datos de la transacción
+        """
+        try:
+            if not tx_data:
+                return
+                
+            token = tx_data.get("token")
+            wallet = tx_data.get("wallet")
+            amount_usd = tx_data.get("amount_usd", 0)
+            
+            if not token or not wallet or amount_usd < Config.MIN_TRANSACTION_USD:
+                return
+                
+            timestamp = tx_data.get("timestamp", int(time.time()))
+            tx_data["timestamp"] = timestamp  # Asegurar que hay timestamp
+            
+            # Inicializar estructura para token si no existe
+            if token not in self.token_candidates:
+                self.token_candidates[token] = {
+                    "wallets": set(),
+                    "transactions": [],
+                    "last_update": timestamp,
+                    "volume_usd": 0
+                }
+            
+            # Actualizar datos
+            self.token_candidates[token]["wallets"].add(wallet)
+            self.token_candidates[token]["transactions"].append(tx_data)
+            self.token_candidates[token]["last_update"] = timestamp
+            self.token_candidates[token]["volume_usd"] += amount_usd
+            
+            # Limpieza periódica de transacciones antiguas (mayor a 24h)
+            if timestamp % 100 == 0:  # Cada 100 transacciones aproximadamente
+                self._cleanup_old_data()
+                
+        except Exception as e:
+            logger.error(f"Error procesando transacción: {e}")
+    
+    def _cleanup_old_data(self):
+        """
+        Elimina datos antiguos (transacciones de más de 24h) para no acumular memoria.
+        """
+        now = time.time()
+        cutoff = now - 86400  # 24 horas
+        
+        tokens_to_remove = []
+        for token, data in self.token_candidates.items():
+            # Filtrar transacciones recientes
+            recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
+            
+            if not recent_txs:
+                tokens_to_remove.append(token)
+            else:
+                # Actualizar con solo transacciones recientes
+                self.token_candidates[token]["transactions"] = recent_txs
+                
+                # Recalcular wallets activas basadas en transacciones recientes
+                active_wallets = {tx["wallet"] for tx in recent_txs}
+                self.token_candidates[token]["wallets"] = active_wallets
+                
+                # Recalcular volumen
+                volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
+                self.token_candidates[token]["volume_usd"] = volume_usd
+        
+        # Eliminar tokens sin actividad reciente
+        for token in tokens_to_remove:
+            del self.token_candidates[token]
+            
+        if tokens_to_remove:
+            logger.info(f"Limpiados {len(tokens_to_remove)} tokens sin actividad reciente")
+
     async def check_signals_periodically(self, interval=30):
         """
         Verifica y procesa candidatos para generar señales de forma periódica.
@@ -26,7 +114,7 @@ class SignalLogic:
             try:
                 await self._process_candidates()
             except Exception as e:
-                print(f"Error en check_signals_periodically: {e}")
+                logger.error(f"Error en check_signals_periodically: {e}")
             await asyncio.sleep(interval)
 
     async def _process_candidates(self):
@@ -74,7 +162,7 @@ class SignalLogic:
                 }
                 candidates.append(candidate)
             except Exception as e:
-                print(f"Error procesando candidato {token}: {e}")
+                logger.error(f"Error procesando candidato {token}: {e}")
 
         # Ordenar candidatos por confianza (de mayor a menor)
         candidates.sort(key=lambda x: x["confidence"], reverse=True)
@@ -86,6 +174,6 @@ class SignalLogic:
         Aquí se puede integrar la lógica para almacenar señales y enviar notificaciones.
         """
         for candidate in candidates:
-            print(f"✅ Señal generada para {candidate['token']} con confianza {candidate['confidence']:.2f}")
+            logger.info(f"✅ Señal generada para {candidate['token']} con confianza {candidate['confidence']:.2f}")
             # Aquí se puede agregar la lógica para guardar la señal en la base de datos
             # y enviar alertas por Telegram, etc.
