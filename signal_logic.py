@@ -1,22 +1,21 @@
 import time
 import asyncio
 from config import Config
-import db  # Se espera que db.py tenga funciones como count_signals_last_hour() y save_signal()
+import db  # Se asume que db.py tiene funciones como count_signals_last_hour() y save_signal()
 from telegram_utils import send_telegram_message
 
 class SignalLogic:
-    def __init__(self, scoring_system=None, dex_client=None, rugcheck_api=None, ml_predictor=None, helius_client=None):
+    def __init__(self, scoring_system=None, helius_client=None, rugcheck_api=None, ml_predictor=None):
         """
         Inicializa la lógica de señales.
         Se inyecta helius_client para obtener datos enriquecidos on-chain.
         """
         self.scoring_system = scoring_system
-        self.dex_client = dex_client
+        self.helius_client = helius_client  # Nuevo: cliente para Helius
         self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
-        self.helius_client = helius_client  # Nuevo
         self.performance_tracker = None
-        self.token_candidates = {}  # token -> {wallets, transactions, last_update, volume_usd}
+        self.token_candidates = {}  # {token: {wallets, transactions, last_update, volume_usd}}
         self.recent_signals = []    # Lista de (token, timestamp, confidence, signal_id)
         self.last_signal_check = time.time()
 
@@ -54,7 +53,7 @@ class SignalLogic:
 
     def get_active_candidates_count(self):
         now = time.time()
-        window_seconds = float(Config.get("signal_window_seconds", Config.SIGNAL_WINDOW_SECONDS))
+        window_seconds = float(Config.get("SIGNAL_WINDOW_SECONDS", Config.SIGNAL_WINDOW_SECONDS))
         cutoff = now - window_seconds
         return sum(1 for data in self.token_candidates.values() if data["last_update"] > cutoff)
 
@@ -64,7 +63,7 @@ class SignalLogic:
 
     async def _process_candidates(self):
         now = time.time()
-        window_seconds = float(Config.get("signal_window_seconds", Config.SIGNAL_WINDOW_SECONDS))
+        window_seconds = float(Config.get("SIGNAL_WINDOW_SECONDS", Config.SIGNAL_WINDOW_SECONDS))
         cutoff = now - window_seconds
         candidates = []
 
@@ -78,33 +77,20 @@ class SignalLogic:
                 buy_txs = [tx for tx in recent_txs if tx["type"] == "BUY"]
                 buy_percentage = len(buy_txs) / max(1, len(recent_txs))
                 
-                min_traders = int(Config.get("min_traders_for_signal", Config.MIN_TRADERS_FOR_SIGNAL))
-                min_volume = float(Config.get("min_volume_usd", Config.MIN_VOLUME_USD))
+                min_traders = int(Config.get("MIN_TRADERS_FOR_SIGNAL", Config.MIN_TRADERS_FOR_SIGNAL))
+                min_volume = float(Config.get("MIN_VOLUME_USD", Config.MIN_VOLUME_USD))
                 if trader_count < min_traders or volume_usd < min_volume:
                     continue
 
-                # Datos de Helius (5m)
-                try:
-                    helius_data = self.helius_client.get_token_transactions(token, interval="5m")
-                    vol_growth = helius_data.get("volume_growth", {}) if helius_data else {}
-                    market_cap = helius_data.get("market_cap", 0) if helius_data else 0
-                except Exception as e:
-                    print(f"Error en datos Helius (5m) para {token}: {e}")
-                    vol_growth = {}
-                    market_cap = 0
-
-                # Datos de Helius (1m)
-                try:
-                    one_min_data = self.helius_client.get_token_transactions(token, interval="1m")
-                    volume_1m = one_min_data.get("volume", 0) if one_min_data else 0
-                except Exception as e:
-                    volume_1m = 0
-                    print(f"Error en datos Helius (1m) para {token}: {e}")
+                # Usar Helius para obtener datos de mercado y volumen
+                helius_data = self.helius_client.get_token_data(token)
+                vol_growth = helius_data.get("volume_growth", {}) if helius_data else {}
+                market_cap = helius_data.get("market_cap", 0) if helius_data else 0
 
                 # Calcular tx_rate (transacciones/segundo)
                 tx_rate = len(recent_txs) / window_seconds
 
-                # Determinar token_type: clasificar como "meme" si cumple criterios
+                # Clasificar token (por ejemplo, "meme") si cumple ciertos criterios
                 token_type = None
                 if vol_growth.get("growth_5m", 0) > 0.2 and market_cap < 5_000_000:
                     token_type = "meme"
@@ -118,7 +104,7 @@ class SignalLogic:
                     token_type=token_type
                 )
 
-                # Ajustes para detectar daily runners o actividad de ballenas
+                # Ajustar para detectar daily runners o actividad de ballenas
                 config = Config.MEMECOIN_CONFIG
                 is_memecoin = (tx_rate > config["TX_RATE_THRESHOLD"] and 
                                vol_growth.get("growth_5m", 0) > config["VOLUME_GROWTH_THRESHOLD"] and 
@@ -133,7 +119,7 @@ class SignalLogic:
                 candidates.append({
                     "token": token,
                     "confidence": confidence,
-                    "ml_prediction": 0.5,
+                    "ml_prediction": 0.5,  # Valor base; se ajusta con ML si está disponible
                     "trader_count": trader_count,
                     "volume_usd": volume_usd,
                     "recent_transactions": recent_txs,
@@ -167,8 +153,8 @@ class SignalLogic:
 
     async def _generate_signals(self, candidates):
         now = time.time()
-        min_confidence = float(Config.get("min_confidence_threshold", Config.MIN_CONFIDENCE_THRESHOLD))
-        throttling = int(Config.get("signal_throttling", Config.SIGNAL_THROTTLING))
+        min_confidence = float(Config.get("MIN_CONFIDENCE_THRESHOLD", Config.MIN_CONFIDENCE_THRESHOLD))
+        throttling = int(Config.get("SIGNAL_THROTTLING", Config.SIGNAL_THROTTLING))
         
         signals_last_hour = db.count_signals_last_hour()
         if signals_last_hour >= throttling:
