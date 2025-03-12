@@ -19,10 +19,22 @@ class SignalLogic:
         self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.performance_tracker = None
-        self.token_candidates = {}  # {token: {wallets, transactions, last_update, volume_usd, first_seen}}
-        self.recent_signals = []    # Lista de (token, timestamp, confidence, signal_id)
+        self.token_candidates = {}  # Diccionario con información de tokens: {token: {wallets, transactions, last_update, volume_usd, first_seen}}
+        self.recent_signals = []    # Lista de tuplas: (token, timestamp, confidence, signal_id)
         self.last_signal_check = time.time()
         self.last_cleanup = time.time()
+
+    async def check_signals_periodically(self, interval=30):
+        """
+        Ejecuta periódicamente el proceso de candidatos para generar señales.
+        """
+        while True:
+            try:
+                await self._process_candidates()
+                await asyncio.sleep(interval)
+            except Exception as e:
+                logger.error(f"Error en check_signals_periodically: {e}", exc_info=True)
+                await asyncio.sleep(interval)
 
     def process_transaction(self, tx_data):
         """
@@ -35,27 +47,27 @@ class SignalLogic:
             if not tx_data:
                 logger.warning("Ignorando tx_data vacío en process_transaction")
                 return
-            
+
             token = tx_data.get("token")
             wallet = tx_data.get("wallet")
             amount_usd = tx_data.get("amount_usd", 0)
-            
+
             if not token or not wallet:
                 logger.warning(f"Transacción sin token o wallet, ignorando: {tx_data}")
                 return
-            
+
             # Validar monto mínimo
             min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
             if amount_usd < min_tx_usd:
                 logger.debug(f"Transacción ignorada por monto bajo: ${amount_usd:.2f} < ${min_tx_usd}")
                 return
-            
+
             timestamp = tx_data.get("timestamp", int(time.time()))
             tx_data["timestamp"] = timestamp  # Asegurar que hay timestamp
-            
+
             # Log para seguimiento
             logger.info(f"SignalLogic.process_transaction: {wallet[:8]}... -> {token[:8]}... [{tx_data.get('type')}] ${amount_usd:.2f}")
-            
+
             # Inicializar estructura para token si no existe
             if token not in self.token_candidates:
                 self.token_candidates[token] = {
@@ -66,26 +78,24 @@ class SignalLogic:
                     "first_seen": timestamp
                 }
                 logger.info(f"Nuevo token detectado: {token}")
-            
+
             # Actualizar datos
             self.token_candidates[token]["wallets"].add(wallet)
             self.token_candidates[token]["transactions"].append(tx_data)
             self.token_candidates[token]["last_update"] = timestamp
             self.token_candidates[token]["volume_usd"] += amount_usd
-            
+
             # Log de candidato actualizado
             candidate = self.token_candidates[token]
-            logger.info(f"Candidato actualizado: token={token[:8]}..., "
-                        f"wallets={len(candidate['wallets'])}, "
-                        f"transactions={len(candidate['transactions'])}, "
-                        f"volume_usd=${candidate['volume_usd']:.2f}")
-            
+            logger.info(f"Candidato actualizado: token={token[:8]}..., wallets={len(candidate['wallets'])}, " +
+                        f"transactions={len(candidate['transactions'])}, volume_usd=${candidate['volume_usd']:.2f}")
+
             # Limpieza periódica de transacciones antiguas (más de 24h)
             now = time.time()
             if now - self.last_cleanup > 3600:  # Cada hora
                 self._cleanup_old_data()
                 self.last_cleanup = now
-            
+
         except Exception as e:
             logger.error(f"Error procesando transacción en SignalLogic: {e}", exc_info=True)
 
@@ -130,13 +140,11 @@ class SignalLogic:
                 # Calcular métricas básicas
                 trader_count = len(data["wallets"])
                 volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
-                
+
                 # Calcular métricas avanzadas
                 buy_txs = [tx for tx in recent_txs if tx["type"] == "BUY"]
                 sell_txs = [tx for tx in recent_txs if tx["type"] == "SELL"]
                 buy_percentage = len(buy_txs) / max(1, len(recent_txs))
-                buy_volume = sum(tx["amount_usd"] for tx in buy_txs)
-                sell_volume = sum(tx["amount_usd"] for tx in sell_txs)
                 
                 # Calcular velocidad de transacciones (txs por minuto)
                 timestamps = [tx["timestamp"] for tx in recent_txs]
@@ -146,16 +154,15 @@ class SignalLogic:
                     tx_velocity = len(recent_txs) / (tx_timespan / 60)
                 else:
                     tx_velocity = 1.0
-                
-                logger.info(f"Token {token[:8]}...: {trader_count} traders, ${volume_usd:.2f} vol, "
+
+                logger.info(f"Token {token[:8]}...: {trader_count} traders, ${volume_usd:.2f} vol, " +
                             f"{buy_percentage:.2f} buy ratio, {tx_velocity:.2f} tx/min")
-                
+
                 # Verificar condiciones mínimas
                 min_traders = int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))
                 min_volume = float(Config.get("MIN_VOLUME_USD", 2000))
                 min_buy_percentage = float(Config.get("MIN_BUY_PERCENTAGE", 0.7))
                 min_velocity = float(Config.get("MIN_TX_VELOCITY", 0.5))
-                
                 if trader_count < min_traders:
                     logger.debug(f"Token {token} descartado: pocos traders ({trader_count} < {min_traders})")
                     continue
@@ -168,7 +175,7 @@ class SignalLogic:
                 if tx_velocity < min_velocity:
                     logger.debug(f"Token {token} descartado: baja velocidad de txs ({tx_velocity:.2f} < {min_velocity})")
                     continue
-                
+
                 # Obtener datos de mercado mediante múltiples fuentes
                 market_data = await self.get_token_market_data(token)
                 market_cap = market_data.get("market_cap", 0)
@@ -190,6 +197,7 @@ class SignalLogic:
                     token_type=token_type
                 )
                 
+                # Ajustar para detectar daily runners o actividad de ballenas
                 config = Config.MEMECOIN_CONFIG
                 is_memecoin = (tx_rate > config["TX_RATE_THRESHOLD"] and 
                                vol_growth.get("growth_5m", 0) > config["VOLUME_GROWTH_THRESHOLD"] and 
@@ -204,7 +212,7 @@ class SignalLogic:
                 candidate_data = {
                     "token": token,
                     "confidence": confidence,
-                    "ml_prediction": 0.5,
+                    "ml_prediction": 0.5,  # Valor base; se ajusta con ML si está disponible
                     "trader_count": trader_count,
                     "volume_usd": volume_usd,
                     "recent_transactions": recent_txs,
@@ -219,7 +227,7 @@ class SignalLogic:
                 candidates.append(candidate_data)
             except Exception as e:
                 logger.error(f"Error procesando candidato {token}: {e}")
-        
+
         candidates.sort(key=lambda x: x["confidence"], reverse=True)
         await self._generate_signals(candidates)
 
