@@ -51,89 +51,213 @@ except ImportError:
 # Variable global para el control del bot
 bot_running = True
 
-# Función para procesar mensajes entrantes de Cielo (actualizada)
+# Función para procesar mensajes entrantes de Cielo (con logs adicionales)
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic):
     try:
+        # Log inicial: tipo de mensaje
+        logger.info(f"Procesando mensaje de Cielo tipo: {json.loads(message).get('type', 'desconocido')}")
         data = json.loads(message)
         if data.get("type") == "tx" and "data" in data:
             tx_data = data["data"]
+            logger.info(f"Datos de transacción: wallet={tx_data.get('wallet')[:8]}..., tx_type={tx_data.get('tx_type')}")
             
             # Procesar transacciones tipo swap
             if tx_data.get("tx_type") == "swap":
                 processed_tx = {}
-                # Si token0_address es "native" o el SOL envuelto, se asume compra (BUY) y se usa token1_address
+                # Si token0_address es "native" o SOL envuelto, se asume COMPRA y se usa token1_address
                 if tx_data.get("token0_address") in ["native", "So11111111111111111111111111111111111111112"]:
                     processed_tx["wallet"] = tx_data.get("wallet")
                     processed_tx["token"] = tx_data.get("token1_address")
                     processed_tx["type"] = "BUY"
                     processed_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
-                # Si token1_address es "native" o el SOL envuelto, se asume venta (SELL) y se usa token0_address    
+                    logger.info(f"Detectada COMPRA: {tx_data.get('wallet')[:8]}... compra {tx_data.get('token1_address')[:8]}...")
+                # Si token1_address es "native" o SOL envuelto, se asume VENTA y se usa token0_address
                 elif tx_data.get("token1_address") in ["native", "So11111111111111111111111111111111111111112"]:
                     processed_tx["wallet"] = tx_data.get("wallet")
                     processed_tx["token"] = tx_data.get("token0_address")
                     processed_tx["type"] = "SELL"
                     processed_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
+                    logger.info(f"Detectada VENTA: {tx_data.get('wallet')[:8]}... vende {tx_data.get('token0_address')[:8]}...")
                 else:
-                    # Caso por defecto: si no involucra SOL, se asume compra usando token1_address
+                    # Caso por defecto: se asume COMPRA usando token1_address
                     processed_tx["wallet"] = tx_data.get("wallet")
                     processed_tx["token"] = tx_data.get("token1_address")
                     processed_tx["type"] = "BUY"
                     processed_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+                    logger.info(f"Detectado swap sin SOL, asumiendo COMPRA: {tx_data.get('wallet')[:8]}... -> {tx_data.get('token1_address')[:8]}...")
                 
                 # Asignar timestamp (si no viene, usar el actual)
                 processed_tx["timestamp"] = int(tx_data.get("timestamp", time.time()))
-                
-                # Log detallado de la transacción procesada
                 logger.info(f"Transacción procesada: {processed_tx['wallet'][:8]}... {processed_tx['type']} {processed_tx['token'][:8]}... ${processed_tx['amount_usd']:.2f}")
                 
-                # Actualizar score de la wallet si está en la lista de seguimiento
-                if processed_tx["wallet"] in wallet_tracker.get_wallets():
-                    scoring_system.update_score_on_trade(processed_tx["wallet"], processed_tx)
+                # Verificar monto mínimo
+                min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+                if processed_tx["amount_usd"] < min_tx_usd:
+                    logger.info(f"Transacción descartada por monto bajo: ${processed_tx['amount_usd']:.2f} < ${min_tx_usd}")
+                    return
                 
-                # Procesar la transacción en la lógica de señales
-                # Se asume que SignalLogic tiene implementado process_transaction()
-                signal_logic.process_transaction(processed_tx)
+                # Actualizar score si la wallet está en la lista de seguimiento
+                if processed_tx["wallet"] in wallet_tracker.get_wallets():
+                    logger.info(f"Actualizando score para wallet {processed_tx['wallet'][:8]}...")
+                    try:
+                        scoring_system.update_score_on_trade(processed_tx["wallet"], processed_tx)
+                        logger.info(f"Score actualizado para {processed_tx['wallet'][:8]}...")
+                    except Exception as e:
+                        logger.error(f"Error actualizando score: {e}")
+                
+                # Procesar transacción en la lógica de señales
+                logger.info("Enviando transacción a signal_logic.process_transaction...")
+                try:
+                    signal_logic.process_transaction(processed_tx)
+                    logger.info("Transacción procesada por signal_logic")
+                except Exception as e:
+                    logger.error(f"Error en signal_logic.process_transaction: {e}", exc_info=True)
                 
                 # Guardar la transacción en la base de datos
                 try:
+                    logger.info("Guardando transacción en base de datos...")
                     db.save_transaction(processed_tx)
+                    logger.info("Transacción guardada en base de datos")
                 except Exception as e:
                     logger.error(f"Error guardando transacción en BD: {e}")
                     
-            # Procesar transacciones tipo transfer (si se requiere implementación adicional)
             elif tx_data.get("tx_type") == "transfer":
-                # Implementar lógica adicional para transferencias si es necesario
+                logger.info(f"Transacción tipo transfer detectada (no procesada): {tx_data.get('wallet')[:8]}...")
+                # Aquí se puede implementar lógica adicional para transferencias
                 pass
     except json.JSONDecodeError:
         logger.error("Error decodificando mensaje JSON de Cielo")
     except Exception as e:
         logger.error(f"Error procesando mensaje de Cielo: {e}", exc_info=True)
 
-# Tarea de monitoreo (frecuencia ajustada a 30 minutos)
-async def monitoring_task():
+# Función mejorada en SignalLogic para procesar una transacción
+# (Esta función debe integrarse en el archivo signal_logic.py; se muestra aquí para referencia)
+def process_transaction(self, tx_data):
+    try:
+        if not tx_data:
+            logger.warning("Ignorando tx_data vacío en process_transaction")
+            return
+            
+        token = tx_data.get("token")
+        wallet = tx_data.get("wallet")
+        amount_usd = tx_data.get("amount_usd", 0)
+        
+        if not token or not wallet:
+            logger.warning(f"Transacción sin token o wallet, ignorando: {tx_data}")
+            return
+            
+        min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+        if amount_usd < min_tx_usd:
+            logger.debug(f"Transacción ignorada por monto bajo: ${amount_usd:.2f} < ${min_tx_usd}")
+            return
+            
+        timestamp = tx_data.get("timestamp", int(time.time()))
+        tx_data["timestamp"] = timestamp
+        logger.info(f"SignalLogic.process_transaction: {wallet[:8]}...{wallet[-5:]} -> {token[:8]}...{token[-5:]} [{tx_data.get('type')}] ${amount_usd:.2f}")
+        
+        if token not in self.token_candidates:
+            self.token_candidates[token] = {
+                "wallets": set(),
+                "transactions": [],
+                "last_update": timestamp,
+                "volume_usd": 0,
+                "first_seen": timestamp
+            }
+            logger.info(f"Nuevo token detectado: {token}")
+        
+        self.token_candidates[token]["wallets"].add(wallet)
+        self.token_candidates[token]["transactions"].append(tx_data)
+        self.token_candidates[token]["last_update"] = timestamp
+        self.token_candidates[token]["volume_usd"] += amount_usd
+        
+        candidate = self.token_candidates[token]
+        logger.info(f"Candidato actualizado: token={token[:8]}..., wallets={len(candidate['wallets'])}, transactions={len(candidate['transactions'])}, volume_usd=${candidate['volume_usd']:.2f}")
+        
+        now = time.time()
+        if now - self.last_cleanup > 3600:  # Cada hora
+            self._cleanup_old_data()
+            self.last_cleanup = now
+            
+    except Exception as e:
+        logger.error(f"Error procesando transacción en SignalLogic: {e}", exc_info=True)
+
+# Función _process_candidates en SignalLogic (fragmento relevante con logs adicionales)
+async def _process_candidates(self):
+    now = time.time()
+    window_seconds = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
+    cutoff = now - window_seconds
+    candidates = []
+    
+    logger.info(f"Procesando {len(self.token_candidates)} candidatos para señales...")
+
+    for token, data in list(self.token_candidates.items()):
+        try:
+            recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
+            if not recent_txs:
+                logger.debug(f"Token {token}: sin transacciones recientes, omitiendo")
+                continue
+
+            token_recently_signaled = any(
+                t == token and ts > (now - 3600) for t, ts, _, _ in self.recent_signals
+            )
+            if token_recently_signaled:
+                logger.debug(f"Token {token} ya generó señal recientemente, omitiendo")
+                continue
+
+            trader_count = len(data["wallets"])
+            volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
+            buy_txs = [tx for tx in recent_txs if tx["type"] == "BUY"]
+            buy_percentage = len(buy_txs) / max(1, len(recent_txs))
+            
+            logger.info(f"Token {token[:8]}...: {trader_count} traders, ${volume_usd:.2f} vol, {buy_percentage:.2f} buy ratio, {len(recent_txs)} txs recientes")
+            
+            # Aquí se continuarían los cálculos y se agregarían candidatos...
+            # (El resto del método se mantiene según la lógica previamente establecida)
+            # Por ejemplo:
+            # candidates.append({...})
+            
+        except Exception as e:
+            logger.error(f"Error procesando candidato {token}: {e}")
+    
+    candidates.sort(key=lambda x: x["confidence"], reverse=True)
+    await self._generate_signals(candidates)
+
+# Función de monitoreo mejorada en main.py
+async def enhanced_monitoring_task(signal_logic):
     global bot_running
     while bot_running:
         try:
             await asyncio.sleep(1800)  # 30 minutos
-            logger.info("Enviando reporte de estado (monitoring_task)")
-            send_telegram_message("📊 Reporte de estado: Todo en orden.")
+            active_tokens = signal_logic.get_active_candidates_count()
+            recent_signals = len(signal_logic.recent_signals)
+            total_transactions = db.count_transactions_today()
+            
+            logger.info("=== REPORTE DE ESTADO ===")
+            logger.info(f"Tokens monitoreados: {active_tokens}")
+            logger.info(f"Señales recientes: {recent_signals}")
+            logger.info(f"Transacciones hoy: {total_transactions}")
+            
+            status_message = (
+                "📊 *Reporte de Estado*\n\n"
+                f"• Tokens monitoreados: `{active_tokens}`\n"
+                f"• Señales recientes: `{recent_signals}`\n"
+                f"• Transacciones hoy: `{total_transactions}`\n\n"
+                "✅ Sistema operando normalmente."
+            )
+            send_telegram_message(status_message)
         except Exception as e:
-            logger.error(f"⚠️ Error en monitoring_task: {e}", exc_info=True)
+            logger.error(f"⚠️ Error en enhanced_monitoring_task: {e}", exc_info=True)
             await asyncio.sleep(60)
 
 # Función principal
 async def main():
     global bot_running
     try:
-        # Verificar configuraciones y conectar a la base de datos
         Config.check_required_config()
         db.init_db()
         Config.load_dynamic_config()
-
-        # Enviar mensaje inicial a Telegram
         send_telegram_message("🚀 Iniciando ChipaTrading Bot...")
 
-        # Inicializar componentes
         wallet_tracker = WalletTracker()
         scoring_system = ScoringSystem()
         
@@ -171,14 +295,14 @@ async def main():
                 logger.error(f"⚠️ Error en GMGN: {e}", exc_info=True)
                 gmgn_client = None
 
-        # Inicializar módulo de ML si está disponible
+        # Inicializar módulo ML si está disponible
         ml_predictor = None
         if ml_available:
             ml_predictor = SignalPredictor()
             if os.path.exists("ml_data/training_data.csv"):
                 ml_predictor.train_model()
 
-        # Inicializar la lógica de señales
+        # Inicializar lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
@@ -191,14 +315,13 @@ async def main():
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
 
-        # Iniciar bot de comandos de Telegram (no bloqueante)
+        # Iniciar bot de comandos de Telegram
         is_bot_active = await process_telegram_commands(
             Config.TELEGRAM_BOT_TOKEN,
             Config.TELEGRAM_CHAT_ID,
             signal_logic
         )
 
-        # Enviar mensaje de resumen a Telegram
         active_apis = []
         if helius_client:
             active_apis.append("Helius")
@@ -215,19 +338,16 @@ async def main():
             "Usa /status para ver el estado actual del bot"
         )
 
-        # Crear tareas asíncronas y supervisarlas
         tasks = []
         tasks.append(asyncio.create_task(signal_logic.check_signals_periodically()))
-        tasks.append(asyncio.create_task(monitoring_task()))
+        tasks.append(asyncio.create_task(enhanced_monitoring_task(signal_logic)))
 
-        # Función para procesar mensajes de Cielo con manejo de errores
         async def process_cielo_message(message):
             try:
                 await on_cielo_message(message, wallet_tracker, scoring_system, signal_logic)
             except Exception as e:
                 logger.error(f"Error en process_cielo_message: {e}", exc_info=True)
 
-        # Inicializar cliente Cielo para WebSocket y monitoreo de wallets
         wallets = wallet_tracker.get_wallets()
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
         cielo_task = asyncio.create_task(cielo_client.run_forever_wallets(
@@ -237,7 +357,6 @@ async def main():
         ))
         tasks.append(cielo_task)
 
-        # Supervisar tareas y reiniciar si alguna falla
         while bot_running:
             for idx, task in enumerate(tasks):
                 if task.done():
@@ -245,8 +364,7 @@ async def main():
                         err = task.exception()
                         if err:
                             logger.error(f"Tarea #{idx} finalizó con error: {err}")
-                            # Si es la tarea del WebSocket (índice 2), reiniciarla
-                            if idx == 2:
+                            if idx == 2:  # Si es la tarea de Cielo, reiniciar
                                 logger.info("Reiniciando conexión Cielo...")
                                 tasks[idx] = asyncio.create_task(cielo_client.run_forever_wallets(
                                     wallets,
