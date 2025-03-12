@@ -48,39 +48,50 @@ except ImportError:
     helius_available = False
     logger.warning("⚠️ Cliente Helius no disponible")
 
-# Variable global para controlar el bot
+# Variable global para el control del bot
 bot_running = True
 
-# Función para procesar mensajes entrantes de Cielo (actualizada según la propuesta)
+# Función para procesar mensajes entrantes de Cielo (actualizada)
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic):
     try:
         data = json.loads(message)
         if data.get("type") == "tx" and "data" in data:
             tx_data = data["data"]
+            
             # Procesar transacciones tipo swap
             if tx_data.get("tx_type") == "swap":
-                # Determinar token y tipo de operación
                 processed_tx = {}
-                # Si token0_address es "native", se asume compra (BUY) y se usa token1_address
-                if tx_data.get("token0_address") == "native":
+                # Si token0_address es "native" o el SOL envuelto, se asume compra (BUY) y se usa token1_address
+                if tx_data.get("token0_address") in ["native", "So11111111111111111111111111111111111111112"]:
                     processed_tx["wallet"] = tx_data.get("wallet")
                     processed_tx["token"] = tx_data.get("token1_address")
                     processed_tx["type"] = "BUY"
                     processed_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
-                else:
+                # Si token1_address es "native" o el SOL envuelto, se asume venta (SELL) y se usa token0_address    
+                elif tx_data.get("token1_address") in ["native", "So11111111111111111111111111111111111111112"]:
                     processed_tx["wallet"] = tx_data.get("wallet")
                     processed_tx["token"] = tx_data.get("token0_address")
                     processed_tx["type"] = "SELL"
                     processed_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
+                else:
+                    # Caso por defecto: si no involucra SOL, se asume compra usando token1_address
+                    processed_tx["wallet"] = tx_data.get("wallet")
+                    processed_tx["token"] = tx_data.get("token1_address")
+                    processed_tx["type"] = "BUY"
+                    processed_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+                
                 # Asignar timestamp (si no viene, usar el actual)
                 processed_tx["timestamp"] = int(tx_data.get("timestamp", time.time()))
+                
+                # Log detallado de la transacción procesada
+                logger.info(f"Transacción procesada: {processed_tx['wallet'][:8]}... {processed_tx['type']} {processed_tx['token'][:8]}... ${processed_tx['amount_usd']:.2f}")
                 
                 # Actualizar score de la wallet si está en la lista de seguimiento
                 if processed_tx["wallet"] in wallet_tracker.get_wallets():
                     scoring_system.update_score_on_trade(processed_tx["wallet"], processed_tx)
                 
                 # Procesar la transacción en la lógica de señales
-                # NOTA: Asegúrate de tener implementado en SignalLogic el método process_transaction()
+                # Se asume que SignalLogic tiene implementado process_transaction()
                 signal_logic.process_transaction(processed_tx)
                 
                 # Guardar la transacción en la base de datos
@@ -89,43 +100,44 @@ async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic
                 except Exception as e:
                     logger.error(f"Error guardando transacción en BD: {e}")
                     
-            # Si es de tipo transfer, se puede implementar procesamiento adicional
+            # Procesar transacciones tipo transfer (si se requiere implementación adicional)
             elif tx_data.get("tx_type") == "transfer":
-                # Implementar procesamiento para transferencias si es necesario
+                # Implementar lógica adicional para transferencias si es necesario
                 pass
     except json.JSONDecodeError:
         logger.error("Error decodificando mensaje JSON de Cielo")
     except Exception as e:
         logger.error(f"Error procesando mensaje de Cielo: {e}", exc_info=True)
 
-# Tarea de monitoreo para supervisar el estado del bot (se reduce la frecuencia de notificaciones)
+# Tarea de monitoreo (frecuencia ajustada a 30 minutos)
 async def monitoring_task():
     global bot_running
     while bot_running:
         try:
-            await asyncio.sleep(1800)  # Cada 30 minutos
+            await asyncio.sleep(1800)  # 30 minutos
             logger.info("Enviando reporte de estado (monitoring_task)")
             send_telegram_message("📊 Reporte de estado: Todo en orden.")
         except Exception as e:
             logger.error(f"⚠️ Error en monitoring_task: {e}", exc_info=True)
             await asyncio.sleep(60)
 
-# Función principal del bot
+# Función principal
 async def main():
     global bot_running
     try:
-        # Verificar configuración y base de datos
+        # Verificar configuraciones y conectar a la base de datos
         Config.check_required_config()
         db.init_db()
         Config.load_dynamic_config()
 
-        # Enviar mensaje de arranque a Telegram
+        # Enviar mensaje inicial a Telegram
         send_telegram_message("🚀 Iniciando ChipaTrading Bot...")
 
-        # Inicializar componentes principales
+        # Inicializar componentes
         wallet_tracker = WalletTracker()
         scoring_system = ScoringSystem()
         
+        # Inicializar RugCheck
         rugcheck_api = None
         if Config.RUGCHECK_PRIVATE_KEY and Config.RUGCHECK_WALLET_PUBKEY:
             try:
@@ -166,7 +178,7 @@ async def main():
             if os.path.exists("ml_data/training_data.csv"):
                 ml_predictor.train_model()
 
-        # Inicializar lógica de señales
+        # Inicializar la lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
@@ -186,7 +198,7 @@ async def main():
             signal_logic
         )
 
-        # Enviar mensaje inicial de estado a Telegram
+        # Enviar mensaje de resumen a Telegram
         active_apis = []
         if helius_client:
             active_apis.append("Helius")
@@ -203,11 +215,11 @@ async def main():
             "Usa /status para ver el estado actual del bot"
         )
 
-        # Crear tareas asíncronas y supervisar su estado
+        # Crear tareas asíncronas y supervisarlas
         tasks = []
         tasks.append(asyncio.create_task(signal_logic.check_signals_periodically()))
         tasks.append(asyncio.create_task(monitoring_task()))
-        
+
         # Función para procesar mensajes de Cielo con manejo de errores
         async def process_cielo_message(message):
             try:
@@ -215,7 +227,7 @@ async def main():
             except Exception as e:
                 logger.error(f"Error en process_cielo_message: {e}", exc_info=True)
 
-        # Inicializar cliente Cielo para WebSocket
+        # Inicializar cliente Cielo para WebSocket y monitoreo de wallets
         wallets = wallet_tracker.get_wallets()
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
         cielo_task = asyncio.create_task(cielo_client.run_forever_wallets(
@@ -225,7 +237,7 @@ async def main():
         ))
         tasks.append(cielo_task)
 
-        # Supervisar las tareas y reiniciar si es necesario
+        # Supervisar tareas y reiniciar si alguna falla
         while bot_running:
             for idx, task in enumerate(tasks):
                 if task.done():
@@ -233,7 +245,8 @@ async def main():
                         err = task.exception()
                         if err:
                             logger.error(f"Tarea #{idx} finalizó con error: {err}")
-                            if idx == 2:  # Si es la tarea de Cielo, reiniciar la conexión
+                            # Si es la tarea del WebSocket (índice 2), reiniciarla
+                            if idx == 2:
                                 logger.info("Reiniciando conexión Cielo...")
                                 tasks[idx] = asyncio.create_task(cielo_client.run_forever_wallets(
                                     wallets,
