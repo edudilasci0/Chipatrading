@@ -106,128 +106,125 @@ class SignalLogic:
         """
         Procesa los tokens candidatos para generar señales con criterios mejorados.
         """
-        now = time.time()
-        window_seconds = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
-        cutoff = now - window_seconds
-        candidates = []
+        try:
+            now = time.time()
+            window_seconds = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
+            cutoff = now - window_seconds
+            candidates = []
 
-        logger.info(f"Procesando {len(self.token_candidates)} candidatos para señales...")
+            logger.info(f"Procesando {len(self.token_candidates)} candidatos para señales...")
 
-        for token, data in list(self.token_candidates.items()):
-            try:
-                # Obtener transacciones recientes
-                recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
-                if not recent_txs:
-                    logger.debug(f"Token {token}: sin transacciones recientes, omitiendo")
-                    continue
+            for token, data in list(self.token_candidates.items()):
+                try:
+                    # Obtener transacciones recientes
+                    recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
+                    if not recent_txs:
+                        logger.debug(f"Token {token}: sin transacciones recientes, omitiendo")
+                        continue
 
-                # Verificar si este token ya tuvo señal recientemente
-                token_recently_signaled = any(
-                    t == token and ts > (now - 3600) for t, ts, _, _ in self.recent_signals
-                )
-                if token_recently_signaled:
-                    logger.debug(f"Token {token} ya generó señal recientemente, omitiendo")
-                    continue
+                    # Verificar si este token ya tuvo señal recientemente
+                    token_recently_signaled = any(
+                        t == token and ts > (now - 3600) for t, ts, _, _ in self.recent_signals
+                    )
+                    if token_recently_signaled:
+                        logger.debug(f"Token {token} ya generó señal recientemente, omitiendo")
+                        continue
 
-                # Calcular métricas básicas
-                trader_count = len(data["wallets"])
-                volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
+                    # Calcular métricas básicas
+                    trader_count = len(data["wallets"])
+                    volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
 
-                # Calcular métricas avanzadas
-                buy_txs = [tx for tx in recent_txs if tx["type"] == "BUY"]
-                sell_txs = [tx for tx in recent_txs if tx["type"] == "SELL"]
-                buy_percentage = len(buy_txs) / max(1, len(recent_txs))
+                    # Calcular métricas avanzadas
+                    buy_txs = [tx for tx in recent_txs if tx["type"] == "BUY"]
+                    sell_txs = [tx for tx in recent_txs if tx["type"] == "SELL"]
+                    buy_percentage = len(buy_txs) / max(1, len(recent_txs))
 
-                # Calcular velocidad de transacciones (txs por minuto)
-                timestamps = [tx["timestamp"] for tx in recent_txs]
-                if len(timestamps) > 1:
-                    tx_timespan = max(timestamps) - min(timestamps)
-                    tx_timespan = max(1, tx_timespan)  # Evitar división por cero
-                    tx_velocity = len(recent_txs) / (tx_timespan / 60)
-                else:
-                    tx_velocity = 1.0
+                    # Calcular velocidad de transacciones (txs por minuto)
+                    timestamps = [tx["timestamp"] for tx in recent_txs]
+                    if len(timestamps) > 1:
+                        tx_timespan = max(timestamps) - min(timestamps)
+                        tx_timespan = max(1, tx_timespan)  # Evitar división por cero
+                        tx_velocity = len(recent_txs) / (tx_timespan / 60)
+                    else:
+                        tx_velocity = 1.0
 
-                logger.info(f"Token {token[:8]}...: {trader_count} traders, ${volume_usd:.2f} vol, " +
-                            f"{buy_percentage:.2f} buy ratio, {tx_velocity:.2f} tx/min")
+                    logger.info(f"Token {token[:8]}...: {trader_count} traders, ${volume_usd:.2f} vol, " +
+                                f"{buy_percentage:.2f} buy ratio, {tx_velocity:.2f} tx/min")
 
-                # Verificar condiciones mínimas
-                min_traders = int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))
-                min_volume = float(Config.get("MIN_VOLUME_USD", 2000))
-                min_buy_percentage = float(Config.get("MIN_BUY_PERCENTAGE", 0.7))
-                min_velocity = float(Config.get("MIN_TX_VELOCITY", 0.5))
+                    # Verificar condiciones mínimas
+                    min_traders = int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))
+                    min_volume = float(Config.get("MIN_VOLUME_USD", 2000))
+                    min_buy_percentage = float(Config.get("MIN_BUY_PERCENTAGE", 0.7))
+                    min_velocity = float(Config.get("MIN_TX_VELOCITY", 0.5))
 
-                if trader_count < min_traders:
-                    logger.debug(f"Token {token} descartado: pocos traders ({trader_count} < {min_traders})")
-                    continue
-                if volume_usd < min_volume:
-                    logger.debug(f"Token {token} descartado: poco volumen (${volume_usd:.2f} < ${min_volume})")
-                    continue
-                if buy_percentage < min_buy_percentage:
-                    logger.debug(f"Token {token} descartado: bajo ratio de compras ({buy_percentage:.2f} < {min_buy_percentage})")
-                    continue
-                if tx_velocity < min_velocity:
-                    logger.debug(f"Token {token} descartado: baja velocidad de txs ({tx_velocity:.2f} < {min_velocity})")
-                    continue
+                    if trader_count < min_traders:
+                        logger.debug(f"Token {token} descartado: pocos traders ({trader_count} < {min_traders})")
+                        continue
+                    if volume_usd < min_volume:
+                        logger.debug(f"Token {token} descartado: poco volumen (${volume_usd:.2f} < ${min_volume})")
+                        continue
+                    if buy_percentage < min_buy_percentage:
+                        logger.debug(f"Token {token} descartado: bajo ratio de compras ({buy_percentage:.2f} < {min_buy_percentage})")
+                        continue
+                    if tx_velocity < min_velocity:
+                        logger.debug(f"Token {token} descartado: baja velocidad de txs ({tx_velocity:.2f} < {min_velocity})")
+                        continue
 
-                # Obtener datos de mercado usando función de fallback
-                market_data = await self.get_token_market_data(token)
-                market_cap = market_data.get("market_cap", 0)
-                vol_growth = market_data.get("volume_growth", {})
+                    # Obtener datos de mercado usando función de fallback
+                    market_data = await self.get_token_market_data(token)
+                    market_cap = market_data.get("market_cap", 0)
+                    vol_growth = market_data.get("volume_growth", {})
 
-                # Clasificar token como "meme" si aplica
-                token_type = None
-                if self.gmgn_client and self.gmgn_client.is_memecoin(token):
-                    token_type = "meme"
-                elif vol_growth.get("growth_5m", 0) > 0.2 and market_cap < 5_000_000:
-                    token_type = "meme"
+                    # Clasificar token como "meme" si aplica
+                    token_type = None
+                    if self.gmgn_client and self.gmgn_client.is_memecoin(token):
+                        token_type = "meme"
+                    elif vol_growth.get("growth_5m", 0) > 0.2 and market_cap < 5_000_000:
+                        token_type = "meme"
 
-                trader_scores = [self.scoring_system.get_score(w) for w in data["wallets"]]
-                confidence = self.scoring_system.compute_confidence(
-                    wallet_scores=trader_scores,
-                    volume_1h=market_data.get("volume", 0),
-                    market_cap=market_cap,
-                    recent_volume_growth=vol_growth.get("growth_5m", 0),
-                    token_type=token_type
-                )
+                    trader_scores = [self.scoring_system.get_score(w) for w in data["wallets"]]
+                    confidence = self.scoring_system.compute_confidence(
+                        wallet_scores=trader_scores,
+                        volume_1h=market_data.get("volume", 0),
+                        market_cap=market_cap,
+                        recent_volume_growth=vol_growth.get("growth_5m", 0),
+                        token_type=token_type
+                    )
 
-                # Ajustar para detectar daily runners o actividad de ballenas
-                config = Config.MEMECOIN_CONFIG
-                is_memecoin = (tx_velocity > config["TX_RATE_THRESHOLD"] and 
-                               vol_growth.get("growth_5m", 0) > config["VOLUME_GROWTH_THRESHOLD"] and 
-                               market_cap < 10_000_000)
-                whale_threshold = 10000
-                if recent_txs and max(tx["amount_usd"] for tx in recent_txs) > whale_threshold:
-                    is_memecoin = True
+                    # Ajustar para detectar daily runners o actividad de ballenas
+                    config = Config.MEMECOIN_CONFIG
+                    is_memecoin = (tx_velocity > config["TX_RATE_THRESHOLD"] and 
+                                vol_growth.get("growth_5m", 0) > config["VOLUME_GROWTH_THRESHOLD"] and 
+                                market_cap < 10_000_000)
+                    whale_threshold = 10000
+                    if recent_txs and max(tx["amount_usd"] for tx in recent_txs) > whale_threshold:
+                        is_memecoin = True
 
-                if is_memecoin:
-                    confidence *= 1.5
+                    if is_memecoin:
+                        confidence *= 1.5
 
-                candidates.append({
-                    "token": token,
-                    "confidence": confidence,
-                    "ml_prediction": 0.5,  # Valor base; se ajusta con ML si está disponible
-                    "trader_count": trader_count,
-                    "volume_usd": volume_usd,
-                    "recent_transactions": recent_txs,
-                    "market_cap": market_cap,
-                    "volume_1h": market_data.get("volume", 0),
-                    "volume_growth": vol_growth,
-                    "buy_percentage": buy_percentage,
-                    "trader_scores": trader_scores,
-                    "initial_price": market_data.get("price", 0),
-                    "data_source": market_data.get("source", "unknown")
-                })
-            except Exception as e:
-                logger.error(f"Error procesando candidato {token}: {e}")
-        
-        candidates.sort(key=lambda x: x["confidence"], reverse=True)
-        await self._generate_signals(candidates)
-    except Exception as e:
-        logger.error(f"Error en _process_candidates: {e}", exc_info=True)
-
-    # Nota: Asegúrate de que el método _generate_signals esté implementado en la clase.
-
-    # Fin del método _process_candidates
+                    candidates.append({
+                        "token": token,
+                        "confidence": confidence,
+                        "ml_prediction": 0.5,  # Valor base; se ajusta con ML si está disponible
+                        "trader_count": trader_count,
+                        "volume_usd": volume_usd,
+                        "recent_transactions": recent_txs,
+                        "market_cap": market_cap,
+                        "volume_1h": market_data.get("volume", 0),
+                        "volume_growth": vol_growth,
+                        "buy_percentage": buy_percentage,
+                        "trader_scores": trader_scores,
+                        "initial_price": market_data.get("price", 0),
+                        "data_source": market_data.get("source", "unknown")
+                    })
+                except Exception as e:
+                    logger.error(f"Error procesando candidato {token}: {e}")
+            
+            candidates.sort(key=lambda x: x["confidence"], reverse=True)
+            await self._generate_signals(candidates)
+        except Exception as e:
+            logger.error(f"Error en _process_candidates: {e}", exc_info=True)
 
     async def get_token_market_data(self, token):
         """
@@ -287,7 +284,6 @@ class SignalLogic:
     async def _generate_signals(self, candidates):
         """
         Genera señales a partir de la lista de candidatos.
-        (Implementa tu lógica de generación de señales aquí)
         """
         # Ejemplo: Iterar sobre candidatos y simular generación de señal
         for candidate in candidates:
@@ -303,3 +299,33 @@ class SignalLogic:
         # Limitar el tamaño de recent_signals a 100
         if len(self.recent_signals) > 100:
             self.recent_signals = self.recent_signals[-100:]
+            
+    async def check_signals_periodically(self):
+        """
+        Ejecuta la comprobación de señales periódicamente.
+        """
+        while True:
+            try:
+                now = time.time()
+                if now - self.last_signal_check > 60:  # Cada minuto
+                    logger.info("Ejecutando comprobación de señales...")
+                    await self._process_candidates()
+                    self.last_signal_check = now
+            except Exception as e:
+                logger.error(f"Error en check_signals_periodically: {e}", exc_info=True)
+            await asyncio.sleep(10)
+            
+    def get_active_candidates_count(self):
+        """
+        Retorna el número de tokens candidatos activos
+        """
+        now = time.time()
+        window_seconds = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
+        cutoff = now - window_seconds
+        active_count = 0
+        
+        for token, data in self.token_candidates.items():
+            if data["last_update"] > cutoff:
+                active_count += 1
+                
+        return active_count
