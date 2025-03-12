@@ -48,55 +48,84 @@ except ImportError:
     helius_available = False
     logger.warning("⚠️ Cliente Helius no disponible")
 
-# Variable global para control del bot
+# Variable global para controlar el bot
 bot_running = True
 
-# Función para manejar mensajes entrantes de Cielo
+# Función para procesar mensajes entrantes de Cielo (actualizada según la propuesta)
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic):
     try:
         data = json.loads(message)
         if data.get("type") == "tx" and "data" in data:
             tx_data = data["data"]
-            # Verifica que el mensaje tenga la información necesaria
-            if all(key in tx_data for key in ["wallet", "token", "amount_usd", "tx_type"]):
-                # Se agrega la transacción a la lógica de señales
-                signal_logic.add_transaction(
-                    tx_data["wallet"],
-                    tx_data["token"],
-                    float(tx_data["amount_usd"]),
-                    tx_data["tx_type"]
-                )
+            # Procesar transacciones tipo swap
+            if tx_data.get("tx_type") == "swap":
+                # Determinar token y tipo de operación
+                processed_tx = {}
+                # Si token0_address es "native", se asume compra (BUY) y se usa token1_address
+                if tx_data.get("token0_address") == "native":
+                    processed_tx["wallet"] = tx_data.get("wallet")
+                    processed_tx["token"] = tx_data.get("token1_address")
+                    processed_tx["type"] = "BUY"
+                    processed_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+                else:
+                    processed_tx["wallet"] = tx_data.get("wallet")
+                    processed_tx["token"] = tx_data.get("token0_address")
+                    processed_tx["type"] = "SELL"
+                    processed_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
+                # Asignar timestamp (si no viene, usar el actual)
+                processed_tx["timestamp"] = int(tx_data.get("timestamp", time.time()))
+                
+                # Actualizar score de la wallet si está en la lista de seguimiento
+                if processed_tx["wallet"] in wallet_tracker.get_wallets():
+                    scoring_system.update_score_on_trade(processed_tx["wallet"], processed_tx)
+                
+                # Procesar la transacción en la lógica de señales
+                # NOTA: Asegúrate de tener implementado en SignalLogic el método process_transaction()
+                signal_logic.process_transaction(processed_tx)
+                
+                # Guardar la transacción en la base de datos
+                try:
+                    db.save_transaction(processed_tx)
+                except Exception as e:
+                    logger.error(f"Error guardando transacción en BD: {e}")
+                    
+            # Si es de tipo transfer, se puede implementar procesamiento adicional
+            elif tx_data.get("tx_type") == "transfer":
+                # Implementar procesamiento para transferencias si es necesario
+                pass
+    except json.JSONDecodeError:
+        logger.error("Error decodificando mensaje JSON de Cielo")
     except Exception as e:
         logger.error(f"Error procesando mensaje de Cielo: {e}", exc_info=True)
 
-# Tarea de monitoreo adicional (por ejemplo, para revisar estado del bot)
+# Tarea de monitoreo para supervisar el estado del bot (se reduce la frecuencia de notificaciones)
 async def monitoring_task():
-    global bot_running, message_counter, transaction_counter, last_counter_log, last_heartbeat
+    global bot_running
     while bot_running:
         try:
-            # Espera 30 minutos entre reportes
-            await asyncio.sleep(1800)
-            # Aquí se pueden agregar más métricas (p.ej., usando psutil)
+            await asyncio.sleep(1800)  # Cada 30 minutos
             logger.info("Enviando reporte de estado (monitoring_task)")
             send_telegram_message("📊 Reporte de estado: Todo en orden.")
         except Exception as e:
             logger.error(f"⚠️ Error en monitoring_task: {e}", exc_info=True)
             await asyncio.sleep(60)
 
+# Función principal del bot
 async def main():
     global bot_running
     try:
-        # Verificar configuración y conectar con la base de datos
+        # Verificar configuración y base de datos
         Config.check_required_config()
         db.init_db()
         Config.load_dynamic_config()
 
-        # Mensaje de inicio a Telegram
+        # Enviar mensaje de arranque a Telegram
         send_telegram_message("🚀 Iniciando ChipaTrading Bot...")
 
         # Inicializar componentes principales
         wallet_tracker = WalletTracker()
         scoring_system = ScoringSystem()
+        
         rugcheck_api = None
         if Config.RUGCHECK_PRIVATE_KEY and Config.RUGCHECK_WALLET_PUBKEY:
             try:
@@ -112,7 +141,7 @@ async def main():
                 logger.error(f"⚠️ Error en RugCheck: {e}", exc_info=True)
                 rugcheck_api = None
 
-        # Inicializar clientes de datos de mercado
+        # Inicializar cliente Helius
         helius_client = None
         if helius_available and Config.HELIUS_API_KEY:
             helius_client = HeliusClient(Config.HELIUS_API_KEY)
@@ -120,6 +149,7 @@ async def main():
         else:
             logger.warning("⚠️ Cliente Helius no disponible o falta API key")
 
+        # Inicializar cliente GMGN (sin API key)
         gmgn_client = None
         if gmgn_available:
             try:
@@ -129,14 +159,14 @@ async def main():
                 logger.error(f"⚠️ Error en GMGN: {e}", exc_info=True)
                 gmgn_client = None
 
-        # Inicializar el módulo de ML si está disponible
+        # Inicializar módulo de ML si está disponible
         ml_predictor = None
         if ml_available:
             ml_predictor = SignalPredictor()
             if os.path.exists("ml_data/training_data.csv"):
                 ml_predictor.train_model()
 
-        # Inicializar la lógica de señales con los clientes de datos
+        # Inicializar lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
@@ -156,7 +186,7 @@ async def main():
             signal_logic
         )
 
-        # Mensaje de resumen a Telegram
+        # Enviar mensaje inicial de estado a Telegram
         active_apis = []
         if helius_client:
             active_apis.append("Helius")
@@ -173,22 +203,46 @@ async def main():
             "Usa /status para ver el estado actual del bot"
         )
 
-        # Crear y lanzar tareas asíncronas
-        asyncio.create_task(signal_logic.check_signals_periodically())
-        asyncio.create_task(monitoring_task())
+        # Crear tareas asíncronas y supervisar su estado
+        tasks = []
+        tasks.append(asyncio.create_task(signal_logic.check_signals_periodically()))
+        tasks.append(asyncio.create_task(monitoring_task()))
+        
+        # Función para procesar mensajes de Cielo con manejo de errores
+        async def process_cielo_message(message):
+            try:
+                await on_cielo_message(message, wallet_tracker, scoring_system, signal_logic)
+            except Exception as e:
+                logger.error(f"Error en process_cielo_message: {e}", exc_info=True)
 
-        # Inicializar cliente Cielo para WebSocket y monitoreo de wallets
+        # Inicializar cliente Cielo para WebSocket
         wallets = wallet_tracker.get_wallets()
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
-        asyncio.create_task(cielo_client.run_forever_wallets(
+        cielo_task = asyncio.create_task(cielo_client.run_forever_wallets(
             wallets,
-            lambda msg: asyncio.create_task(on_cielo_message(msg, wallet_tracker, scoring_system, signal_logic)),
+            process_cielo_message,
             {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
         ))
+        tasks.append(cielo_task)
 
-        # Mantener el main corriendo
-        while True:
-            await asyncio.sleep(3600)
+        # Supervisar las tareas y reiniciar si es necesario
+        while bot_running:
+            for idx, task in enumerate(tasks):
+                if task.done():
+                    try:
+                        err = task.exception()
+                        if err:
+                            logger.error(f"Tarea #{idx} finalizó con error: {err}")
+                            if idx == 2:  # Si es la tarea de Cielo, reiniciar la conexión
+                                logger.info("Reiniciando conexión Cielo...")
+                                tasks[idx] = asyncio.create_task(cielo_client.run_forever_wallets(
+                                    wallets,
+                                    process_cielo_message,
+                                    {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
+                                ))
+                    except Exception as e:
+                        logger.error(f"Error verificando tarea #{idx}: {e}", exc_info=True)
+            await asyncio.sleep(30)
 
     except KeyboardInterrupt:
         logger.info("Bot interrumpido por el usuario")
