@@ -1,6 +1,9 @@
 import os
 import sys
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -45,8 +48,20 @@ class Config:
 
     @classmethod
     def load_dynamic_config(cls, db_connection=None):
-        # Implementación para cargar configuración dinámica desde BD
-        pass
+        """
+        Carga configuraciones dinámicas desde la base de datos.
+        Se espera que la función db.execute_cached_query retorne una lista de diccionarios con keys 'key' y 'value'.
+        """
+        try:
+            import db
+            settings = db.execute_cached_query("SELECT key, value FROM bot_settings")
+            for setting in settings:
+                key = setting['key']
+                value = setting['value']
+                cls._dynamic_config[key] = value
+            logger.info(f"Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
+        except Exception as e:
+            logger.error(f"Error cargando configuración dinámica: {e}")
 
     @classmethod
     def get(cls, key, default=None):
