@@ -28,6 +28,8 @@ bot_running = True
 
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
     try:
+        # Importación local para cumplir con la restricción de imports globales
+        import json
         data = json.loads(message)
         if data.get("type") == "tx" and "data" in data:
             tx_data = data["data"]
