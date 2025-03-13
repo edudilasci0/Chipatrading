@@ -41,11 +41,11 @@ def send_telegram_message(message):
 
 def format_signal_message(signal_data, alert_type="signal"):
     """
-    Formatea mensajes de alerta. El parámetro alert_type puede ser:
+    Formatea mensajes de alerta. alert_type puede ser:
       - "signal": alerta de señal general.
       - "early_alpha": alerta Early Alpha.
       - "daily_runner": alerta Daily Runner.
-    Se añaden métricas adicionales y enlaces a varios exploradores.
+    Se añaden métricas y enlaces a exploradores.
     """
     token = signal_data.get("token", "N/A")
     confidence = signal_data.get("confidence", 0)
@@ -76,12 +76,12 @@ def format_signal_message(signal_data, alert_type="signal"):
 
 async def process_telegram_commands(bot_token, chat_id, signal_logic):
     """
-    Procesa comandos de Telegram, incluyendo nuevos comandos:
-      - /emerging: ver tokens emergentes detectados.
-      - /status: ahora incluye información sobre alertas Early Alpha y Daily Runners.
-      - /top: ver top traders.
-      - /debug y /verbosity.
-      - /chart: generar gráfico simple de rendimiento de un token.
+    Procesa comandos de Telegram, incluyendo:
+      - /emerging: tokens emergentes.
+      - /status: estado del bot.
+      - /top: top traders.
+      - /debug, /verbosity.
+      - /chart: gráfico simple de rendimiento.
     """
     import db
     try:
@@ -178,7 +178,6 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
         update.message.reply_text(f"✅ Nivel ajustado a {level_str}")
 
     def chart_command(update, context):
-        # Comando para generar gráfico simple de rendimiento de un token
         if str(update.effective_chat.id) != str(chat_id):
             update.message.reply_text("⛔️ No autorizado.")
             return
@@ -191,7 +190,6 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
             if not performances:
                 update.message.reply_text(f"No hay datos de rendimiento para el token {token}")
                 return
-            # Generar gráfico simple en texto (barras ASCII)
             data_points = [(p["timeframe"], p["percent_change"]) for p in performances]
             order = {"3m": 1, "5m": 2, "10m": 3, "30m": 4, "1h": 5, "2h": 6, "4h": 7, "24h": 8}
             data_points.sort(key=lambda x: order.get(x[0], 9))
@@ -215,8 +213,7 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
         dispatcher.add_handler(CommandHandler("start", start_command))
         dispatcher.add_handler(CommandHandler("stop", stop_command))
         dispatcher.add_handler(CommandHandler("status", status_command))
-        # Se pueden agregar los comandos "config" y "set" si están definidos
-        dispatcher.add_handler(CommandHandler("stats", status_command))
+        # Se pueden agregar comandos adicionales (ej. /config, /set, /stats) según se requiera
         dispatcher.add_handler(CommandHandler("top", top_command))
         dispatcher.add_handler(CommandHandler("emerging", emerging_command))
         dispatcher.add_handler(CommandHandler("debug", debug_command))
