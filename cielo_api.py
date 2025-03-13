@@ -14,9 +14,6 @@ class CieloAPI:
     def __init__(self, api_key=None):
         """
         Inicializa la API de Cielo.
-        
-        Args:
-            api_key: API key para Cielo; si no se proporciona, usa el valor de Config.
         """
         self.api_key = api_key if api_key else Config.CIELO_API_KEY
         self.ws_url = "wss://feed-api.cielo.finance/api/v1/ws"
@@ -114,6 +111,7 @@ class CieloAPI:
         Reintenta la conexión en caso de errores usando backoff exponencial.
         """
         attempt = 0
+        max_retry_delay = 60
         while True:
             try:
                 self.last_connection_attempt = time.time()
@@ -133,14 +131,14 @@ class CieloAPI:
             except (websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
                 attempt += 1
-                if not await self._reconnect_with_backoff(attempt):
+                if not await self._reconnect_with_backoff(attempt, max_retry_delay):
                     break
                 continue
             except Exception as e:
                 self.connection_failures += 1
                 attempt += 1
                 logger.error(f"🚨 Error inesperado ({self.connection_failures}): {e}, reintentando...", exc_info=True)
-                if not await self._reconnect_with_backoff(attempt):
+                if not await self._reconnect_with_backoff(attempt, max_retry_delay):
                     break
 
     async def run_forever(self, on_message_callback, filter_params=None):
@@ -148,6 +146,7 @@ class CieloAPI:
         Mantiene una conexión WebSocket abierta con la API de Cielo en modo feed.
         """
         attempt = 0
+        max_retry_delay = 60
         while True:
             try:
                 headers = {"X-API-KEY": self.api_key}
