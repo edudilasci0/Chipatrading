@@ -6,9 +6,6 @@ from config import Config
 logger = logging.getLogger("chipatrading")
 
 def send_telegram_message(message):
-    """
-    Envía un mensaje a Telegram con reintentos y verificación de longitud.
-    """
     if len(message) > 4096:
         message = message[:4090] + "...\n[Mensaje truncado]"
         logger.warning("Mensaje truncado por longitud.")
@@ -40,13 +37,6 @@ def send_telegram_message(message):
     return False
 
 def format_signal_message(signal_data, alert_type="signal"):
-    """
-    Formatea mensajes de alerta. alert_type puede ser:
-      - "signal": alerta de señal general.
-      - "early_alpha": alerta Early Alpha.
-      - "daily_runner": alerta Daily Runner.
-    Se añaden métricas y enlaces a exploradores.
-    """
     token = signal_data.get("token", "N/A")
     confidence = signal_data.get("confidence", 0)
     tx_velocity = signal_data.get("tx_velocity", "N/A")
@@ -75,14 +65,6 @@ def format_signal_message(signal_data, alert_type="signal"):
     return message
 
 async def process_telegram_commands(bot_token, chat_id, signal_logic):
-    """
-    Procesa comandos de Telegram, incluyendo:
-      - /emerging: tokens emergentes.
-      - /status: estado del bot.
-      - /top: top traders.
-      - /debug, /verbosity.
-      - /chart: gráfico simple de rendimiento.
-    """
     import db
     try:
         from telegram import ParseMode
@@ -206,6 +188,21 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
         except Exception as e:
             update.message.reply_text(f"❌ Error generando gráfico: {e}")
 
+    def config_command(update, context):
+        if str(update.effective_chat.id) != str(chat_id):
+            update.message.reply_text("⛔️ No autorizado.")
+            return
+        if not context.args or len(context.args) < 2:
+            update.message.reply_text("Uso: /config <key> <value>")
+            return
+        key = context.args[0]
+        value = context.args[1]
+        try:
+            db.update_setting(key, value)
+            update.message.reply_text(f"✅ Configuración actualizada: {key} = {value}")
+        except Exception as e:
+            update.message.reply_text(f"❌ Error: {e}")
+
     try:
         updater = Updater(bot_token)
         dispatcher = updater.dispatcher
@@ -213,12 +210,12 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
         dispatcher.add_handler(CommandHandler("start", start_command))
         dispatcher.add_handler(CommandHandler("stop", stop_command))
         dispatcher.add_handler(CommandHandler("status", status_command))
-        # Se pueden agregar comandos adicionales (ej. /config, /set, /stats) según se requiera
         dispatcher.add_handler(CommandHandler("top", top_command))
         dispatcher.add_handler(CommandHandler("emerging", emerging_command))
         dispatcher.add_handler(CommandHandler("debug", debug_command))
         dispatcher.add_handler(CommandHandler("verbosity", verbosity_command))
         dispatcher.add_handler(CommandHandler("chart", chart_command))
+        dispatcher.add_handler(CommandHandler("config", config_command))
 
         updater.start_polling()
         logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
