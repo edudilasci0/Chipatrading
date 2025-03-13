@@ -12,18 +12,12 @@ class CieloAPI:
     Maneja la conexión WebSocket a la API de Cielo.
     """
     def __init__(self, api_key=None):
-        """
-        Inicializa la API de Cielo.
-        """
         self.api_key = api_key if api_key else Config.CIELO_API_KEY
         self.ws_url = "wss://feed-api.cielo.finance/api/v1/ws"
         self.last_connection_attempt = 0
         self.connection_failures = 0
 
     async def log_raw_message(self, message):
-        """
-        Registra el mensaje completo recibido para debugging.
-        """
         try:
             data = json.loads(message)
             print(f"\n-------- MENSAJE CIELO RECIBIDO --------")
@@ -54,9 +48,6 @@ class CieloAPI:
             print(f"Mensaje original: {message[:500]}...")
 
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
-        """
-        Suscribe a múltiples wallets en la misma conexión WebSocket.
-        """
         subscription_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],
@@ -78,9 +69,6 @@ class CieloAPI:
         print("✅ Todas las wallets han sido suscritas")
 
     async def _ping_periodically(self, ws):
-        """
-        Envía un mensaje tipo ping periódicamente para mantener la conexión viva.
-        """
         while True:
             try:
                 await asyncio.sleep(300)
@@ -92,9 +80,6 @@ class CieloAPI:
                 break
 
     async def _reconnect_with_backoff(self, attempt=0, max_attempts=10):
-        """
-        Maneja reconexiones con backoff exponencial.
-        """
         if attempt >= max_attempts:
             logger.critical("Número máximo de intentos alcanzado. Deteniendo bot.")
             from telegram_utils import send_telegram_message
@@ -106,10 +91,6 @@ class CieloAPI:
         return True
 
     async def run_forever_wallets(self, wallets, on_message_callback, filter_params=None):
-        """
-        Mantiene una conexión WebSocket abierta y se suscribe a múltiples wallets.
-        Reintenta la conexión en caso de errores usando backoff exponencial.
-        """
         attempt = 0
         max_retry_delay = 60
         while True:
@@ -142,9 +123,6 @@ class CieloAPI:
                     break
 
     async def run_forever(self, on_message_callback, filter_params=None):
-        """
-        Mantiene una conexión WebSocket abierta con la API de Cielo en modo feed.
-        """
         attempt = 0
         max_retry_delay = 60
         while True:
