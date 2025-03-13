@@ -1,5 +1,6 @@
 import logging
 import requests
+import time
 from config import Config
 
 logger = logging.getLogger("chipatrading")
@@ -80,6 +81,7 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
       - /status: ahora incluye información sobre alertas Early Alpha y Daily Runners.
       - /top: ver top traders.
       - /debug y /verbosity.
+      - /chart: generar gráfico simple de rendimiento de un token.
     """
     import db
     try:
@@ -175,6 +177,37 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
         bot_status["verbosity"] = level
         update.message.reply_text(f"✅ Nivel ajustado a {level_str}")
 
+    def chart_command(update, context):
+        # Comando para generar gráfico simple de rendimiento de un token
+        if str(update.effective_chat.id) != str(chat_id):
+            update.message.reply_text("⛔️ No autorizado.")
+            return
+        if not context.args:
+            update.message.reply_text("Uso: /chart <token_address>")
+            return
+        token = context.args[0]
+        try:
+            performances = db.get_signal_performance(token=token)
+            if not performances:
+                update.message.reply_text(f"No hay datos de rendimiento para el token {token}")
+                return
+            # Generar gráfico simple en texto (barras ASCII)
+            data_points = [(p["timeframe"], p["percent_change"]) for p in performances]
+            order = {"3m": 1, "5m": 2, "10m": 3, "30m": 4, "1h": 5, "2h": 6, "4h": 7, "24h": 8}
+            data_points.sort(key=lambda x: order.get(x[0], 9))
+            
+            result = "*Rendimiento de token*\n"
+            result += f"`{token}`\n\n"
+            for timeframe, percent in data_points:
+                emoji = "🟢" if percent >= 0 else "🔴"
+                bar_length = 20
+                filled_length = int(round(bar_length * abs(percent) / 100))
+                bar = "█" * filled_length + "-" * (bar_length - filled_length)
+                result += f"{emoji} *{timeframe}*: {percent:.2f}% [{bar}]\n"
+            update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            update.message.reply_text(f"❌ Error generando gráfico: {e}")
+
     try:
         updater = Updater(bot_token)
         dispatcher = updater.dispatcher
@@ -182,13 +215,13 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
         dispatcher.add_handler(CommandHandler("start", start_command))
         dispatcher.add_handler(CommandHandler("stop", stop_command))
         dispatcher.add_handler(CommandHandler("status", status_command))
-        dispatcher.add_handler(CommandHandler("config", config_command))
-        dispatcher.add_handler(CommandHandler("set", set_command))
+        # Se pueden agregar los comandos "config" y "set" si están definidos
         dispatcher.add_handler(CommandHandler("stats", status_command))
         dispatcher.add_handler(CommandHandler("top", top_command))
         dispatcher.add_handler(CommandHandler("emerging", emerging_command))
         dispatcher.add_handler(CommandHandler("debug", debug_command))
         dispatcher.add_handler(CommandHandler("verbosity", verbosity_command))
+        dispatcher.add_handler(CommandHandler("chart", chart_command))
 
         updater.start_polling()
         logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
