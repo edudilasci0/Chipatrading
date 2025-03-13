@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from config import Config
 import threading
+import random
 
 # Configurar logging
 logger = logging.getLogger("database")
@@ -75,7 +76,7 @@ def retry_db_operation(max_attempts=3, delay=1, backoff_factor=2):
     """
     def decorator(func):
         def wrapper(*args, **kwargs):
-            import random
+            global query_cache, query_cache_timestamp, query_cache_hits, query_cache_misses
             last_error = None
             current_delay = delay
             for attempt in range(max_attempts):
@@ -179,7 +180,6 @@ def init_db():
                         created_at TIMESTAMP DEFAULT NOW()
                     )
                 """)
-                # Registrar migración #1
                 cur.execute("""
                     INSERT INTO schema_version (version, description)
                     VALUES (1, 'Tablas iniciales')
@@ -448,7 +448,7 @@ def count_signals_today():
     Cuenta cuántas señales se han emitido hoy.
     """
     query = """
-    SELECT COUNT(*) FROM signals
+    SELECT COUNT(*) as count FROM signals
     WHERE created_at::date = CURRENT_DATE
     """
     results = execute_cached_query(query, max_age=60)
@@ -460,7 +460,7 @@ def count_signals_last_hour():
     Cuenta las señales emitidas en la última hora.
     """
     query = """
-    SELECT COUNT(*) FROM signals
+    SELECT COUNT(*) as count FROM signals
     WHERE created_at > NOW() - INTERVAL '1 HOUR'
     """
     results = execute_cached_query(query, max_age=60)
@@ -472,7 +472,7 @@ def count_transactions_today():
     Cuenta las transacciones guardadas hoy.
     """
     query = """
-    SELECT COUNT(*) FROM transactions
+    SELECT COUNT(*) as count FROM transactions
     WHERE created_at::date = CURRENT_DATE
     """
     results = execute_cached_query(query, max_age=60)
@@ -556,9 +556,8 @@ def get_wallet_profit_stats(wallet, days=30):
 def get_signals_performance_stats():
     """
     Obtiene estadísticas de rendimiento de señales por timeframe.
-    
     Returns:
-        list: Lista de diccionarios con estadísticas por timeframe
+        list: Lista de diccionarios con estadísticas por timeframe.
     """
     query = """
     SELECT 
@@ -596,12 +595,10 @@ def get_signals_performance_stats():
 def get_signal_performance(signal_id):
     """
     Obtiene el rendimiento de una señal específica.
-    
     Args:
-        signal_id: ID de la señal
-        
+        signal_id: ID de la señal.
     Returns:
-        list: Lista de performances de la señal por timeframe
+        list: Lista de performances de la señal por timeframe.
     """
     query = """
     SELECT 
@@ -620,7 +617,7 @@ def get_signal_performance(signal_id):
             "timestamp": row['timestamp'].isoformat() if row['timestamp'] else None
         } for row in results
     ]
-    
+
 @retry_db_operation()
 def get_signal_features(signal_id):
     """
@@ -645,8 +642,7 @@ def update_setting(key, value):
     query = """
     INSERT INTO bot_settings (key, value)
     VALUES (%s, %s)
-    ON CONFLICT (key) 
-    DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
     """
     execute_cached_query(query, (key, value), write_query=True)
     for cache_key in list(query_cache.keys()):
@@ -663,8 +659,7 @@ def save_failed_token(token, reason):
     query = """
     INSERT INTO failed_tokens (token, reason)
     VALUES (%s, %s)
-    ON CONFLICT (token) 
-    DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
+    ON CONFLICT (token) DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()
     """
     execute_cached_query(query, (token, reason), write_query=True)
     return True
