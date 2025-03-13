@@ -17,7 +17,7 @@ from config import Config
 from wallet_tracker import WalletTracker
 from cielo_api import CieloAPI
 from scoring import ScoringSystem
-# Eliminamos la importación de RugCheckAPI
+# Se elimina la dependencia de RugCheckAPI
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
 from telegram_utils import send_telegram_message, process_telegram_commands
@@ -28,8 +28,6 @@ bot_running = True
 
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
     try:
-        # Log informativo del mensaje recibido
-        logger.debug(f"Mensaje recibido: {message[:100]}...")
         # Importación local para usar json sin modificar los imports globales
         import json
         data = json.loads(message)
@@ -37,14 +35,39 @@ async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic
         logger.info(f"Procesando mensaje de tipo: {msg_type}")
         if msg_type == "tx" and "data" in data:
             tx_data = data["data"]
-            logger.debug(f"Datos de transacción: {tx_data}")
-            # Enviar la transacción a SignalLogic para procesar la señal
-            signal_logic.process_transaction(tx_data)
-            # Actualizar scalper monitor si corresponde
-            scalper_monitor.process_transaction(tx_data)
-            logger.info("Transacción procesada en on_cielo_message")
-        else:
-            logger.debug("Mensaje no procesable (no es 'tx') o sin datos")
+            # Normalizar datos para compatibilidad
+            normalized_tx = {}
+            normalized_tx["wallet"] = tx_data.get("wallet")
+            if "token1_address" in tx_data and tx_data.get("token1_address") not in ["native", "So11111111111111111111111111111111111111112"]:
+                normalized_tx["token"] = tx_data.get("token1_address")
+                normalized_tx["type"] = "BUY"
+                normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
+                normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
+                normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+            elif "token0_address" in tx_data and tx_data.get("token0_address") not in ["native", "So11111111111111111111111111111111111111112"]:
+                normalized_tx["token"] = tx_data.get("token0_address")
+                normalized_tx["type"] = "SELL"
+                normalized_tx["token_name"] = tx_data.get("token0_name", "Unknown")
+                normalized_tx["token_symbol"] = tx_data.get("token0_symbol", "???")
+                normalized_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
+            elif "contract_address" in tx_data:
+                normalized_tx["token"] = tx_data.get("contract_address")
+                normalized_tx["type"] = "TRANSFER"
+                normalized_tx["token_name"] = tx_data.get("name", "Unknown")
+                normalized_tx["token_symbol"] = tx_data.get("symbol", "???")
+                normalized_tx["amount_usd"] = float(tx_data.get("amount_usd", 0))
+            else:
+                logger.warning("No se pudo determinar el token para la transacción")
+                return
+
+            normalized_tx["timestamp"] = tx_data.get("timestamp", int(time.time()))
+            logger.info(f"Transacción normalizada: {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
+
+            # Procesar la transacción en SignalLogic y ScalperMonitor
+            signal_logic.process_transaction(normalized_tx)
+            scalper_monitor.process_transaction(normalized_tx)
+        elif msg_type not in ["wallet_subscribed", "pong"]:
+            logger.debug(f"Mensaje de tipo {msg_type} no procesado")
     except Exception as e:
         logger.error(f"Error en on_cielo_message: {e}", exc_info=True)
 
@@ -84,32 +107,25 @@ async def cleanup_discoveries_periodically(scalper_monitor):
 async def main():
     global bot_running
     try:
-        # Mensajes de inicio en consola
         print("\n==== INICIANDO TRADING BOT ====")
         print(f"Fecha/hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         Config.check_required_config()
         db.init_db()
         
-        # Cargar wallets para monitoreo
         wallet_tracker = WalletTracker()
         wallets = wallet_tracker.get_wallets()
         print(f"✅ Cargadas {len(wallets)} wallets para monitoreo")
         logger.info(f"Wallets cargadas: {wallets}")
         
-        # Inicializar servicios
         scoring_system = ScoringSystem()
-        # Eliminamos la inicialización de RugCheckAPI
-        # rugcheck_api = RugCheckAPI()
-        # rugcheck_api.authenticate()
-        
+        # Se elimina RugCheckAPI
         helius_client = None
         if Config.HELIUS_API_KEY:
             from helius_client import HeliusClient
             helius_client = HeliusClient(Config.HELIUS_API_KEY)
             logger.info("✅ Cliente Helius inicializado")
         
-        # Opcional: Inicializar GMGN si está configurado
         gmgn_client = None
         try:
             from gmgn_client import GMGNClient
@@ -118,30 +134,23 @@ async def main():
         except Exception as e:
             logger.warning(f"No se pudo inicializar cliente GMGN: {e}")
         
-        # Inicializar módulos principales
         signal_logic = SignalLogic(
             scoring_system=scoring_system, 
             helius_client=helius_client, 
             gmgn_client=gmgn_client
-            # No se pasa rugcheck_api
         )
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
         scalper_monitor = ScalperActivityMonitor()
         
-        # Iniciar bot de Telegram
         is_bot_active = await process_telegram_commands(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
-        
-        # Notificar inicio vía Telegram
         send_telegram_message("🚀 *Trading Bot Iniciado*\nMonitoreando transacciones en Solana...")
         
-        # Crear tareas asíncronas
         tasks = [
             asyncio.create_task(signal_logic.check_signals_periodically()),
             asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
         ]
         
-        # Iniciar cliente Cielo para recibir mensajes
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
         
         async def process_cielo(message):
@@ -161,7 +170,6 @@ async def main():
         
         logger.info(f"✅ Bot iniciado y funcionando con {len(tasks)} tareas")
         
-        # Bucle principal para vigilar tareas y generar logs informativos
         while bot_running:
             for i, task in enumerate(tasks):
                 if task.done():
@@ -169,7 +177,6 @@ async def main():
                         err = task.exception()
                         if err:
                             logger.error(f"Tarea #{i} falló: {err}")
-                            # Reiniciar tareas fallidas según su índice
                             if i == 0:
                                 tasks[i] = asyncio.create_task(signal_logic.check_signals_periodically())
                                 logger.info("Tarea de verificación de señales reiniciada")
@@ -185,7 +192,6 @@ async def main():
                                 logger.info("Tarea de WebSocket Cielo reiniciada")
                     except Exception as e:
                         logger.error(f"Error verificando tarea #{i}: {e}", exc_info=True)
-            
             logger.info(f"Estado del bot: {len(signal_logic.token_candidates)} tokens monitoreados, {db.count_signals_today()} señales hoy")
             await asyncio.sleep(30)
             
