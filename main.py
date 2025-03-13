@@ -17,7 +17,7 @@ from config import Config
 from wallet_tracker import WalletTracker
 from cielo_api import CieloAPI
 from scoring import ScoringSystem
-from rugcheck import RugCheckAPI
+# Eliminamos la importación de RugCheckAPI
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
 from telegram_utils import send_telegram_message, process_telegram_commands
@@ -28,25 +28,30 @@ bot_running = True
 
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
     try:
+        # Log informativo del mensaje recibido
+        logger.debug(f"Mensaje recibido: {message[:100]}...")
         # Importación local para usar json sin modificar los imports globales
         import json
         data = json.loads(message)
-        if data.get("type") == "tx" and "data" in data:
+        msg_type = data.get("type", "desconocido")
+        logger.info(f"Procesando mensaje de tipo: {msg_type}")
+        if msg_type == "tx" and "data" in data:
             tx_data = data["data"]
-            # Aquí puedes agregar lógica adicional de normalización si es necesario
+            logger.debug(f"Datos de transacción: {tx_data}")
             # Enviar la transacción a SignalLogic para procesar la señal
             signal_logic.process_transaction(tx_data)
-            # Si la transacción proviene de un scalper conocido, actualizar el monitor
+            # Actualizar scalper monitor si corresponde
             scalper_monitor.process_transaction(tx_data)
-            # Aquí podrías actualizar scores o guardar la transacción en BD si aún no se hace en process_transaction
-        # Manejar otros tipos de mensajes, por ejemplo "pong", etc.
+            logger.info("Transacción procesada en on_cielo_message")
+        else:
+            logger.debug("Mensaje no procesable (no es 'tx') o sin datos")
     except Exception as e:
         logger.error(f"Error en on_cielo_message: {e}", exc_info=True)
 
 def adaptive_signal_check():
     """
     Función para realizar una verificación adaptativa de señales según la actividad.
-    (Implementa aquí la lógica adaptativa según métricas del mercado)
+    (Implementa aquí la lógica adaptativa basada en métricas del mercado)
     """
     pass
 
@@ -90,11 +95,13 @@ async def main():
         wallet_tracker = WalletTracker()
         wallets = wallet_tracker.get_wallets()
         print(f"✅ Cargadas {len(wallets)} wallets para monitoreo")
+        logger.info(f"Wallets cargadas: {wallets}")
         
         # Inicializar servicios
         scoring_system = ScoringSystem()
-        rugcheck_api = RugCheckAPI()
-        rugcheck_api.authenticate()
+        # Eliminamos la inicialización de RugCheckAPI
+        # rugcheck_api = RugCheckAPI()
+        # rugcheck_api.authenticate()
         
         helius_client = None
         if Config.HELIUS_API_KEY:
@@ -102,7 +109,7 @@ async def main():
             helius_client = HeliusClient(Config.HELIUS_API_KEY)
             logger.info("✅ Cliente Helius inicializado")
         
-        # Opcional: Inicializar GMGN
+        # Opcional: Inicializar GMGN si está configurado
         gmgn_client = None
         try:
             from gmgn_client import GMGNClient
@@ -115,8 +122,8 @@ async def main():
         signal_logic = SignalLogic(
             scoring_system=scoring_system, 
             helius_client=helius_client, 
-            gmgn_client=gmgn_client, 
-            rugcheck_api=rugcheck_api
+            gmgn_client=gmgn_client
+            # No se pasa rugcheck_api
         )
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
@@ -154,7 +161,7 @@ async def main():
         
         logger.info(f"✅ Bot iniciado y funcionando con {len(tasks)} tareas")
         
-        # Bucle principal para vigilar tareas y generar logs periódicos
+        # Bucle principal para vigilar tareas y generar logs informativos
         while bot_running:
             for i, task in enumerate(tasks):
                 if task.done():
@@ -179,7 +186,6 @@ async def main():
                     except Exception as e:
                         logger.error(f"Error verificando tarea #{i}: {e}", exc_info=True)
             
-            # Log periódico del estado del bot
             logger.info(f"Estado del bot: {len(signal_logic.token_candidates)} tokens monitoreados, {db.count_signals_today()} señales hoy")
             await asyncio.sleep(30)
             
