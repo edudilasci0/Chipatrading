@@ -8,18 +8,17 @@ logger = logging.getLogger("signal_logic")
 
 class SignalLogic:
     def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, ml_predictor=None, pattern_detector=None):
-        # Inicialización de componentes (se elimina RugCheckAPI)
         self.scoring_system = scoring_system
         self.helius_client = helius_client
         self.gmgn_client = gmgn_client
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
         self.performance_tracker = None
-        self.token_candidates = {}  # Diccionario de tokens candidatos
-        self.recent_signals = []    # Lista de señales generadas
+        self.token_candidates = {}
+        self.recent_signals = []
         self.last_signal_check = time.time()
         self.last_cleanup = time.time()
-        self.watched_tokens = set()  # Tokens en seguimiento
+        self.watched_tokens = set()
 
     def process_transaction(self, tx_data):
         """
@@ -50,7 +49,6 @@ class SignalLogic:
             
             candidate = self.token_candidates[token]
             candidate["wallets"].add(wallet)
-            
             wallet_score = self.scoring_system.get_score(wallet) if self.scoring_system else 5.0
             if wallet_score > 8.5:
                 candidate["whale_activity"] = True
@@ -96,7 +94,7 @@ class SignalLogic:
     def _classify_token_opportunity(self, token, recent_txs, market_data):
         """
         Clasifica oportunidades con énfasis en memecoins y daily runners.
-        Devuelve 'daily_runner', 'meme' o None según criterios.
+        Devuelve 'daily_runner', 'meme' o None.
         """
         token_type = None
         if market_data.get("market_cap", 0) < 5_000_000 and market_data.get("volume_growth", {}).get("growth_5m", 0) > 0.3:
@@ -111,8 +109,7 @@ class SignalLogic:
 
     def _monitor_rapid_volume_changes(self, token, candidate):
         """
-        Monitorea cambios rápidos en el volumen. Retorna True si la diferencia entre
-        las dos últimas transacciones supera un umbral.
+        Monitorea cambios rápidos en el volumen.
         """
         txs = candidate.get("transactions", [])
         if len(txs) < 2:
@@ -126,7 +123,7 @@ class SignalLogic:
 
     async def get_token_market_data(self, token):
         """
-        Obtiene datos de mercado con integración con Helius y manejo de fallbacks.
+        Obtiene datos de mercado con integración con Helius y fallback a GMGN.
         """
         data = None
         source = "none"
@@ -158,7 +155,7 @@ class SignalLogic:
 
     async def _process_candidates(self):
         """
-        Procesa candidatos para generar señales, priorizando daily runners y aplicando lógica para señales inmediatas.
+        Procesa candidatos para señales.
         """
         try:
             now = time.time()
@@ -174,18 +171,15 @@ class SignalLogic:
                 buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
                 buy_ratio = len(buy_txs) / max(1, len(recent_txs))
                 timestamps = [tx["timestamp"] for tx in recent_txs]
-                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps))/60)
+                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps)) / 60)
                 
                 market_data = await self.get_token_market_data(token)
                 token_opportunity = self._classify_token_opportunity(token, recent_txs, market_data)
-                
                 is_immediate = self._monitor_rapid_volume_changes(token, data)
                 if token_opportunity in ["daily_runner", "meme"] or is_immediate:
                     logger.info(f"Señal inmediata detectada para {token} ({token_opportunity})")
-                
                 wallet_scores = [self.scoring_system.get_score(w) for w in data["wallets"]]
                 volume_growth = market_data.get("volume_growth", {}).get("growth_5m", 0)
-                
                 confidence = self.scoring_system.compute_confidence(
                     wallet_scores,
                     volume_usd,
@@ -194,10 +188,8 @@ class SignalLogic:
                     token_type=token_opportunity,
                     whale_activity=data.get("whale_activity", False)
                 )
-                
                 if is_immediate:
                     confidence = min(1.0, confidence * 1.2)
-                
                 candidate = {
                     "token": token,
                     "confidence": confidence,
@@ -240,8 +232,6 @@ class SignalLogic:
                 if sig["token"] == token and now - sig["timestamp"] < 3600:
                     return
             
-            # Se omite la validación con RugCheck (no se incluye)
-            
             confidence = best_candidate["confidence"]
             trader_count = best_candidate["trader_count"]
             tx_velocity = best_candidate["tx_velocity"]
@@ -255,7 +245,7 @@ class SignalLogic:
                 features = {
                     "token": token,
                     "trader_count": trader_count,
-                    "num_transactions": len(best_candidate["recent_transactions"]) if "recent_transactions" in best_candidate else len(best_candidate["transactions"]),
+                    "num_transactions": len(best_candidate["recent_transactions"]),
                     "total_volume_usd": best_candidate["volume_usd"],
                     "avg_volume_per_trader": best_candidate["volume_usd"] / max(1, trader_count),
                     "buy_ratio": buy_ratio,
@@ -269,7 +259,6 @@ class SignalLogic:
                     "window_seconds": float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
                 }
                 db.save_signal_features(signal_id, token, features)
-                
                 if self.performance_tracker:
                     signal_info = {
                         "confidence": confidence,
@@ -278,7 +267,6 @@ class SignalLogic:
                         "signal_id": signal_id
                     }
                     self.performance_tracker.add_signal(token, signal_info)
-                
                 signal_data = {
                     "token": token,
                     "confidence": confidence,
@@ -288,12 +276,10 @@ class SignalLogic:
                     "tx_velocity": tx_velocity,
                     "buy_ratio": buy_ratio
                 }
-                
                 self.recent_signals.append(signal_data)
                 if len(self.recent_signals) > 20:
                     self.recent_signals = self.recent_signals[-20:]
                 self.watched_tokens.add(token)
-                
                 from telegram_utils import format_signal_message, send_telegram_message
                 if token_type == "daily_runner":
                     alert_message = format_signal_message(signal_data, "daily_runner")
@@ -302,12 +288,9 @@ class SignalLogic:
                 else:
                     alert_message = format_signal_message(signal_data, "signal")
                 send_telegram_message(alert_message)
-                
                 logger.info(f"Señal generada para {token} con confianza {confidence:.2f}")
-                
             except Exception as e:
                 logger.error(f"Error guardando señal: {e}")
-            
         except Exception as e:
             logger.error(f"Error en _generate_signals: {e}", exc_info=True)
 
