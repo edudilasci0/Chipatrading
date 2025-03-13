@@ -21,34 +21,33 @@ from rugcheck import RugCheckAPI
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
 from telegram_utils import send_telegram_message, process_telegram_commands
-from scalper_monitor import ScalperActivityMonitor  # Importación del nuevo módulo
+from scalper_monitor import ScalperActivityMonitor  # Módulo nuevo
 import db
 
 bot_running = True
 
 async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
     try:
-        # Importación local para cumplir con la restricción de imports globales
+        # Importación local para usar json sin modificar los imports globales
         import json
         data = json.loads(message)
         if data.get("type") == "tx" and "data" in data:
             tx_data = data["data"]
-            # Procesamiento de transacciones de Cielo (swap, transfer, etc.)
-            # [Código de procesamiento actual...]
-            # Enviar transacción a signal_logic:
+            # Aquí puedes agregar lógica adicional de normalización si es necesario
+            # Enviar la transacción a SignalLogic para procesar la señal
             signal_logic.process_transaction(tx_data)
-            # Además, si la transacción proviene de un scalper conocido, actualizar scalper_monitor
+            # Si la transacción proviene de un scalper conocido, actualizar el monitor
             scalper_monitor.process_transaction(tx_data)
-            # Guardar en BD, actualizar scores, etc.
-        # Manejar otros tipos de mensajes...
+            # Aquí podrías actualizar scores o guardar la transacción en BD si aún no se hace en process_transaction
+        # Manejar otros tipos de mensajes, por ejemplo "pong", etc.
     except Exception as e:
         logger.error(f"Error en on_cielo_message: {e}", exc_info=True)
 
 def adaptive_signal_check():
     """
     Función para realizar una verificación adaptativa de señales según la actividad.
+    (Implementa aquí la lógica adaptativa según métricas del mercado)
     """
-    # [Implementar lógica adaptativa basada en la actividad del mercado y señales]
     pass
 
 def send_early_alpha_alert(signal_info):
@@ -67,11 +66,10 @@ def send_daily_runner_alert(signal_info):
 
 async def cleanup_discoveries_periodically(scalper_monitor):
     """
-    Tarea periódica para limpiar descubrimientos antiguos en scalper_monitor.
+    Tarea periódica para limpiar descubrimientos antiguos en el ScalperActivityMonitor.
     """
     while bot_running:
         try:
-            # La limpieza interna ya se maneja en scalper_monitor; aquí se puede generar reportes o logs
             emerging = scalper_monitor.get_emerging_tokens()
             logger.info(f"Tokens emergentes detectados: {len(emerging)}")
         except Exception as e:
@@ -81,34 +79,62 @@ async def cleanup_discoveries_periodically(scalper_monitor):
 async def main():
     global bot_running
     try:
+        # Mensajes de inicio en consola
+        print("\n==== INICIANDO TRADING BOT ====")
+        print(f"Fecha/hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
         Config.check_required_config()
         db.init_db()
         
+        # Cargar wallets para monitoreo
         wallet_tracker = WalletTracker()
+        wallets = wallet_tracker.get_wallets()
+        print(f"✅ Cargadas {len(wallets)} wallets para monitoreo")
+        
+        # Inicializar servicios
         scoring_system = ScoringSystem()
         rugcheck_api = RugCheckAPI()
         rugcheck_api.authenticate()
+        
         helius_client = None
         if Config.HELIUS_API_KEY:
             from helius_client import HeliusClient
             helius_client = HeliusClient(Config.HELIUS_API_KEY)
             logger.info("✅ Cliente Helius inicializado")
         
-        # Inicializar nuevos módulos
-        signal_logic = SignalLogic(scoring_system=scoring_system, helius_client=helius_client, rugcheck_api=rugcheck_api)
+        # Opcional: Inicializar GMGN
+        gmgn_client = None
+        try:
+            from gmgn_client import GMGNClient
+            gmgn_client = GMGNClient()
+            logger.info("✅ Cliente GMGN inicializado")
+        except Exception as e:
+            logger.warning(f"No se pudo inicializar cliente GMGN: {e}")
+        
+        # Inicializar módulos principales
+        signal_logic = SignalLogic(
+            scoring_system=scoring_system, 
+            helius_client=helius_client, 
+            gmgn_client=gmgn_client, 
+            rugcheck_api=rugcheck_api
+        )
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
-        scalper_monitor = ScalperActivityMonitor()  # Inicialización del monitor de scalpers
+        scalper_monitor = ScalperActivityMonitor()
         
         # Iniciar bot de Telegram
         is_bot_active = await process_telegram_commands(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
         
+        # Notificar inicio vía Telegram
+        send_telegram_message("🚀 *Trading Bot Iniciado*\nMonitoreando transacciones en Solana...")
+        
+        # Crear tareas asíncronas
         tasks = [
             asyncio.create_task(signal_logic.check_signals_periodically()),
             asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
         ]
         
-        wallets = wallet_tracker.get_wallets()
+        # Iniciar cliente Cielo para recibir mensajes
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
         
         async def process_cielo(message):
@@ -117,22 +143,48 @@ async def main():
             except Exception as e:
                 logger.error(f"Error en process_cielo: {e}", exc_info=True)
         
-        cielo_task = asyncio.create_task(cielo_client.run_forever_wallets(wallets, process_cielo, {"chains": ["solana"], "tx_types": ["swap", "transfer"]}))
+        cielo_task = asyncio.create_task(
+            cielo_client.run_forever_wallets(
+                wallets, 
+                process_cielo, 
+                {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
+            )
+        )
         tasks.append(cielo_task)
         
+        logger.info(f"✅ Bot iniciado y funcionando con {len(tasks)} tareas")
+        
+        # Bucle principal para vigilar tareas y generar logs periódicos
         while bot_running:
-            # Verificar y reiniciar tareas fallidas
             for i, task in enumerate(tasks):
                 if task.done():
                     try:
                         err = task.exception()
                         if err:
                             logger.error(f"Tarea #{i} falló: {err}")
+                            # Reiniciar tareas fallidas según su índice
+                            if i == 0:
+                                tasks[i] = asyncio.create_task(signal_logic.check_signals_periodically())
+                                logger.info("Tarea de verificación de señales reiniciada")
+                            elif i == 1:
+                                tasks[i] = asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
+                                logger.info("Tarea de limpieza reiniciada")
+                            elif i == 2:
+                                tasks[i] = asyncio.create_task(cielo_client.run_forever_wallets(
+                                    wallets, 
+                                    process_cielo, 
+                                    {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
+                                ))
+                                logger.info("Tarea de WebSocket Cielo reiniciada")
                     except Exception as e:
                         logger.error(f"Error verificando tarea #{i}: {e}", exc_info=True)
+            
+            # Log periódico del estado del bot
+            logger.info(f"Estado del bot: {len(signal_logic.token_candidates)} tokens monitoreados, {db.count_signals_today()} señales hoy")
             await asyncio.sleep(30)
+            
     except Exception as e:
-        logger.error(f"Error en main: {e}", exc_info=True)
+        logger.error(f"Error crítico en main: {e}", exc_info=True)
         send_telegram_message(f"⚠️ *Error Crítico*: El bot se ha detenido: {e}")
         sys.exit(1)
 
