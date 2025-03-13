@@ -8,7 +8,7 @@ logger = logging.getLogger("signal_logic")
 
 class SignalLogic:
     def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, ml_predictor=None, pattern_detector=None):
-        # Inicialización de componentes (RugCheck eliminado)
+        # Inicialización de componentes (se elimina RugCheckAPI)
         self.scoring_system = scoring_system
         self.helius_client = helius_client
         self.gmgn_client = gmgn_client
@@ -19,7 +19,7 @@ class SignalLogic:
         self.recent_signals = []    # Lista de señales generadas
         self.last_signal_check = time.time()
         self.last_cleanup = time.time()
-        self.watched_tokens = set()  # Tokens ya en seguimiento
+        self.watched_tokens = set()  # Tokens en seguimiento
 
     def process_transaction(self, tx_data):
         """
@@ -51,19 +51,16 @@ class SignalLogic:
             candidate = self.token_candidates[token]
             candidate["wallets"].add(wallet)
             
-            # Evaluar si la wallet es de alta calidad ("whale")
             wallet_score = self.scoring_system.get_score(wallet) if self.scoring_system else 5.0
             if wallet_score > 8.5:
                 candidate["whale_activity"] = True
             
-            # Agregar transacción con información adicional
             tx_data_enhanced = tx_data.copy()
             tx_data_enhanced["wallet_score"] = wallet_score
             tx_data_enhanced["timestamp"] = timestamp
             candidate["transactions"].append(tx_data_enhanced)
             candidate["last_update"] = timestamp
             
-            # Guardar en BD para análisis posterior
             try:
                 db.save_transaction({
                     "wallet": wallet,
@@ -85,11 +82,9 @@ class SignalLogic:
         """
         name = token_name.lower() if token_name else ""
         symbol = token_symbol.lower() if token_symbol else ""
-        
         meme_keywords = ["doge", "shib", "pepe", "wojak", "moon", "elon", "cat", "inu"]
         defi_keywords = ["swap", "yield", "farm", "stake", "dao", "defi", "finance", "lend", "borrow"]
         gaming_keywords = ["game", "nft", "play", "meta", "verse", "land", "world"]
-        
         if any(kw in name for kw in meme_keywords) or any(kw in symbol for kw in meme_keywords):
             return "meme"
         elif any(kw in name for kw in defi_keywords) or any(kw in symbol for kw in defi_keywords):
@@ -184,7 +179,6 @@ class SignalLogic:
                 market_data = await self.get_token_market_data(token)
                 token_opportunity = self._classify_token_opportunity(token, recent_txs, market_data)
                 
-                # Señal inmediata si es daily_runner, meme o hay cambio rápido de volumen
                 is_immediate = self._monitor_rapid_volume_changes(token, data)
                 if token_opportunity in ["daily_runner", "meme"] or is_immediate:
                     logger.info(f"Señal inmediata detectada para {token} ({token_opportunity})")
