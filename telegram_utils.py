@@ -64,6 +64,66 @@ def format_signal_message(signal_data, alert_type="signal"):
     )
     return message
 
+def fix_telegram_commands():
+    """
+    Función helper para preparar los comandos de Telegram.
+    Simplemente devuelve la función process_telegram_commands sin modificaciones.
+    """
+    return process_telegram_commands
+
+def fix_on_cielo_message():
+    """
+    Función helper para preparar el manejador de mensajes de Cielo.
+    Devuelve una función que recibe un mensaje y lo procesa usando los componentes necesarios.
+    """
+    async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
+        try:
+            import json, time
+            data = json.loads(message)
+            msg_type = data.get("type", "desconocido")
+            
+            if msg_type == "tx" and "data" in data:
+                tx_data = data["data"]
+                # Normalización de datos:
+                normalized_tx = {}
+                normalized_tx["wallet"] = tx_data.get("wallet")
+                if tx_data.get("tx_type") == "swap":
+                    if "token1_address" in tx_data and tx_data.get("token1_address") not in ["native", "So11111111111111111111111111111111111111112"]:
+                        normalized_tx["token"] = tx_data.get("token1_address")
+                        normalized_tx["type"] = "BUY"
+                        normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
+                        normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
+                        normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+                    elif "token0_address" in tx_data and tx_data.get("token0_address") not in ["native", "So11111111111111111111111111111111111111112"]:
+                        normalized_tx["token"] = tx_data.get("token0_address")
+                        normalized_tx["type"] = "SELL"
+                        normalized_tx["token_name"] = tx_data.get("token0_name", "Unknown")
+                        normalized_tx["token_symbol"] = tx_data.get("token0_symbol", "???")
+                        normalized_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
+                elif tx_data.get("tx_type") == "transfer":
+                    normalized_tx["token"] = tx_data.get("contract_address")
+                    normalized_tx["type"] = "TRANSFER"
+                    normalized_tx["token_name"] = tx_data.get("name", "Unknown")
+                    normalized_tx["token_symbol"] = tx_data.get("symbol", "???")
+                    normalized_tx["amount_usd"] = float(tx_data.get("amount_usd", 0))
+                else:
+                    logger.warning("Tipo de transacción no reconocido")
+                    return
+
+                normalized_tx["timestamp"] = tx_data.get("timestamp", int(time.time()))
+                min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+                if normalized_tx["amount_usd"] < min_tx_usd:
+                    return
+
+                logger.info(f"Transacción normalizada: {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
+                signal_logic.process_transaction(normalized_tx)
+                scalper_monitor.process_transaction(normalized_tx)
+            elif msg_type not in ["wallet_subscribed", "pong"]:
+                logger.debug(f"Mensaje de tipo {msg_type} no procesado")
+        except Exception as e:
+            logger.error(f"Error en on_cielo_message: {e}", exc_info=True)
+    return on_cielo_message
+
 async def process_telegram_commands(bot_token, chat_id, signal_logic):
     import db
     try:
