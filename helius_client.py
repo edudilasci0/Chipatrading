@@ -11,49 +11,102 @@ class HeliusClient:
         self.cache = {}
         self.cache_duration = int(Config.get("HELIUS_CACHE_DURATION", 300))
     
-    def _request(self, endpoint, params):
-        url = f"https://api.helius.xyz/{endpoint}"
-        params["api-key"] = self.api_key
+    def _request(self, endpoint, params, version="v1"):
+        """
+        Realiza una solicitud a la API de Helius.
+        """
+        url = f"https://api.helius.xyz/{version}/{endpoint}"
+        if version == "v1":
+            params["apiKey"] = self.api_key
+        else:
+            params["api-key"] = self.api_key
+        
         try:
+            logger.debug(f"Solicitando Helius {version}: {url}")
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error(f"Error en HeliusClient._request: {e}", exc_info=True)
+            logger.error(f"Error en HeliusClient._request ({version}): {e}")
             return None
     
     def get_token_data(self, token):
-        # Intentar obtener datos y almacenar en caché
+        """
+        Obtiene datos del token usando los endpoints correctos de Helius.
+        Aplica caché para minimizar peticiones.
+        """
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
-        data = self._request("token-data", {"token": token})
+        
+        data = None
+        endpoint = f"tokens/{token}"
+        # Intentar con API v1
+        data = self._request(endpoint, {}, version="v1")
+        # Si falla, intentar con API v0
+        if not data:
+            data = self._request(endpoint, {}, version="v0")
+        # Si aún falla, intentar otro endpoint alternativo
+        if not data:
+            endpoint = f"addresses/{token}/tokens"
+            data = self._request(endpoint, {}, version="v0")
+        
         if data:
-            self.cache[token] = {"data": data, "timestamp": now}
-        return data if data else {}
+            if isinstance(data, list) and data:
+                data = data[0]
+            normalized_data = {
+                "price": self._extract_value(data, ["price", "priceUsd"]),
+                "market_cap": self._extract_value(data, ["marketCap", "market_cap"]),
+                "volume": self._extract_value(data, ["volume24h", "volume", "volumeUsd"]),
+                "volume_growth": {
+                    "growth_5m": self._normalize_percentage(
+                        self._extract_value(data, ["volumeChange5m", "volume_change_5m"])
+                    ),
+                    "growth_1h": self._normalize_percentage(
+                        self._extract_value(data, ["volumeChange1h", "volume_change_1h"])
+                    )
+                },
+                "source": "helius"
+            }
+            self.cache[token] = {"data": normalized_data, "timestamp": now}
+            return normalized_data
+        
+        logger.warning(f"No se pudieron obtener datos para el token {token} desde Helius")
+        return None
+    
+    def _extract_value(self, data, possible_keys):
+        """
+        Extrae un valor de un diccionario usando varias posibles claves.
+        """
+        for key in possible_keys:
+            if key in data:
+                return data[key]
+        return 0
+    
+    def _normalize_percentage(self, value):
+        """
+        Normaliza un valor de porcentaje a decimal (0-1).
+        """
+        if value is None:
+            return 0
+        if value > 1 or value < -1:
+            return value / 100
+        return value
     
     def get_price_change(self, token, timeframe="1h"):
-        # Obtiene el cambio porcentual del precio en el timeframe especificado
-        data = self.get_token_data(token)
-        if not data:
+        """
+        Obtiene el cambio porcentual del precio para el token en el timeframe especificado.
+        """
+        token_data = self.get_token_data(token)
+        if not token_data:
             return 0
         try:
-            history = data.get("price_history", [])
-            if not history:
+            if timeframe == "1h":
+                return token_data.get("price_change_1h", 0)
+            elif timeframe == "24h":
+                return token_data.get("price_change_24h", 0)
+            else:
                 return 0
-            # Supongamos que history es una lista de dicts con 'timestamp' y 'price'
-            now = time.time()
-            period = {"1h": 3600, "24h": 86400, "7d": 604800}.get(timeframe, 3600)
-            past_prices = [entry["price"] for entry in history if now - entry["timestamp"] <= period]
-            if past_prices:
-                initial = past_prices[0]
-                latest = past_prices[-1]
-                return ((latest - initial) / initial) * 100 if initial > 0 else 0
         except Exception as e:
             logger.error(f"Error en get_price_change para {token}: {e}")
             return 0
-    
-    def get_price_history(self, token):
-        # Obtiene el historial de precios para análisis
-        data = self.get_token_data(token)
-        return data.get("price_history", [])
