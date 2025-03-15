@@ -7,18 +7,27 @@ import db
 logger = logging.getLogger("signal_logic")
 
 class SignalLogic:
-    def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, ml_predictor=None, pattern_detector=None):
+    def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, rugcheck_api=None, ml_predictor=None, pattern_detector=None):
         self.scoring_system = scoring_system
         self.helius_client = helius_client
         self.gmgn_client = gmgn_client
+        self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
         self.performance_tracker = None
-        self.token_candidates = {}
-        self.recent_signals = []
+        self.token_candidates = {}  # {token: {wallets, transactions, first_seen, last_update, whale_activity, volume_usd, buy_count, sell_count}}
+        self.recent_signals = []    # Lista de señales emitidas
         self.last_signal_check = time.time()
-        self.last_cleanup = time.time()
         self.watched_tokens = set()
+        # Inicializar scores para tipos de tokens
+        self._init_token_type_scores()
+
+    def _init_token_type_scores(self):
+        self.token_type_scores = {
+            "meme": 1.2,
+            "daily_runner": 1.1,
+            "standard": 1.0
+        }
 
     def process_transaction(self, tx_data):
         """
@@ -27,38 +36,47 @@ class SignalLogic:
         try:
             if not tx_data or "token" not in tx_data:
                 return
-            
             token = tx_data.get("token")
             wallet = tx_data.get("wallet")
             amount_usd = float(tx_data.get("amount_usd", 0))
             tx_type = tx_data.get("type", "").upper()
             timestamp = tx_data.get("timestamp", time.time())
-            
+            # Evitar procesar tokens nativos
+            if token in ["native", "So11111111111111111111111111111111111111112"]:
+                logger.debug(f"Ignorando token nativo: {token}")
+                return
             min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
             if amount_usd < min_usd:
                 return
-            
+            # Obtener score de la wallet
+            wallet_score = self.scoring_system.get_score(wallet) if self.scoring_system else 5.0
+            # Inicializar candidato si no existe
             if token not in self.token_candidates:
                 self.token_candidates[token] = {
                     "wallets": set(),
                     "transactions": [],
                     "first_seen": timestamp,
                     "last_update": timestamp,
-                    "whale_activity": False
+                    "whale_activity": False,
+                    "volume_usd": 0,
+                    "buy_count": 0,
+                    "sell_count": 0
                 }
-            
             candidate = self.token_candidates[token]
             candidate["wallets"].add(wallet)
-            wallet_score = self.scoring_system.get_score(wallet) if self.scoring_system else 5.0
             if wallet_score > 8.5:
                 candidate["whale_activity"] = True
-            
+                logger.info(f"⚡ Actividad de trader elite detectada en {token}")
             tx_data_enhanced = tx_data.copy()
             tx_data_enhanced["wallet_score"] = wallet_score
             tx_data_enhanced["timestamp"] = timestamp
+            if tx_type == "BUY":
+                candidate["buy_count"] += 1
+            elif tx_type == "SELL":
+                candidate["sell_count"] += 1
+            candidate["volume_usd"] += amount_usd
             candidate["transactions"].append(tx_data_enhanced)
             candidate["last_update"] = timestamp
-            
             try:
                 db.save_transaction({
                     "wallet": wallet,
@@ -68,35 +86,20 @@ class SignalLogic:
                 })
             except Exception as e:
                 logger.error(f"Error guardando transacción en BD: {e}")
-            
+            high_volume_threshold = float(Config.get("HIGH_VOLUME_THRESHOLD", 5000))
+            if amount_usd > high_volume_threshold and candidate["whale_activity"]:
+                logger.info(f"🚨 Transacción de alto volumen detectada: {token} | ${amount_usd:.2f}")
+                asyncio.create_task(self._process_candidates())
             logger.debug(f"Transacción procesada: {token} | {wallet} | ${amount_usd:.2f} | {tx_type}")
         except Exception as e:
             logger.error(f"Error procesando transacción en SignalLogic: {e}", exc_info=True)
 
-    def _classify_token_type(self, token_name, token_symbol):
-        """
-        Clasifica automáticamente el tipo de token basado en su nombre y símbolo.
-        Retorna 'meme', 'defi', 'gaming' o 'unknown'.
-        """
-        name = token_name.lower() if token_name else ""
-        symbol = token_symbol.lower() if token_symbol else ""
-        meme_keywords = ["doge", "shib", "pepe", "wojak", "moon", "elon", "cat", "inu"]
-        defi_keywords = ["swap", "yield", "farm", "stake", "dao", "defi", "finance", "lend", "borrow"]
-        gaming_keywords = ["game", "nft", "play", "meta", "verse", "land", "world"]
-        if any(kw in name for kw in meme_keywords) or any(kw in symbol for kw in meme_keywords):
-            return "meme"
-        elif any(kw in name for kw in defi_keywords) or any(kw in symbol for kw in defi_keywords):
-            return "defi"
-        elif any(kw in name for kw in gaming_keywords) or any(kw in symbol for kw in gaming_keywords):
-            return "gaming"
-        return "unknown"
-
     def _classify_token_opportunity(self, token, recent_txs, market_data):
         """
         Clasifica oportunidades con énfasis en memecoins y daily runners.
-        Devuelve 'daily_runner', 'meme' o None.
+        Devuelve 'daily_runner', 'meme' o 'standard' según criterios.
         """
-        token_type = None
+        token_type = "standard"
         if market_data.get("market_cap", 0) < 5_000_000 and market_data.get("volume_growth", {}).get("growth_5m", 0) > 0.3:
             token_type = "daily_runner"
         meme_keywords = ["pepe", "doge", "shib", "inu", "moon", "elon", "wojak"]
@@ -109,7 +112,7 @@ class SignalLogic:
 
     def _monitor_rapid_volume_changes(self, token, candidate):
         """
-        Monitorea cambios rápidos en el volumen.
+        Monitorea cambios rápidos en el volumen de transacciones.
         """
         txs = candidate.get("transactions", [])
         if len(txs) < 2:
@@ -123,7 +126,7 @@ class SignalLogic:
 
     async def get_token_market_data(self, token):
         """
-        Obtiene datos de mercado con integración con Helius y fallback a GMGN.
+        Obtiene datos de mercado utilizando Helius y GMGN como fallback.
         """
         data = None
         source = "none"
@@ -146,8 +149,13 @@ class SignalLogic:
                 except Exception as e:
                     logger.error(f"Error API GMGN para {token}: {e}", exc_info=True)
         if not data:
-            data = {"price": 0, "market_cap": 0, "volume": 0,
-                    "volume_growth": {"growth_5m": 0, "growth_1h": 0}, "estimated": True}
+            data = {
+                "price": 0,
+                "market_cap": 0,
+                "volume": 0,
+                "volume_growth": {"growth_5m": 0, "growth_1h": 0},
+                "estimated": True
+            }
             source = "none"
             logger.debug(f"Datos por defecto usados para {token}")
         data["source"] = source
@@ -155,7 +163,7 @@ class SignalLogic:
 
     async def _process_candidates(self):
         """
-        Procesa candidatos para señales.
+        Procesa candidatos para señales, filtrando tokens con market cap menor a MIN_MARKETCAP.
         """
         try:
             now = time.time()
@@ -171,13 +179,12 @@ class SignalLogic:
                 buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
                 buy_ratio = len(buy_txs) / max(1, len(recent_txs))
                 timestamps = [tx["timestamp"] for tx in recent_txs]
-                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps)) / 60)
-                
+                tx_velocity = len(recent_txs) / max(1, ((max(timestamps) - min(timestamps)) / 60))
                 market_data = await self.get_token_market_data(token)
+                if market_data.get("market_cap", 0) < Config.MIN_MARKETCAP:
+                    continue
                 token_opportunity = self._classify_token_opportunity(token, recent_txs, market_data)
                 is_immediate = self._monitor_rapid_volume_changes(token, data)
-                if token_opportunity in ["daily_runner", "meme"] or is_immediate:
-                    logger.info(f"Señal inmediata detectada para {token} ({token_opportunity})")
                 wallet_scores = [self.scoring_system.get_score(w) for w in data["wallets"]]
                 volume_growth = market_data.get("volume_growth", {}).get("growth_5m", 0)
                 confidence = self.scoring_system.compute_confidence(
@@ -186,10 +193,11 @@ class SignalLogic:
                     market_data.get("market_cap", 0),
                     recent_volume_growth=volume_growth,
                     token_type=token_opportunity,
-                    whale_activity=data.get("whale_activity", False)
+                    whale_activity=data.get("whale_activity", False),
+                    tx_velocity=tx_velocity
                 )
                 if is_immediate:
-                    confidence = min(1.0, confidence * 1.2)
+                    confidence = min(1.0, confidence * 1.3)
                 candidate = {
                     "token": token,
                     "confidence": confidence,
@@ -220,18 +228,21 @@ class SignalLogic:
                 return
             if self.recent_signals and now - self.recent_signals[-1]["timestamp"] < 180:
                 return
-            
             min_confidence = float(Config.get("MIN_CONFIDENCE_THRESHOLD", 0.3))
             qualifying_candidates = [c for c in candidates if c["confidence"] >= min_confidence]
             if not qualifying_candidates:
                 return
-            
             best_candidate = qualifying_candidates[0]
             token = best_candidate["token"]
             for sig in self.recent_signals:
                 if sig["token"] == token and now - sig["timestamp"] < 3600:
                     return
-            
+            if self.rugcheck_api:
+                is_safe = self.rugcheck_api.validate_token_safety(token, 50)
+                if not is_safe:
+                    logger.info(f"Token {token} rechazado por RugCheck")
+                    db.save_failed_token(token, "Failed RugCheck validation")
+                    return
             confidence = best_candidate["confidence"]
             trader_count = best_candidate["trader_count"]
             tx_velocity = best_candidate["tx_velocity"]
@@ -239,7 +250,6 @@ class SignalLogic:
             token_type = best_candidate["token_type"]
             market_data = best_candidate.get("market_data", {})
             initial_price = market_data.get("price", 0)
-            
             try:
                 signal_id = db.save_signal(token, trader_count, confidence, initial_price)
                 features = {
@@ -282,12 +292,12 @@ class SignalLogic:
                 self.watched_tokens.add(token)
                 from telegram_utils import format_signal_message, send_telegram_message
                 if token_type == "daily_runner":
-                    alert_message = format_signal_message(signal_data, "daily_runner")
+                    msg = format_signal_message(signal_data, "daily_runner")
                 elif token_type == "meme":
-                    alert_message = format_signal_message(signal_data, "meme")
+                    msg = format_signal_message(signal_data, "meme")
                 else:
-                    alert_message = format_signal_message(signal_data, "signal")
-                send_telegram_message(alert_message)
+                    msg = format_signal_message(signal_data, "signal")
+                send_telegram_message(msg)
                 logger.info(f"Señal generada para {token} con confianza {confidence:.2f}")
             except Exception as e:
                 logger.error(f"Error guardando señal: {e}")
@@ -295,9 +305,6 @@ class SignalLogic:
             logger.error(f"Error en _generate_signals: {e}", exc_info=True)
 
     async def check_signals_periodically(self):
-        """
-        Ejecuta periódicamente la verificación de señales.
-        """
         while True:
             try:
                 if time.time() - self.last_signal_check > 60:
