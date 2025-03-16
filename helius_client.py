@@ -70,6 +70,15 @@ class HeliusClient:
             return value / 100
         return value
     
+    async def get_token_price(self, token):
+        token_data = self.get_token_data(token)
+        if token_data and 'price' in token_data:
+            return token_data['price']
+        return 0
+    
+    async def get_token_data_async(self, token):
+        return self.get_token_data(token)
+    
     def get_price_change(self, token, timeframe="1h"):
         token_data = self.get_token_data(token)
         if not token_data:
