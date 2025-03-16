@@ -6,7 +6,8 @@ import db
 
 logger = logging.getLogger("signal_logic")
 
-# Funciones de nivel módulo para optimizar la confianza y detectar tokens emergentes.
+# Funciones de nivel módulo para optimizar la confianza y detectar tokens emergentes
+
 def optimize_signal_confidence():
     def compute_optimized_confidence(self, wallet_scores, volume_1h, market_cap, 
                                      recent_volume_growth=0, token_type=None, 
