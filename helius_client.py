@@ -20,7 +20,6 @@ class HeliusClient:
             params["apiKey"] = self.api_key
         else:
             params["api-key"] = self.api_key
-        
         try:
             logger.debug(f"Solicitando Helius {version}: {url}")
             response = requests.get(url, params=params, timeout=10)
@@ -33,7 +32,6 @@ class HeliusClient:
     def get_token_data(self, token):
         """
         Obtiene datos del token usando los endpoints correctos de Helius.
-        Aplica caché para minimizar peticiones.
         """
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
@@ -41,12 +39,9 @@ class HeliusClient:
         
         data = None
         endpoint = f"tokens/{token}"
-        # Intentar con API v1
         data = self._request(endpoint, {}, version="v1")
-        # Si falla, intentar con API v0
         if not data:
             data = self._request(endpoint, {}, version="v0")
-        # Si aún falla, intentar otro endpoint alternativo
         if not data:
             endpoint = f"addresses/{token}/tokens"
             data = self._request(endpoint, {}, version="v0")
@@ -75,18 +70,12 @@ class HeliusClient:
         return None
     
     def _extract_value(self, data, possible_keys):
-        """
-        Extrae un valor de un diccionario usando varias posibles claves.
-        """
         for key in possible_keys:
             if key in data:
                 return data[key]
         return 0
     
     def _normalize_percentage(self, value):
-        """
-        Normaliza un valor de porcentaje a decimal (0-1).
-        """
         if value is None:
             return 0
         if value > 1 or value < -1:
@@ -94,9 +83,6 @@ class HeliusClient:
         return value
     
     def get_price_change(self, token, timeframe="1h"):
-        """
-        Obtiene el cambio porcentual del precio para el token en el timeframe especificado.
-        """
         token_data = self.get_token_data(token)
         if not token_data:
             return 0
