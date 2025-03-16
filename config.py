@@ -5,7 +5,7 @@ import json
 class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
+    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "your-default-cielo-api-key")
     HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
     DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
 
@@ -24,6 +24,7 @@ class Config:
 
     HELIUS_CACHE_DURATION = 300
 
+    # Configuración para memecoins
     MEMECOIN_CONFIG = {
         "MIN_VOLUME_USD": 1000,
         "MIN_CONFIDENCE": 0.4,
@@ -33,6 +34,7 @@ class Config:
 
     SIGNAL_THROTTLING = 10
 
+    # Configuraciones para GMGN (sin API key)
     GMGN_BASE_URL = "https://api.gmgn.ai/public/v1/"
 
     _dynamic_config = {}
