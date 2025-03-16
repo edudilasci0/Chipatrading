@@ -1,13 +1,12 @@
 import os
 import sys
-import json
 
 class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
     CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
     HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "4314df2b-76aa-406a-8635-b9b0e6a0a51e")
-    DATABASE_PATH = os.environ.get("DATABASE_PATH", "tradingbot.db")
+    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
 
     MIN_TRANSACTION_USD = 200
     MIN_TRADERS_FOR_SIGNAL = 2
@@ -47,9 +46,9 @@ class Config:
                 key = setting['key']
                 value = setting['value']
                 cls._dynamic_config[key] = value
-            print(f"Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
+            print(f"Dynamic config loaded: {len(cls._dynamic_config)} parameters")
         except Exception as e:
-            print(f"Error cargando configuración dinámica: {e}")
+            print(f"Error loading dynamic config: {e}")
 
     @classmethod
     def get(cls, key, default=None):
@@ -64,6 +63,6 @@ class Config:
         required_vars = ["DATABASE_PATH", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "CIELO_API_KEY", "HELIUS_API_KEY"]
         missing = [var for var in required_vars if not getattr(cls, var)]
         if missing:
-            print(f"🚨 ERROR: Faltan variables de entorno: {', '.join(missing)}")
+            print(f"🚨 ERROR: Missing environment variables: {', '.join(missing)}")
             sys.exit(1)
-        print("✅ Configuración requerida verificada")
+        print("✅ Required configuration verified")
