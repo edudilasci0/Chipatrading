@@ -6,16 +6,23 @@ from config import Config
 logger = logging.getLogger("chipatrading")
 
 def send_telegram_message(message):
+    """
+    Envía un mensaje a Telegram con reintentos y verificación de longitud.
+    """
     if len(message) > 4096:
         message = message[:4090] + "...\n[Mensaje truncado]"
         logger.warning("Mensaje truncado por longitud.")
+    
     bot_token = Config.TELEGRAM_BOT_TOKEN
     chat_id = Config.TELEGRAM_CHAT_ID
+    
     if not bot_token or not chat_id:
         logger.warning("⚠️ Credenciales de Telegram faltantes.")
         return False
+    
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     data = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    
     retries = 3
     delay = 2
     for i in range(retries):
@@ -33,14 +40,19 @@ def send_telegram_message(message):
     return False
 
 def format_signal_message(signal_data, alert_type="signal"):
+    """
+    Formatea un mensaje de alerta para Telegram.
+    """
     token = signal_data.get("token", "N/A")
     confidence = signal_data.get("confidence", 0)
     tx_velocity = signal_data.get("tx_velocity", "N/A")
     buy_ratio = signal_data.get("buy_ratio", "N/A")
+    
     solscan_link = f"https://solscan.io/token/{token}"
     birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
     neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
     solanabeach_link = f"https://solanabeach.io/token/{token}"
+    
     if alert_type == "signal":
         header = "🔥 *SEÑAL DE TRADING*"
     elif alert_type == "early_alpha":
@@ -49,6 +61,7 @@ def format_signal_message(signal_data, alert_type="signal"):
         header = "🔥 *Daily Runner Alert*"
     else:
         header = "⚡ *Alerta*"
+    
     message = (
         f"{header}\n\n"
         f"Token: `{token}`\n"
@@ -63,11 +76,15 @@ def format_signal_message(signal_data, alert_type="signal"):
     )
     return message
 
-def fix_on_cielo_message():
-    async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
+def fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_monitor):
+    """
+    Devuelve una función que procesa mensajes de Cielo.
+    La función retornada solo requiere el parámetro 'message' ya que los otros
+    parámetros se capturan mediante cierre (closure).
+    """
+    async def on_cielo_message(message):
         try:
-            import json
-            import time
+            import json, time
             data = json.loads(message)
             msg_type = data.get("type", "desconocido")
             if msg_type == "tx" and "data" in data:
