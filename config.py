@@ -14,10 +14,10 @@ class Config:
     MIN_CONFIDENCE_THRESHOLD = 0.3
     MIN_VOLUME_USD = 2000
     MIN_MARKETCAP = 100000
-    
+
     DEFAULT_SCORE = 5.0
     MAX_SCORE = 10.0
-    
+
     HELIUS_CACHE_DURATION = 300
 
     @classmethod
