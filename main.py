@@ -25,6 +25,15 @@ import db
 
 bot_running = True
 
+async def cleanup_discoveries_periodically(scalper_monitor, interval=3600):
+    while True:
+        try:
+            # Aquí podrías agregar lógica de limpieza específica si es necesario
+            await asyncio.sleep(interval)
+        except Exception as e:
+            logger.error(f"Error in cleanup_discoveries: {e}")
+            await asyncio.sleep(60)
+
 async def main():
     global bot_running
     try:
@@ -36,13 +45,12 @@ async def main():
         wallet_tracker = WalletTracker()
         wallets = wallet_tracker.get_wallets()
         print(f"✅ Cargadas {len(wallets)} wallets para monitoreo")
-        logger.info(f"Wallets cargadas: {wallets}")
+        logger.info(f"Wallets loaded: {wallets}")
         
         scoring_system = ScoringSystem()
-        
         helius_client = None
         if Config.HELIUS_API_KEY:
-            from helius_client import HeliusClient
+            from cielo_api import HeliusClient
             helius_client = HeliusClient(Config.HELIUS_API_KEY)
             logger.info("✅ Cliente Helius inicializado")
         
@@ -52,22 +60,18 @@ async def main():
             gmgn_client = GMGNClient()
             logger.info("✅ Cliente GMGN inicializado")
         except Exception as e:
-            logger.warning(f"No se pudo inicializar cliente GMGN: {e}")
+            logger.warning(f"GMGN client not initialized: {e}")
         
         signal_logic = SignalLogic(
-            scoring_system=scoring_system, 
-            helius_client=helius_client, 
+            scoring_system=scoring_system,
+            helius_client=helius_client,
             gmgn_client=gmgn_client
         )
         signal_logic.wallet_tracker = wallet_tracker
         signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
         signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
-        if not hasattr(signal_logic, 'get_active_candidates_count'):
-            signal_logic.get_active_candidates_count = lambda: len(signal_logic.token_candidates)
-        
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
-        
         scalper_monitor = ScalperActivityMonitor()
         
         telegram_commands = fix_telegram_commands()
@@ -77,22 +81,21 @@ async def main():
         
         tasks = [
             asyncio.create_task(signal_logic.check_signals_periodically()),
-            asyncio.create_task(scalper_monitor._periodic_cleanup())
+            asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor)),
         ]
         
-        cielo_client = CieloAPI(Config.HELIUS_API_KEY)
-        # Importante: ahora llamamos fix_on_cielo_message pasando los parámetros para obtener una función que solo requiera 'message'
+        cielo_client = CieloAPI(Config.CIELO_API_KEY)
         cielo_message_handler = fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_monitor)
         cielo_task = asyncio.create_task(
             cielo_client.run_forever_wallets(
-                wallets, 
+                wallets,
                 cielo_message_handler,
                 {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
             )
         )
         tasks.append(cielo_task)
         
-        logger.info(f"✅ Bot iniciado y funcionando con {len(tasks)} tareas")
+        logger.info(f"✅ Bot iniciado and running with {len(tasks)} tasks")
         
         while bot_running:
             for i, task in enumerate(tasks):
@@ -100,30 +103,30 @@ async def main():
                     try:
                         err = task.exception()
                         if err:
-                            logger.error(f"Tarea #{i} falló: {err}")
+                            logger.error(f"Task #{i} failed: {err}")
                             if i == 0:
                                 tasks[i] = asyncio.create_task(signal_logic.check_signals_periodically())
-                                logger.info("Tarea de verificación de señales reiniciada")
+                                logger.info("Signal check task restarted")
                             elif i == 1:
-                                tasks[i] = asyncio.create_task(scalper_monitor._periodic_cleanup())
-                                logger.info("Tarea de limpieza reiniciada")
+                                tasks[i] = asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
+                                logger.info("Cleanup task restarted")
                             elif i == 2:
                                 tasks[i] = asyncio.create_task(
                                     cielo_client.run_forever_wallets(
-                                        wallets, 
+                                        wallets,
                                         cielo_message_handler,
                                         {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
                                     )
                                 )
-                                logger.info("Tarea de WebSocket Cielo reiniciada")
+                                logger.info("Cielo WebSocket task restarted")
                     except Exception as e:
-                        logger.error(f"Error verificando tarea #{i}: {e}", exc_info=True)
-            logger.info(f"Estado del bot: {len(signal_logic.token_candidates)} tokens monitoreados, {db.count_signals_today()} señales hoy")
+                        logger.error(f"Error checking task #{i}: {e}", exc_info=True)
+            logger.info(f"Bot state: {len(signal_logic.token_candidates)} tokens monitored, {db.count_signals_today()} signals today")
             await asyncio.sleep(30)
             
     except Exception as e:
-        logger.error(f"Error crítico en main: {e}", exc_info=True)
-        send_telegram_message(f"⚠️ *Error Crítico*: El bot se ha detenido: {e}")
+        logger.error(f"Critical error in main: {e}", exc_info=True)
+        send_telegram_message(f"⚠️ *Critical Error*: The bot has stopped: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
@@ -132,6 +135,6 @@ if __name__ == "__main__":
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
-        logger.info("Bot detenido por el usuario")
+        logger.info("Bot stopped by user")
     finally:
         loop.close()
