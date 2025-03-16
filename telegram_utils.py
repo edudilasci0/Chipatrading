@@ -7,7 +7,7 @@ logger = logging.getLogger("chipatrading")
 
 def send_telegram_message(message):
     """
-    Envía un mensaje a Telegram con reintentos y manejo de longitud.
+    Envía un mensaje a Telegram con reintentos y control de longitud.
     """
     if len(message) > 4096:
         message = message[:4090] + "...\n[Mensaje truncado]"
@@ -15,7 +15,6 @@ def send_telegram_message(message):
     
     bot_token = Config.TELEGRAM_BOT_TOKEN
     chat_id = Config.TELEGRAM_CHAT_ID
-    
     if not bot_token or not chat_id:
         logger.warning("⚠️ Credenciales de Telegram faltantes.")
         return False
@@ -41,7 +40,7 @@ def send_telegram_message(message):
 
 def format_signal_message(signal_data, alert_type="signal"):
     """
-    Formatea el mensaje de alerta para Telegram.
+    Formatea un mensaje de alerta con enlaces a exploradores.
     """
     token = signal_data.get("token", "N/A")
     confidence = signal_data.get("confidence", 0)
@@ -77,9 +76,13 @@ def format_signal_message(signal_data, alert_type="signal"):
     return message
 
 def fix_on_cielo_message():
+    """
+    Devuelve una función asíncrona para procesar mensajes de Cielo.
+    """
     async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
         try:
-            import json, time
+            import json
+            import time
             data = json.loads(message)
             msg_type = data.get("type", "desconocido")
             if msg_type == "tx" and "data" in data:
@@ -87,21 +90,24 @@ def fix_on_cielo_message():
                 normalized_tx = {}
                 normalized_tx["wallet"] = tx_data.get("wallet")
                 if tx_data.get("tx_type") == "swap":
-                    if "token1_address" in tx_data and tx_data.get("token1_address") not in ["native", "So11111111111111111111111111111111111111112"]:
+                    if tx_data.get("token1_address") not in ["native", "So11111111111111111111111111111111111111112"]:
                         normalized_tx["token"] = tx_data.get("token1_address")
                         normalized_tx["type"] = "BUY"
                         normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
                         normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
                         normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
-                    elif "token0_address" in tx_data and tx_data.get("token0_address") not in ["native", "So11111111111111111111111111111111111111112"]:
+                    elif tx_data.get("token0_address") not in ["native", "So11111111111111111111111111111111111111112"]:
                         normalized_tx["token"] = tx_data.get("token0_address")
                         normalized_tx["type"] = "SELL"
                         normalized_tx["token_name"] = tx_data.get("token0_name", "Unknown")
                         normalized_tx["token_symbol"] = tx_data.get("token0_symbol", "???")
                         normalized_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
                     else:
-                        logger.warning("No se pudo determinar el tipo de swap")
-                        return
+                        normalized_tx["token"] = tx_data.get("token1_address")
+                        normalized_tx["type"] = "BUY"
+                        normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
+                        normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
+                        normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
                 elif tx_data.get("tx_type") == "transfer":
                     normalized_tx["token"] = tx_data.get("contract_address")
                     normalized_tx["type"] = "TRANSFER"
@@ -125,6 +131,9 @@ def fix_on_cielo_message():
     return on_cielo_message
 
 def fix_telegram_commands():
+    """
+    Devuelve una función asíncrona para procesar comandos de Telegram.
+    """
     async def process_telegram_commands(bot_token, chat_id, signal_logic):
         import db
         try:
@@ -264,26 +273,22 @@ def fix_telegram_commands():
                 update.message.reply_text(f"❌ Error generando gráfico: {e}")
 
         try:
-            from telegram.ext import Updater, CommandHandler
-            from telegram import ParseMode
-        except ImportError:
-            logger.error("Instalar python-telegram-bot: pip install python-telegram-bot==13.15")
+            updater = Updater(bot_token)
+            dispatcher = updater.dispatcher
+            dispatcher.add_handler(CommandHandler("start", start_command))
+            dispatcher.add_handler(CommandHandler("stop", stop_command))
+            dispatcher.add_handler(CommandHandler("status", status_command))
+            dispatcher.add_handler(CommandHandler("top", top_command))
+            dispatcher.add_handler(CommandHandler("emerging", emerging_command))
+            dispatcher.add_handler(CommandHandler("debug", debug_command))
+            dispatcher.add_handler(CommandHandler("verbosity", verbosity_command))
+            dispatcher.add_handler(CommandHandler("chart", chart_command))
+            dispatcher.add_handler(CommandHandler("config", config_command))
+            updater.start_polling()
+            logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
+            return lambda: bot_status["active"]
+        except Exception as e:
+            logger.error(f"❌ Error iniciando bot: {e}")
             return lambda: True
 
-        updater = Updater(Config.TELEGRAM_BOT_TOKEN)
-        dispatcher = updater.dispatcher
-
-        dispatcher.add_handler(CommandHandler("start", start_command))
-        dispatcher.add_handler(CommandHandler("stop", stop_command))
-        dispatcher.add_handler(CommandHandler("status", status_command))
-        dispatcher.add_handler(CommandHandler("top", top_command))
-        dispatcher.add_handler(CommandHandler("emerging", emerging_command))
-        dispatcher.add_handler(CommandHandler("debug", debug_command))
-        dispatcher.add_handler(CommandHandler("verbosity", verbosity_command))
-        dispatcher.add_handler(CommandHandler("chart", chart_command))
-        dispatcher.add_handler(CommandHandler("config", config_command))
-
-        updater.start_polling()
-        logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
-        return lambda: bot_status["active"]
     return process_telegram_commands
