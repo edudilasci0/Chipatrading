@@ -1,4 +1,3 @@
-# main.py
 import os
 import sys
 import time
@@ -16,18 +15,29 @@ logger = logging.getLogger("chipatrading")
 
 from config import Config
 from wallet_tracker import WalletTracker
-from cielo_api import CieloAPI  # Archivo que contiene la clase CieloAPI
-from helius_api import HeliusClient  # Archivo que contiene la clase HeliusClient
+from helius_client import HeliusClient    # Actualizado: ahora se importa desde helius_client
+from cielo_api import CieloAPI           # Asegúrate de que este archivo existe y está completo
 from scoring import ScoringSystem
-from signal_logic import SignalLogic
+from signal_logic import SignalLogic, optimize_signal_confidence, enhance_alpha_detection
 from performance_tracker import PerformanceTracker
-from telegram_utils import send_telegram_message, fix_telegram_commands, fix_on_cielo_message
+from telegram_utils import send_telegram_message, process_telegram_commands, fix_telegram_commands, fix_on_cielo_message
 from scalper_monitor import ScalperActivityMonitor
 import db
 
 bot_running = True
 
+async def cleanup_discoveries_periodically(scalper_monitor, interval=3600):
+    """Limpia periódicamente descubrimientos antiguos"""
+    while True:
+        try:
+            # Aquí puedes agregar limpieza si es necesaria
+            await asyncio.sleep(interval)
+        except Exception as e:
+            logger.error(f"Error en cleanup_discoveries: {e}")
+            await asyncio.sleep(60)
+
 async def main():
+    global bot_running
     try:
         print("\n==== INICIANDO TRADING BOT ====")
         print(f"Fecha/hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -51,22 +61,28 @@ async def main():
             gmgn_client = GMGNClient()
             logger.info("✅ Cliente GMGN inicializado")
         except Exception as e:
-            logger.warning(f"No se pudo inicializar GMGN: {e}")
+            logger.warning(f"No se pudo inicializar cliente GMGN: {e}")
         
         signal_logic = SignalLogic(
-            scoring_system=scoring_system,
-            helius_client=helius_client,
+            scoring_system=scoring_system, 
+            helius_client=helius_client, 
             gmgn_client=gmgn_client
         )
-        # Si es necesario, asignar wallet_tracker a signal_logic
-        signal_logic.wallet_tracker = wallet_tracker
+        # Aplicar optimización del cálculo de confianza y detección alfa
+        signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
+        signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
         
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
         
         scalper_monitor = ScalperActivityMonitor()
         
-        # Iniciar bot de Telegram usando fix_telegram_commands
+        # Iniciar healthcheck (si tienes esa función en signal_logic o en otro módulo)
+        # Por ejemplo: from signal_logic import add_healthcheck
+        # health_check = add_healthcheck()(signal_logic, scalper_monitor, db)
+        # Si no usas add_healthcheck, puedes omitirlo
+        
+        # Iniciar bot de Telegram
         telegram_commands = fix_telegram_commands()
         is_bot_active = await telegram_commands(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
         
@@ -74,18 +90,21 @@ async def main():
         
         tasks = [
             asyncio.create_task(signal_logic.check_signals_periodically()),
-            asyncio.create_task(scalper_monitor._periodic_cleanup()),
+            asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
+            # Puedes agregar healthcheck si lo tienes
         ]
         
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
         cielo_message_handler = fix_on_cielo_message()
-        tasks.append(asyncio.create_task(
+        
+        cielo_task = asyncio.create_task(
             cielo_client.run_forever_wallets(
-                wallets,
-                cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                wallets, 
+                cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor), 
                 {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
             )
-        ))
+        )
+        tasks.append(cielo_task)
         
         logger.info(f"✅ Bot iniciado y funcionando con {len(tasks)} tareas")
         
@@ -96,16 +115,7 @@ async def main():
                         err = task.exception()
                         if err:
                             logger.error(f"Tarea #{i} falló: {err}")
-                            # Reiniciar la tarea según su índice (ejemplo para la tarea de Cielo)
-                            if i == 2:
-                                tasks[i] = asyncio.create_task(
-                                    cielo_client.run_forever_wallets(
-                                        wallets,
-                                        cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
-                                        {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
-                                    )
-                                )
-                                logger.info("Tarea de WebSocket Cielo reiniciada")
+                            # Aquí puedes reiniciar la tarea según su índice
                     except Exception as e:
                         logger.error(f"Error verificando tarea #{i}: {e}", exc_info=True)
             logger.info(f"Estado del bot: {len(signal_logic.token_candidates)} tokens monitoreados, {db.count_signals_today()} señales hoy")
