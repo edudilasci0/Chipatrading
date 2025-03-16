@@ -6,22 +6,19 @@ from config import Config
 logger = logging.getLogger("helius_client")
 
 class HeliusClient:
-    def __init__(self, api_key, token_cache=None):
+    def __init__(self, api_key):
         self.api_key = api_key
         self.cache = {}
         self.cache_duration = int(Config.get("HELIUS_CACHE_DURATION", 300))
-        self.token_cache = token_cache  # Opcional: instancia de caché externa
-
+    
     def _request(self, endpoint, params, version="v1"):
         """
-        Realiza una solicitud a la API de Helius.
+        Realiza una solicitud a la API de Helius
         """
-        # Construir URL según la versión
         url = f"https://api.helius.xyz/{version}/{endpoint}"
-        # Configurar el parámetro de API key según la versión
         if version == "v1":
             params["apiKey"] = self.api_key
-        else:
+        else:  # v0
             params["api-key"] = self.api_key
         try:
             logger.debug(f"Solicitando Helius {version}: {url}")
@@ -31,21 +28,14 @@ class HeliusClient:
         except Exception as e:
             logger.error(f"Error en HeliusClient._request ({version}): {e}")
             return None
-
+    
     def get_token_data(self, token):
         """
-        Obtiene datos del token usando el endpoint correcto de Helius.
+        Obtiene datos del token usando los endpoints correctos de Helius
         """
         now = time.time()
-        # Primero intentar con caché externa si está disponible
-        if self.token_cache:
-            cached = self.token_cache.get(token)
-            if cached:
-                return cached
-
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
-
         data = None
         endpoint = f"tokens/{token}"
         data = self._request(endpoint, {}, version="v1")
@@ -54,7 +44,6 @@ class HeliusClient:
         if not data:
             endpoint = f"addresses/{token}/tokens"
             data = self._request(endpoint, {}, version="v0")
-
         if data:
             if isinstance(data, list) and data:
                 data = data[0]
@@ -69,25 +58,23 @@ class HeliusClient:
                 "source": "helius"
             }
             self.cache[token] = {"data": normalized_data, "timestamp": now}
-            if self.token_cache:
-                self.token_cache.set(token, normalized_data)
             return normalized_data
         logger.warning(f"No se pudieron obtener datos para el token {token} desde Helius")
         return None
-
+    
     def _extract_value(self, data, possible_keys):
         for key in possible_keys:
             if key in data:
                 return data[key]
         return 0
-
+    
     def _normalize_percentage(self, value):
         if value is None:
             return 0
         if value > 1 or value < -1:
             return value / 100
         return value
-
+    
     def get_price_change(self, token, timeframe="1h"):
         token_data = self.get_token_data(token)
         if not token_data:
