@@ -30,6 +30,7 @@ class HeliusClient:
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
+        
         data = None
         endpoint = f"tokens/{token}"
         data = self._request(endpoint, {}, version="v1")
@@ -38,6 +39,7 @@ class HeliusClient:
         if not data:
             endpoint = f"addresses/{token}/tokens"
             data = self._request(endpoint, {}, version="v0")
+        
         if data:
             if isinstance(data, list) and data:
                 data = data[0]
@@ -53,6 +55,7 @@ class HeliusClient:
             }
             self.cache[token] = {"data": normalized_data, "timestamp": now}
             return normalized_data
+        
         logger.warning(f"No se pudieron obtener datos para el token {token} desde Helius")
         return None
     
