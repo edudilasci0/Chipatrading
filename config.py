@@ -9,14 +9,12 @@ class Config:
     HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
     DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
 
-    RUGCHECK_PRIVATE_KEY = os.environ.get("RUGCHECK_PRIVATE_KEY", "")
-    RUGCHECK_WALLET_PUBKEY = os.environ.get("RUGCHECK_WALLET_PUBKEY", "")
-
     MIN_TRANSACTION_USD = 200
     MIN_TRADERS_FOR_SIGNAL = 2
     SIGNAL_WINDOW_SECONDS = 540
     MIN_CONFIDENCE_THRESHOLD = 0.3
     MIN_VOLUME_USD = 2000
+    MIN_MARKETCAP = 100000
 
     DEFAULT_SCORE = 5.0
     MAX_SCORE = 10.0
@@ -24,9 +22,7 @@ class Config:
     BUY_SCORE_INCREASE = 0.1
     SELL_SCORE_INCREASE = 0.2
 
-    MIN_MARKETCAP = 100000
-    MAX_MARKETCAP = 500_000_000
-    VOL_NORMALIZATION_FACTOR = 10000.0
+    HELIUS_CACHE_DURATION = 300
 
     MEMECOIN_CONFIG = {
         "MIN_VOLUME_USD": 1000,
@@ -50,7 +46,7 @@ class Config:
                 key = setting['key']
                 value = setting['value']
                 cls._dynamic_config[key] = value
-            print(f"✅ Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
+            print(f"Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
         except Exception as e:
             print(f"Error cargando configuración dinámica: {e}")
 
