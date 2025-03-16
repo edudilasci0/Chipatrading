@@ -15,12 +15,12 @@ logger = logging.getLogger("chipatrading")
 
 from config import Config
 from wallet_tracker import WalletTracker
-from cielo_api import CieloAPI  # Contains CieloAPI implementation
-from helius_client import HeliusClient
+from cielo_api import CieloAPI  # WebSocket connection to Cielo
+from helius_client import HeliusClient  # For Helius API calls
 from scoring import ScoringSystem
 from signal_logic import SignalLogic, optimize_signal_confidence, enhance_alpha_detection
 from performance_tracker import PerformanceTracker
-from telegram_utils import send_telegram_message, fix_on_cielo_message, fix_telegram_commands
+from telegram_utils import send_telegram_message, fix_telegram_commands, fix_on_cielo_message
 from scalper_monitor import ScalperActivityMonitor
 import db
 
@@ -29,7 +29,7 @@ bot_running = True
 async def cleanup_discoveries_periodically(scalper_monitor, interval=3600):
     while True:
         try:
-            # Implement cleanup logic if needed.
+            # Aquí se puede implementar lógica de limpieza de tokens inactivos, si se desea.
             await asyncio.sleep(interval)
         except Exception as e:
             logger.error(f"Error in cleanup_discoveries: {e}")
@@ -45,14 +45,11 @@ async def main():
         
         wallet_tracker = WalletTracker()
         wallets = wallet_tracker.get_wallets()
-        print(f"✅ Wallets loaded: {wallets}")
         logger.info(f"Wallets loaded: {wallets}")
         
         scoring_system = ScoringSystem()
-        helius_client = None
-        if Config.HELIUS_API_KEY:
-            helius_client = HeliusClient(Config.HELIUS_API_KEY)
-            logger.info("✅ Helius Client initialized")
+        helius_client = HeliusClient(Config.HELIUS_API_KEY)
+        logger.info("✅ Helius Client initialized")
         
         gmgn_client = None
         try:
@@ -62,13 +59,23 @@ async def main():
         except Exception as e:
             logger.warning(f"GMGN Client initialization failed: {e}")
         
+        # Initialize DexScreenerClient as backup
+        dexscreener_client = None
+        try:
+            from dexscreener_client import DexScreenerClient
+            dexscreener_client = DexScreenerClient()
+            logger.info("✅ DexScreener Client initialized")
+        except Exception as e:
+            logger.warning(f"DexScreener Client initialization failed: {e}")
+        
         signal_logic = SignalLogic(scoring_system=scoring_system, helius_client=helius_client, gmgn_client=gmgn_client)
         signal_logic.wallet_tracker = wallet_tracker  # Set wallet tracker reference
+        if dexscreener_client:
+            signal_logic.dexscreener_client = dexscreener_client
         
         # Apply module-level optimizations to SignalLogic
         signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
         signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
-        
         if not hasattr(signal_logic, 'get_active_candidates_count'):
             signal_logic.get_active_candidates_count = lambda: len(signal_logic.token_candidates)
         
@@ -77,8 +84,9 @@ async def main():
         
         scalper_monitor = ScalperActivityMonitor()
         
-        telegram_commands = fix_telegram_commands()
-        is_bot_active = await telegram_commands(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
+        # Fix telegram commands call: call the function returned by fix_telegram_commands without await.
+        telegram_commands_function = fix_telegram_commands()
+        is_bot_active = telegram_commands_function(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
         
         send_telegram_message("🚀 *Trading Bot Started*\nMonitoring Solana transactions...")
         
@@ -125,7 +133,6 @@ async def main():
                         logger.error(f"Error checking task #{i}: {e}", exc_info=True)
             logger.info(f"Bot status: {len(signal_logic.token_candidates)} tokens monitored, {db.count_signals_today()} signals today")
             await asyncio.sleep(30)
-            
     except Exception as e:
         logger.error(f"Critical error in main: {e}", exc_info=True)
         send_telegram_message(f"⚠️ *Critical error*: Bot stopped: {e}")
