@@ -71,7 +71,7 @@ def fix_telegram_commands():
         from telegram.ext import Updater, CommandHandler
     except ImportError:
         logger.error("Instalar python-telegram-bot: pip install python-telegram-bot==13.15")
-        return lambda: True
+        return lambda *args, **kwargs: True
 
     bot_status = {"active": True, "verbosity": logging.INFO}
 
@@ -186,7 +186,7 @@ def fix_telegram_commands():
                 filled_length = int(round(bar_length * abs(percent) / 100))
                 bar = "█" * filled_length + "-" * (bar_length - filled_length)
                 result += f"{emoji} *{timeframe}*: {percent:.2f}% [{bar}]\n"
-            update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
+            update.message.reply_text(result, parse_mode="Markdown")
         except Exception as e:
             update.message.reply_text(f"❌ Error generando gráfico: {e}")
 
@@ -218,7 +218,6 @@ def fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_m
             import time
             data = json.loads(message)
             msg_type = data.get("type", "desconocido")
-            
             if msg_type == "tx" and "data" in data:
                 tx_data = data["data"]
                 normalized_tx = {}
@@ -257,7 +256,6 @@ def fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_m
                 else:
                     logger.debug(f"Tipo de transacción no procesada: {tx_data.get('tx_type')}")
                     return
-                
                 normalized_tx["timestamp"] = tx_data.get("timestamp", int(time.time()))
                 min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
                 if normalized_tx["amount_usd"] < min_tx_usd:
@@ -265,15 +263,12 @@ def fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_m
                 if not normalized_tx.get("token") or normalized_tx.get("token") in ["native", "So11111111111111111111111111111111111111112"]:
                     logger.debug("Transacción ignorada: Token es nativo o falta")
                     return
-                
                 is_pump_token = normalized_tx["token"].endswith("pump")
                 if is_pump_token:
                     normalized_tx["is_pump_token"] = True
-                
                 trader_tag = "[FOLLOWED]" if is_tracked_trader else ""
                 pump_tag = "[PUMP]" if is_pump_token else ""
                 logger.info(f"Transacción normalizada: {normalized_tx['wallet']} {trader_tag} | {normalized_tx['token']} {pump_tag} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
-                
                 signal_logic.process_transaction(normalized_tx)
                 scalper_monitor.process_transaction(normalized_tx)
             elif msg_type not in ["wallet_subscribed", "pong"]:
