@@ -83,7 +83,7 @@ async def main():
         cielo_task = asyncio.create_task(
             cielo_client.run_forever_wallets(
                 wallets, 
-                cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                lambda message: cielo_message_handler(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor),
                 {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
             )
         )
@@ -108,7 +108,7 @@ async def main():
                                 tasks[i] = asyncio.create_task(
                                     cielo_client.run_forever_wallets(
                                         wallets, 
-                                        cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                                        lambda message: cielo_message_handler(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor),
                                         {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
                                     )
                                 )
