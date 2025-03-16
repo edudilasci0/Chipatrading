@@ -1,58 +1,84 @@
-import asyncio
-import websockets
-import json
 import time
-from config import Config
+import json
+import asyncio
+import requests
 import logging
+from config import Config
 
 logger = logging.getLogger("cielo_api")
 
-class CieloAPI:
-    """
-    Maneja la conexión WebSocket a la API de Cielo.
-    """
-    def __init__(self, api_key=None):
-        self.api_key = api_key if api_key else Config.CIELO_API_KEY
+class HeliusClient:
+    def __init__(self, api_key):
+        self.api_key = api_key
         self.ws_url = "wss://feed-api.cielo.finance/api/v1/ws"
         self.last_connection_attempt = 0
         self.connection_failures = 0
 
-    async def log_raw_message(self, message):
+    def _request(self, endpoint, params, version="v1"):
+        url = f"https://api.helius.xyz/{version}/{endpoint}"
+        if version == "v1":
+            params["apiKey"] = self.api_key
+        else:  # v0
+            params["api-key"] = self.api_key
         try:
-            data = json.loads(message)
-            print(f"\n-------- MENSAJE CIELO RECIBIDO --------")
-            print(f"Tipo de mensaje: {data.get('type', 'No type')}")
-            print(f"MENSAJE COMPLETO: {json.dumps(data)[:1000]}...")
-            if "transactions" in data:
-                txs = data["transactions"]
-                print(f"Contiene {len(txs)} transacciones")
-                if len(txs) > 0:
-                    print(f"\nTransacción completa #1:")
-                    print(json.dumps(txs[0], indent=2))
-                for i, tx in enumerate(txs[:3]):
-                    print(f"\nTransacción #{i+1}:")
-                    print(f"  Tipo: {tx.get('type', 'N/A')}")
-                    print(f"  Wallet: {tx.get('wallet', 'N/A')}")
-                    print(f"  Token: {tx.get('token', 'N/A')}")
-                    value_fields = [k for k in tx.keys() if 'amount' in k.lower() or 'value' in k.lower() or 'usd' in k.lower()]
-                    for field in value_fields:
-                        print(f"  {field}: {tx.get(field, 'N/A')}")
-                    other_fields = [k for k in tx.keys() if k not in ['type', 'wallet', 'token'] and k not in value_fields]
-                    for field in other_fields:
-                        print(f"  {field}: {tx.get(field, 'N/A')}")
-                if len(txs) > 3:
-                    print(f"... y {len(txs) - 3} transacciones más")
-            print("----------------------------------------\n")
+            logger.debug(f"Solicitando Helius {version}: {url}")
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            return response.json()
         except Exception as e:
-            print(f"Error al loguear mensaje: {e}")
-            print(f"Mensaje original: {message[:500]}...")
+            logger.error(f"Error en HeliusClient._request ({version}): {e}")
+            return None
+
+    def get_token_data(self, token):
+        now = time.time()
+        if token in getattr(self, "cache", {}) and now - self.cache[token]["timestamp"] < Config.HELIUS_CACHE_DURATION:
+            return self.cache[token]["data"]
+        data = None
+        endpoint = f"tokens/{token}"
+        data = self._request(endpoint, {}, version="v1")
+        if not data:
+            data = self._request(endpoint, {}, version="v0")
+        if not data:
+            endpoint = f"addresses/{token}/tokens"
+            data = self._request(endpoint, {}, version="v0")
+        if data:
+            if isinstance(data, list) and data:
+                data = data[0]
+            normalized_data = {
+                "price": self._extract_value(data, ["price", "priceUsd"]),
+                "market_cap": self._extract_value(data, ["marketCap", "market_cap"]),
+                "volume": self._extract_value(data, ["volume24h", "volume", "volumeUsd"]),
+                "volume_growth": {
+                    "growth_5m": self._normalize_percentage(self._extract_value(data, ["volumeChange5m", "volume_change_5m"])),
+                    "growth_1h": self._normalize_percentage(self._extract_value(data, ["volumeChange1h", "volume_change_1h"]))
+                },
+                "source": "helius"
+            }
+            if not hasattr(self, "cache"):
+                self.cache = {}
+            self.cache[token] = {"data": normalized_data, "timestamp": now}
+            return normalized_data
+        logger.warning(f"No se pudieron obtener datos para el token {token} desde Helius")
+        return None
+
+    def _extract_value(self, data, possible_keys):
+        for key in possible_keys:
+            if key in data:
+                return data[key]
+        return 0
+
+    def _normalize_percentage(self, value):
+        if value is None:
+            return 0
+        if value > 1 or value < -1:
+            return value / 100
+        return value
 
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
         subscription_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],
         }
-        print(f"🔄 Suscribiendo a {len(wallets)} wallets con filtros: {filter_params}")
         chunk_size = 50
         for i in range(0, len(wallets), chunk_size):
             chunk = wallets[i:i+chunk_size]
@@ -63,8 +89,9 @@ class CieloAPI:
                     "filter": subscription_params
                 }
                 await ws.send(json.dumps(msg))
+                await asyncio.sleep(0.02)
             if i + chunk_size < len(wallets):
-                print(f"  Progress: {i+chunk_size}/{len(wallets)} wallets suscritas...")
+                print(f"  Progreso: {i+chunk_size}/{len(wallets)} wallets suscritas...")
                 await asyncio.sleep(0.5)
         print("✅ Todas las wallets han sido suscritas")
 
@@ -74,85 +101,62 @@ class CieloAPI:
                 await asyncio.sleep(300)
                 ping_message = {"type": "ping"}
                 await ws.send(json.dumps(ping_message))
-                print("📤 Ping enviado a Cielo WebSocket")
+                logger.info("Ping enviado a Cielo WebSocket")
             except Exception as e:
-                print(f"⚠️ Error enviando ping: {e}")
+                logger.error(f"Error enviando ping: {e}")
                 break
 
     async def _reconnect_with_backoff(self, attempt=0, max_attempts=10):
         if attempt >= max_attempts:
-            logger.critical("Número máximo de intentos alcanzado. Deteniendo bot.")
+            logger.critical("Número máximo de intentos alcanzado. Reiniciando completamente...")
             from telegram_utils import send_telegram_message
-            send_telegram_message("❌ *Error Crítico*: Conexión a Cielo perdida permanentemente. Revisa los logs.")
+            send_telegram_message("❌ *Error Crítico*: Conexión a Cielo perdida tras múltiples intentos. Reiniciando...")
+            await asyncio.sleep(60)
             return False
-        delay = min(30, 2 ** attempt)
-        logger.warning(f"Reconectando a Cielo en {delay}s (intento {attempt+1}/{max_attempts})")
+        import random
+        delay = min(30, (2 ** attempt) * (0.8 + 0.4 * random.random()))
+        logger.warning(f"Reconectando a Cielo en {delay:.2f}s (intento {attempt+1}/{max_attempts})")
         await asyncio.sleep(delay)
         return True
 
     async def run_forever_wallets(self, wallets, on_message_callback, filter_params=None):
         attempt = 0
         max_retry_delay = 60
+        import websockets
         while True:
             try:
                 self.last_connection_attempt = time.time()
                 headers = {"X-API-KEY": self.api_key}
                 async with websockets.connect(self.ws_url, extra_headers=headers, ping_interval=30) as ws:
-                    print("📡 WebSocket conectado a Cielo (modo multi-wallet)")
+                    logger.info("📡 WebSocket conectado a Cielo (modo multi-wallet)")
                     self.connection_failures = 0
                     attempt = 0
                     await self.subscribe_to_wallets(ws, wallets, filter_params)
                     ping_task = asyncio.create_task(self._ping_periodically(ws))
                     try:
                         async for message in ws:
-                            await self.log_raw_message(message)
-                            await on_message_callback(message)
+                            try:
+                                await on_message_callback(message)
+                            except Exception as e:
+                                logger.error(f"Error procesando mensaje: {e}", exc_info=True)
+                                continue
                     finally:
                         ping_task.cancel()
-            except (websockets.ConnectionClosed, OSError) as e:
+                        try:
+                            await ping_task
+                        except asyncio.CancelledError:
+                            pass
+            except (asyncio.TimeoutError, websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
                 attempt += 1
-                if not await self._reconnect_with_backoff(attempt, max_retry_delay):
-                    break
-                continue
+                retry_delay = min(2 ** attempt, max_retry_delay)
+                logger.warning(f"Conexión cerrada, reintentando en {retry_delay}s: {e}")
+                await asyncio.sleep(retry_delay)
             except Exception as e:
                 self.connection_failures += 1
                 attempt += 1
-                logger.error(f"🚨 Error inesperado ({self.connection_failures}): {e}, reintentando...", exc_info=True)
-                if not await self._reconnect_with_backoff(attempt, max_retry_delay):
-                    break
+                retry_delay = min(2 ** attempt, max_retry_delay)
+                logger.error(f"Error inesperado: {e}", exc_info=True)
+                await asyncio.sleep(retry_delay)
 
-    async def run_forever(self, on_message_callback, filter_params=None):
-        attempt = 0
-        max_retry_delay = 60
-        while True:
-            try:
-                headers = {"X-API-KEY": self.api_key}
-                async with websockets.connect(self.ws_url, extra_headers=headers, ping_interval=30) as ws:
-                    print("📡 WebSocket conectado a Cielo (modo feed)")
-                    self.connection_failures = 0
-                    attempt = 0
-                    subscribe_message = {
-                        "type": "subscribe_feed",
-                        "filter": filter_params or {}
-                    }
-                    await ws.send(json.dumps(subscribe_message))
-                    print(f"📡 Suscrito con filtros => {filter_params}")
-                    ping_task = asyncio.create_task(self._ping_periodically(ws))
-                    try:
-                        async for message in ws:
-                            await self.log_raw_message(message)
-                            await on_message_callback(message)
-                    finally:
-                        ping_task.cancel()
-            except (websockets.ConnectionClosed, OSError) as e:
-                self.connection_failures += 1
-                attempt += 1
-                print(f"🔴 Conexión cerrada o error de red ({self.connection_failures}): {e}")
-                print(f"Reintentando en {2 ** attempt}s...")
-                await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                self.connection_failures += 1
-                attempt += 1
-                print(f"🚨 Error inesperado ({self.connection_failures}): {e}, reintentando en {2 ** attempt}s...")
-                await asyncio.sleep(2 ** attempt)
+# También se exporta HeliusClient
