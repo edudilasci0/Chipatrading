@@ -5,9 +5,9 @@ import json
 class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "default-cielo-key")
+    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
     HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
-    DATABASE_PATH = os.environ.get("DATABASE_PATH", "tradingbot.db")
+    DATABASE_PATH = os.environ.get("DATABASE_PATH", "/data/tradingbot.db" if os.path.exists("/data") else "tradingbot.db")
 
     RUGCHECK_PRIVATE_KEY = os.environ.get("RUGCHECK_PRIVATE_KEY", "")
     RUGCHECK_WALLET_PUBKEY = os.environ.get("RUGCHECK_WALLET_PUBKEY", "")
@@ -24,7 +24,6 @@ class Config:
     BUY_SCORE_INCREASE = 0.1
     SELL_SCORE_INCREASE = 0.2
 
-    # Valor nuevo para filtrar tokens con market cap muy bajo
     MIN_MARKETCAP = 100000
     MAX_MARKETCAP = 500_000_000
     VOL_NORMALIZATION_FACTOR = 10000.0
@@ -51,7 +50,7 @@ class Config:
                 key = setting['key']
                 value = setting['value']
                 cls._dynamic_config[key] = value
-            print(f"Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
+            print(f"✅ Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
         except Exception as e:
             print(f"Error cargando configuración dinámica: {e}")
 
