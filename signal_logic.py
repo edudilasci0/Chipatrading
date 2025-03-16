@@ -134,7 +134,7 @@ class SignalLogic:
         self.last_signal_check = time.time()
         self.watched_tokens = set()
         self._init_token_type_scores()
-    
+
     def _init_token_type_scores(self):
         self.token_type_scores = {
             "meme": 1.1,
@@ -142,7 +142,7 @@ class SignalLogic:
             "defi": 1.0,
             "standard": 1.0
         }
-    
+
     def process_transaction(self, tx_data):
         try:
             if not tx_data or "token" not in tx_data:
@@ -158,7 +158,8 @@ class SignalLogic:
             min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
             if amount_usd < min_usd:
                 return
-            wallets_known = []  # Aquí podrías integrar una lista de wallets conocidas
+            # Aquí se podría integrar una lista de traders conocidos
+            wallets_known = set(self.wallet_tracker.get_wallets()) if hasattr(self, 'wallet_tracker') else set()
             wallet_score = self.scoring_system.get_score(wallet) if self.scoring_system else 5.0
             is_known_trader = wallet in wallets_known
             if is_known_trader:
@@ -206,77 +207,115 @@ class SignalLogic:
             logger.debug(f"Transacción procesada: {token} | {wallet} | ${amount_usd:.2f} | {tx_type}")
         except Exception as e:
             logger.error(f"Error procesando transacción en SignalLogic: {e}", exc_info=True)
-    
+
     async def get_token_market_data(self, token):
-        data = None
-        source = "none"
-        if self.helius_client:
-            try:
-                data = self.helius_client.get_token_data(token)
-                if data and data.get("market_cap", 0) > 0:
-                    source = "helius"
-                    logger.debug(f"Datos de {token} obtenidos de Helius")
-            except Exception as e:
-                logger.warning(f"Error API Helius para {token}: {str(e)[:100]}")
-        if not data or data.get("market_cap", 0) == 0:
-            if self.gmgn_client:
-                try:
-                    gmgn_data = self.gmgn_client.get_market_data(token)
-                    if gmgn_data and gmgn_data.get("market_cap", 0) > 0:
-                        data = gmgn_data
-                        source = "gmgn"
-                        logger.debug(f"Datos de {token} obtenidos de GMGN")
-                except Exception as e:
-                    logger.warning(f"Error API GMGN para {token}: {str(e)[:100]}")
-        if not data or data.get("market_cap", 0) == 0:
-            if hasattr(self, 'dexscreener_client') and self.dexscreener_client:
-                try:
-                    dex_data = await self.dexscreener_client.fetch_token_data(token)
-                    if dex_data and dex_data.get("market_cap", 0) > 0:
-                        data = dex_data
-                        source = "dexscreener"
-                        logger.debug(f"Datos de {token} obtenidos de DexScreener")
-                except Exception as e:
-                    logger.warning(f"Error API DexScreener para {token}: {str(e)[:100]}")
+        # Para tokens nuevos o "pump", usar valores predeterminados sin consultar APIs
+        if token.endswith("pump") or token.endswith("ai") or token.endswith("erc") or token.endswith("inu"):
+            pump_data = {
+                "price": 0.00001,
+                "market_cap": 500000,
+                "volume": 20000,
+                "volume_growth": {"growth_5m": 0.5, "growth_1h": 0.2},
+                "estimated": True,
+                "source": "meme_default"
+            }
+            logger.info(f"Usando valores predeterminados para token pump: {token}")
+            return pump_data
+
+        data = await self._attempt_get_market_data(token)
         if not data or data.get("market_cap", 0) == 0:
             data = {
                 "price": 0.00001,
                 "market_cap": 1000000,
                 "volume": 10000,
                 "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
-                "estimated": True
+                "estimated": True,
+                "source": "default"
             }
-            source = "default"
             logger.warning(f"Usando datos predeterminados para {token} - todas las APIs fallaron")
-        data["source"] = source
         return data
-    
+
+    async def _attempt_get_market_data(self, token):
+        data = None
+        # Intento 1: Helius
+        if self.helius_client:
+            try:
+                data = self.helius_client.get_token_data(token)
+                if data and data.get("market_cap", 0) > 0:
+                    logger.debug(f"Datos de {token} obtenidos de Helius")
+                    return data
+            except Exception as e:
+                logger.warning(f"Error API Helius para {token}: {str(e)[:100]}")
+        # Intento 2: GMGN
+        if self.gmgn_client:
+            try:
+                gmgn_data = self.gmgn_client.get_market_data(token)
+                if gmgn_data and gmgn_data.get("market_cap", 0) > 0:
+                    logger.debug(f"Datos de {token} obtenidos de GMGN")
+                    return gmgn_data
+                price_backup = self.gmgn_client.get_price_from_backup_source(token)
+                if price_backup:
+                    market_cap = price_backup * 10000000
+                    return {
+                        "price": price_backup,
+                        "market_cap": market_cap,
+                        "volume": market_cap * 0.05,
+                        "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
+                        "source": "alt_source"
+                    }
+            except Exception as e:
+                logger.warning(f"Error API GMGN para {token}: {str(e)[:100]}")
+        # Intento 3: DexScreener
+        try:
+            dex_data = await self.dexscreener_client.fetch_token_data(token)
+            if dex_data and dex_data.get("market_cap", 0) > 0:
+                logger.debug(f"Datos de {token} obtenidos de DexScreener")
+                return dex_data
+        except Exception as e:
+            logger.warning(f"Error API DexScreener para {token}: {str(e)[:100]}")
+        return data
+
     async def _process_candidates(self):
         try:
             now = time.time()
             window = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
             cutoff = now - window
             candidates = []
+            
             for token, data in list(self.token_candidates.items()):
                 recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
                 if not recent_txs or token in self.watched_tokens:
                     continue
+                
+                # Filtrar traders conocidos que hayan realizado compras
+                tracked_wallets = set(self.wallet_tracker.get_wallets())
+                traders_with_buys = {}
+                for tx in recent_txs:
+                    wallet = tx.get("wallet")
+                    if wallet in tracked_wallets and tx.get("type") == "BUY":
+                        traders_with_buys.setdefault(wallet, []).append(tx)
+                
+                if len(traders_with_buys) < 2:
+                    continue
+                
+                known_trader_names = [self.scoring_system.get_trader_name_from_wallet(w) for w in traders_with_buys.keys()]
+                logger.info(f"¡Token {token} tiene {len(traders_with_buys)} traders conocidos: {', '.join(known_trader_names)}")
+                
                 trader_count = len(data["wallets"])
                 volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
                 buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
                 buy_ratio = len(buy_txs) / max(1, len(recent_txs))
                 timestamps = [tx["timestamp"] for tx in recent_txs]
                 tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps))/60) if len(timestamps) >= 2 else 0
+                
                 token_name = recent_txs[0].get("token_name", "").lower() if recent_txs else ""
                 token_symbol = recent_txs[0].get("token_symbol", "").lower() if recent_txs else ""
                 meme_keywords = ["pepe", "doge", "shib", "inu", "moon", "elon", "wojak", "cat", "rip", "justice", "killed", "dead", "murder"]
                 is_meme = any(kw in token_name for kw in meme_keywords) or any(kw in token_symbol for kw in meme_keywords)
-                if is_meme:
-                    token_opportunity = "meme"
-                elif (await self.get_token_market_data(token)).get("market_cap", 0) < 5000000 and tx_velocity > 2.0:
+                token_opportunity = "meme" if is_meme else "standard"
+                if (await self.get_token_market_data(token)).get("market_cap", 0) < 5000000 and tx_velocity > 2.0:
                     token_opportunity = "daily_runner"
-                else:
-                    token_opportunity = "standard"
+                
                 is_immediate = False
                 if len(recent_txs) >= 2:
                     vol_diff = recent_txs[-1]["amount_usd"] - recent_txs[-2]["amount_usd"]
@@ -284,20 +323,24 @@ class SignalLogic:
                     if vol_diff > 1000 and elite_trader_count > 0:
                         is_immediate = True
                         logger.info(f"Señal inmediata detectada: {token} por cambio rápido de volumen (${vol_diff:.2f})")
+                
                 min_traders = int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))
                 min_vol_usd = float(Config.get("MIN_VOLUME_USD", 2000))
                 if token_opportunity == "meme":
                     min_vol_usd *= 0.75
-                if trader_count < min_traders and not is_immediate:
+                if len(traders_with_buys) < min_traders and not is_immediate:
                     continue
                 if volume_usd < min_vol_usd and not is_immediate:
                     continue
-                volume_growth = (await self.get_token_market_data(token)).get("volume_growth", {}).get("growth_5m", 0)
-                wallet_scores = [self.scoring_system.get_score(w) for w in data["wallets"]]
+                
+                market_data = await self.get_token_market_data(token)
+                volume_growth = market_data.get("volume_growth", {}).get("growth_5m", 0)
+                wallet_scores = [self.scoring_system.get_score(wallet) for wallet in traders_with_buys.keys()]
+                
                 confidence = self.scoring_system.compute_confidence(
                     wallet_scores=wallet_scores,
                     volume_1h=volume_usd,
-                    market_cap=(await self.get_token_market_data(token)).get("market_cap", 0),
+                    market_cap=market_data.get("market_cap", 0),
                     recent_volume_growth=volume_growth,
                     token_type=token_opportunity,
                     whale_activity=data.get("whale_activity", False),
@@ -305,27 +348,30 @@ class SignalLogic:
                 )
                 if is_immediate:
                     confidence = min(1.0, confidence * 1.3)
+                
                 candidate = {
                     "token": token,
                     "confidence": confidence,
-                    "trader_count": trader_count,
+                    "trader_count": len(traders_with_buys),
                     "volume_usd": volume_usd,
                     "recent_transactions": recent_txs,
                     "tx_velocity": tx_velocity,
                     "buy_ratio": buy_ratio,
                     "token_type": token_opportunity,
-                    "market_data": await self.get_token_market_data(token),
-                    "elite_trader_count": sum(1 for wallet in data["wallets"] if self.scoring_system.get_score(wallet) > 9.0),
-                    "high_quality_count": sum(1 for wallet in data["wallets"] if self.scoring_system.get_score(wallet) > 7.5),
-                    "token_name": token_name,
-                    "token_symbol": token_symbol
+                    "market_data": market_data,
+                    "elite_trader_count": sum(1 for score in wallet_scores if score > 9.0),
+                    "high_quality_count": sum(1 for score in wallet_scores if score > 7.5),
+                    "known_traders": list(traders_with_buys.keys()),
+                    "known_trader_names": known_trader_names
                 }
+                
                 candidates.append(candidate)
+            
             candidates.sort(key=lambda x: x["confidence"], reverse=True)
             await self._generate_signals(candidates)
         except Exception as e:
             logger.error(f"Error en _process_candidates: {e}", exc_info=True)
-    
+
     async def _generate_signals(self, candidates):
         try:
             now = time.time()
@@ -346,7 +392,8 @@ class SignalLogic:
                 if sig["token"] == token and now - sig["timestamp"] < 3600:
                     return
             confidence = best_candidate["confidence"]
-            trader_count = best_candidate["trader_count"]
+            trader_count = len(best_candidate.get("known_traders", []))
+            trader_names = best_candidate.get("known_trader_names", [])
             tx_velocity = best_candidate["tx_velocity"]
             buy_ratio = best_candidate["buy_ratio"]
             token_opportunity = best_candidate["token_type"]
@@ -367,7 +414,8 @@ class SignalLogic:
                 "volume_growth_1h": market_data.get("volume_growth", {}).get("growth_1h", 0),
                 "whale_flag": 1 if best_candidate.get("whale_activity") else 0,
                 "is_meme": 1 if token_opportunity == "meme" else 0,
-                "window_seconds": float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
+                "window_seconds": float(Config.get("SIGNAL_WINDOW_SECONDS", 540)),
+                "known_traders": trader_names
             }
             db.save_signal_features(signal_id, token, features)
             if self.performance_tracker:
@@ -375,7 +423,8 @@ class SignalLogic:
                     "confidence": confidence,
                     "traders_count": trader_count,
                     "total_volume": best_candidate["volume_usd"],
-                    "signal_id": signal_id
+                    "signal_id": signal_id,
+                    "known_traders": trader_names
                 }
                 self.performance_tracker.add_signal(token, signal_info)
             signal_data = {
@@ -385,13 +434,14 @@ class SignalLogic:
                 "signal_id": signal_id,
                 "token_type": token_opportunity,
                 "tx_velocity": tx_velocity,
-                "buy_ratio": buy_ratio
+                "buy_ratio": buy_ratio,
+                "known_traders": trader_names
             }
             self.recent_signals.append(signal_data)
             if len(self.recent_signals) > 20:
                 self.recent_signals = self.recent_signals[-20:]
             self.watched_tokens.add(token)
-            from telegram_utils import format_signal_message, send_telegram_message
+            from telegram_utils import send_telegram_message, format_signal_message
             if token_opportunity == "daily_runner":
                 msg = format_signal_message(signal_data, "daily_runner")
             elif token_opportunity == "meme":
@@ -402,7 +452,7 @@ class SignalLogic:
             logger.info(f"Señal generada para {token} con confianza {confidence:.2f}")
         except Exception as e:
             logger.error(f"Error en _generate_signals: {e}", exc_info=True)
-    
+
     async def check_signals_periodically(self):
         while True:
             try:
