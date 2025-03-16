@@ -74,14 +74,20 @@ def fix_on_cielo_message():
                 tx_data = data["data"]
                 normalized_tx = {}
                 normalized_tx["wallet"] = tx_data.get("wallet")
+                if not normalized_tx["wallet"]:
+                    logger.debug("Transacción ignorada: Falta wallet")
+                    return
+                is_tracked_trader = normalized_tx["wallet"] in wallet_tracker.get_wallets()
                 if tx_data.get("tx_type") == "swap":
-                    if tx_data.get("token1_address") == "native" and tx_data.get("token0_address") != "native":
+                    token0_is_native = tx_data.get("token0_address") in ["native", "So11111111111111111111111111111111111111112"]
+                    token1_is_native = tx_data.get("token1_address") in ["native", "So11111111111111111111111111111111111111112"]
+                    if token1_is_native and not token0_is_native:
                         normalized_tx["token"] = tx_data.get("token0_address")
                         normalized_tx["type"] = "SELL"
                         normalized_tx["token_name"] = tx_data.get("token0_name", "Unknown")
                         normalized_tx["token_symbol"] = tx_data.get("token0_symbol", "???")
                         normalized_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
-                    elif tx_data.get("token0_address") == "native" and tx_data.get("token1_address") != "native":
+                    elif token0_is_native and not token1_is_native:
                         normalized_tx["token"] = tx_data.get("token1_address")
                         normalized_tx["type"] = "BUY"
                         normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
@@ -106,13 +112,10 @@ def fix_on_cielo_message():
                 min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
                 if normalized_tx["amount_usd"] < min_tx_usd:
                     return
-                if not normalized_tx.get("token") or normalized_tx.get("token") == "native":
+                if not normalized_tx.get("token") or normalized_tx["token"] in ["native", "So11111111111111111111111111111111111111112"]:
                     logger.debug("Transacción ignorada: Token es nativo o falta")
                     return
-                if not normalized_tx.get("wallet"):
-                    logger.debug("Transacción ignorada: Falta wallet")
-                    return
-                logger.info(f"Transacción normalizada: {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
+                logger.info(f"Transacción normalizada: {normalized_tx['wallet']} | {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
                 signal_logic.process_transaction(normalized_tx)
                 scalper_monitor.process_transaction(normalized_tx)
             elif msg_type not in ["wallet_subscribed", "pong"]:
