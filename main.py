@@ -17,7 +17,7 @@ from config import Config
 from wallet_tracker import WalletTracker
 from cielo_api import CieloAPI
 from scoring import ScoringSystem
-from signal_logic import SignalLogic
+from signal_logic import SignalLogic, optimize_signal_confidence, enhance_alpha_detection
 from performance_tracker import PerformanceTracker
 from telegram_utils import send_telegram_message, fix_telegram_commands, fix_on_cielo_message
 from scalper_monitor import ScalperActivityMonitor
@@ -59,8 +59,6 @@ async def main():
             gmgn_client=gmgn_client
         )
         signal_logic.wallet_tracker = wallet_tracker
-        # Asignar optimizaciones de confianza y detección alfa
-        from signal_logic import optimize_signal_confidence, enhance_alpha_detection
         signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
         signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
         if not hasattr(signal_logic, 'get_active_candidates_count'):
@@ -70,7 +68,6 @@ async def main():
         signal_logic.performance_tracker = performance_tracker
         scalper_monitor = ScalperActivityMonitor()
         
-        from telegram_utils import fix_telegram_commands, send_telegram_message
         telegram_commands = fix_telegram_commands()
         is_bot_active = await telegram_commands(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
         
