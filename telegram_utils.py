@@ -1,17 +1,11 @@
-# telegram_utils.py
 import logging
 import requests
 import time
 from config import Config
-from telegram import ParseMode
-from telegram.ext import Updater, CommandHandler
 
-logger = logging.getLogger("chipatrading")
+logger = logging.getLogger("telegram_utils")
 
 def send_telegram_message(message):
-    """
-    Envía un mensaje a Telegram con reintentos y verificación de longitud.
-    """
     if len(message) > 4096:
         message = message[:4090] + "...\n[Mensaje truncado]"
         logger.warning("Mensaje truncado por longitud.")
@@ -43,82 +37,60 @@ def send_telegram_message(message):
     return False
 
 def fix_telegram_commands():
-    """
-    Retorna una función asíncrona que inicia el bot de Telegram y procesa los comandos.
-    Esta función acepta 3 parámetros: bot_token, chat_id y signal_logic.
-    """
-    async def process_telegram_commands(bot_token, chat_id, signal_logic):
-        bot_status = {"active": True, "verbosity": logging.INFO}
+    try:
+        from telegram import ParseMode
+        from telegram.ext import Updater, CommandHandler
+    except ImportError:
+        logger.error("Instalar python-telegram-bot: pip install python-telegram-bot==13.15")
+        return lambda bot_token, chat_id, signal_logic: None
 
-        def start_command(update, context):
-            if str(update.effective_chat.id) != str(chat_id):
-                update.message.reply_text("⛔️ No autorizado.")
-                return
-            bot_status["active"] = True
-            update.message.reply_text("✅ Bot activado.")
+    bot_status = {"active": True, "verbosity": logging.INFO}
 
-        def stop_command(update, context):
-            if str(update.effective_chat.id) != str(chat_id):
-                update.message.reply_text("⛔️ No autorizado.")
-                return
-            bot_status["active"] = False
-            update.message.reply_text("🛑 Bot desactivado.")
+    def start_command(update, context):
+        if str(update.effective_chat.id) != str(Config.TELEGRAM_CHAT_ID):
+            update.message.reply_text("⛔️ No autorizado.")
+            return
+        bot_status["active"] = True
+        update.message.reply_text("✅ Bot activado.")
 
-        def status_command(update, context):
-            if str(update.effective_chat.id) != str(chat_id):
-                update.message.reply_text("⛔️ No autorizado.")
-                return
-            active_tokens = signal_logic.get_active_candidates_count() if hasattr(signal_logic, 'get_active_candidates_count') else 0
-            update.message.reply_text(
-                f"*Estado del Bot:*\nActivo: {'✅' if bot_status['active'] else '🛑'}\nTokens monitoreados: `{active_tokens}`",
-                parse_mode=ParseMode.MARKDOWN
-            )
+    def stop_command(update, context):
+        if str(update.effective_chat.id) != str(Config.TELEGRAM_CHAT_ID):
+            update.message.reply_text("⛔️ No autorizado.")
+            return
+        bot_status["active"] = False
+        update.message.reply_text("🛑 Bot desactivado.")
 
-        # Agregar más comandos según sea necesario…
-        # Por ejemplo, comando /debug, /top, etc.
+    def status_command(update, context):
+        if str(update.effective_chat.id) != str(Config.TELEGRAM_CHAT_ID):
+            update.message.reply_text("⛔️ No autorizado.")
+            return
+        active_tokens = signal_logic.get_active_candidates_count() if hasattr(signal_logic, 'get_active_candidates_count') else len(signal_logic.token_candidates)
+        update.message.reply_text(f"*Estado del Bot:*\nActivo: {'✅' if bot_status['active'] else '🛑'}\nTokens monitoreados: `{active_tokens}`", parse_mode=ParseMode.MARKDOWN)
 
-        # Comando de configuración (ejemplo)
-        def config_command(update, context):
-            if str(update.effective_chat.id) != str(chat_id):
-                update.message.reply_text("⛔️ No autorizado.")
-                return
-            if not context.args or len(context.args) < 2:
-                update.message.reply_text("Uso: /config <key> <value>")
-                return
-            key = context.args[0]
-            value = context.args[1]
-            try:
-                # Suponiendo que db.update_setting está implementado
-                from db import update_setting
-                update_setting(key, value)
-                update.message.reply_text(f"✅ Configuración actualizada: {key} = {value}")
-            except Exception as e:
-                update.message.reply_text(f"❌ Error: {e}")
+    # Agrega otros comandos según necesites...
+    # Por ejemplo, comando /config, /top, etc.
 
-        try:
-            updater = Updater(bot_token)
-            dispatcher = updater.dispatcher
+    def _dummy_command(update, context):
+        update.message.reply_text("Comando dummy ejecutado.")
 
-            dispatcher.add_handler(CommandHandler("start", start_command))
-            dispatcher.add_handler(CommandHandler("stop", stop_command))
-            dispatcher.add_handler(CommandHandler("status", status_command))
-            dispatcher.add_handler(CommandHandler("config", config_command))
-            # Agregar otros handlers según necesidad…
+    try:
+        updater = Updater(Config.TELEGRAM_BOT_TOKEN)
+        dispatcher = updater.dispatcher
 
-            updater.start_polling()
-            logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
-            return bot_status["active"]
-        except Exception as e:
-            logger.error(f"❌ Error iniciando bot: {e}")
-            return True
+        dispatcher.add_handler(CommandHandler("start", start_command))
+        dispatcher.add_handler(CommandHandler("stop", stop_command))
+        dispatcher.add_handler(CommandHandler("status", status_command))
+        dispatcher.add_handler(CommandHandler("dummy", _dummy_command))
 
-    return process_telegram_commands
+        updater.start_polling()
+        logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
+    except Exception as e:
+        logger.error(f"❌ Error iniciando bot: {e}")
+
+    # La función de comandos no necesita retornar nada, pero para compatibilidad devolvemos un dummy
+    return lambda bot_token, chat_id, signal_logic: bot_status["active"]
 
 def fix_on_cielo_message():
-    """
-    Retorna una función asíncrona para procesar mensajes de Cielo.
-    Asegúrate de que acepte los 4 parámetros: message, wallet_tracker, scoring_system, signal_logic y scalper_monitor.
-    """
     async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
         try:
             import json
@@ -133,8 +105,9 @@ def fix_on_cielo_message():
                 if not normalized_tx["wallet"]:
                     logger.debug("Transacción ignorada: Falta wallet")
                     return
-
-                # Procesar según tipo de transacción
+                
+                is_tracked = normalized_tx["wallet"] in wallet_tracker.get_wallets()
+                
                 if tx_data.get("tx_type") == "swap":
                     token0_native = tx_data.get("token0_address") in ["native", "So11111111111111111111111111111111111111112"]
                     token1_native = tx_data.get("token1_address") in ["native", "So11111111111111111111111111111111111111112"]
@@ -170,10 +143,9 @@ def fix_on_cielo_message():
                 min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
                 if normalized_tx["amount_usd"] < min_tx_usd:
                     return
-                if not normalized_tx.get("token") or normalized_tx["token"] in ["native", "So11111111111111111111111111111111111111112"]:
+                if not normalized_tx.get("token") or normalized_tx.get("token") in ["native", "So11111111111111111111111111111111111111112"]:
                     logger.debug("Transacción ignorada: Token es nativo o falta")
                     return
-                
                 logger.info(f"Transacción normalizada: {normalized_tx['wallet']} | {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
                 signal_logic.process_transaction(normalized_tx)
                 scalper_monitor.process_transaction(normalized_tx)
