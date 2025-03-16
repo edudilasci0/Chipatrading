@@ -72,7 +72,7 @@ def enhance_alpha_detection():
     async def detect_emerging_alpha_tokens(self):
         try:
             now = time.time()
-            cutoff = now - 3600  # Sólo tokens recientes (última hora)
+            cutoff = now - 3600  # Última hora
             alpha_candidates = []
             for token, data in self.token_candidates.items():
                 if data["first_seen"] < cutoff:
@@ -123,15 +123,11 @@ class SignalLogic:
         self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
-        # Inicializar DexScreener como fuente alternativa (si se implementa)
-        if hasattr(self, 'dexscreener_client'):
-            pass  # Si ya está inicializado externamente
-        else:
-            try:
-                from dexscreener_client import DexScreenerClient
-                self.dexscreener_client = DexScreenerClient()
-            except ImportError:
-                self.dexscreener_client = None
+        try:
+            from dexscreener_client import DexScreenerClient
+            self.dexscreener_client = DexScreenerClient()
+        except ImportError:
+            self.dexscreener_client = None
         self.performance_tracker = None
         self.token_candidates = {}
         self.recent_signals = []
