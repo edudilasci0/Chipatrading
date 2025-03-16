@@ -7,7 +7,7 @@ logger = logging.getLogger("dexscreener_client")
 
 class DexScreenerClient:
     """
-    Cliente minimalista para DexScreener.
+    Cliente minimalista para DexScreener
     """
     def __init__(self):
         self.cache = {}
@@ -47,10 +47,7 @@ class DexScreenerClient:
                         "price": price,
                         "market_cap": mcap,
                         "volume": h1_vol,
-                        "volume_growth": {
-                            "growth_5m": growth_5m,
-                            "growth_1h": growth_1h
-                        },
+                        "volume_growth": {"growth_5m": growth_5m, "growth_1h": growth_1h},
                         "source": "dexscreener"
                     }
                     self.cache[token] = {"data": result, "timestamp": now}
