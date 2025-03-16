@@ -12,9 +12,6 @@ class HeliusClient:
         self.cache_duration = int(Config.get("HELIUS_CACHE_DURATION", 300))
     
     def _request(self, endpoint, params, version="v1"):
-        """
-        Realiza una solicitud a la API de Helius
-        """
         url = f"https://api.helius.xyz/{version}/{endpoint}"
         if version == "v1":
             params["apiKey"] = self.api_key
@@ -30,13 +27,11 @@ class HeliusClient:
             return None
     
     def get_token_data(self, token):
-        """
-        Obtiene datos del token usando los endpoints correctos de Helius
-        """
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
         data = None
+        # Intentar con API v1
         endpoint = f"tokens/{token}"
         data = self._request(endpoint, {}, version="v1")
         if not data:
