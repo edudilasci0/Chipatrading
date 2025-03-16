@@ -9,17 +9,13 @@ def send_telegram_message(message):
     if len(message) > 4096:
         message = message[:4090] + "...\n[Mensaje truncado]"
         logger.warning("Mensaje truncado por longitud.")
-    
     bot_token = Config.TELEGRAM_BOT_TOKEN
     chat_id = Config.TELEGRAM_CHAT_ID
-    
     if not bot_token or not chat_id:
         logger.warning("⚠️ Credenciales de Telegram faltantes.")
         return False
-    
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     data = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-    
     retries = 3
     delay = 2
     for i in range(retries):
@@ -41,12 +37,10 @@ def format_signal_message(signal_data, alert_type="signal"):
     confidence = signal_data.get("confidence", 0)
     tx_velocity = signal_data.get("tx_velocity", "N/A")
     buy_ratio = signal_data.get("buy_ratio", "N/A")
-    
     solscan_link = f"https://solscan.io/token/{token}"
     birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
     neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
     solanabeach_link = f"https://solanabeach.io/token/{token}"
-    
     if alert_type == "signal":
         header = "🔥 *SEÑAL DE TRADING*"
     elif alert_type == "early_alpha":
@@ -55,7 +49,6 @@ def format_signal_message(signal_data, alert_type="signal"):
         header = "🔥 *Daily Runner Alert*"
     else:
         header = "⚡ *Alerta*"
-    
     message = (
         f"{header}\n\n"
         f"Token: `{token}`\n"
@@ -132,8 +125,8 @@ def fix_telegram_commands():
     async def process_telegram_commands(bot_token, chat_id, signal_logic):
         import db
         try:
-            from telegram import ParseMode
             from telegram.ext import Updater, CommandHandler
+            from telegram import ParseMode
         except ImportError:
             logger.error("Instalar python-telegram-bot: pip install python-telegram-bot==13.15")
             return True
@@ -239,6 +232,35 @@ def fix_telegram_commands():
             except Exception as e:
                 update.message.reply_text(f"❌ Error: {e}")
 
+        def chart_command(update, context):
+            from telegram import ParseMode
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ No autorizado.")
+                return
+            if not context.args:
+                update.message.reply_text("Uso: /chart <token_address>")
+                return
+            token = context.args[0]
+            try:
+                performances = db.get_signal_performance(token=token)
+                if not performances:
+                    update.message.reply_text(f"No hay datos de rendimiento para el token {token}")
+                    return
+                data_points = [(p["timeframe"], p["percent_change"]) for p in performances]
+                order = {"3m": 1, "5m": 2, "10m": 3, "30m": 4, "1h": 5, "2h": 6, "4h": 7, "24h": 8}
+                data_points.sort(key=lambda x: order.get(x[0], 9))
+                result = "*Rendimiento de token*\n"
+                result += f"`{token}`\n\n"
+                for timeframe, percent in data_points:
+                    emoji = "🟢" if percent >= 0 else "🔴"
+                    bar_length = 20
+                    filled_length = int(round(bar_length * abs(percent) / 100))
+                    bar = "█" * filled_length + "-" * (bar_length - filled_length)
+                    result += f"{emoji} *{timeframe}*: {percent:.2f}% [{bar}]\n"
+                update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                update.message.reply_text(f"❌ Error generando gráfico: {e}")
+
         try:
             from telegram.ext import Updater, CommandHandler
             from telegram import ParseMode
@@ -261,6 +283,5 @@ def fix_telegram_commands():
 
         updater.start_polling()
         logger.info("✅ Bot de Telegram iniciado - Comandos habilitados")
-        # Retornamos un valor (booleano) para indicar estado, sin envolverlo en lambda
         return bot_status["active"]
     return process_telegram_commands
