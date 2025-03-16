@@ -1,85 +1,37 @@
+import os
+import sys
 import time
-import json
 import asyncio
-import requests
+import json
 import logging
+import websockets
+
 from config import Config
 
 logger = logging.getLogger("cielo_api")
 
-class HeliusClient:
-    def __init__(self, api_key):
-        self.api_key = api_key
+class CieloAPI:
+    """
+    Clase para manejar la conexión WebSocket a la API de Cielo.
+    Se encarga de suscribirse a las wallets y distribuir mensajes a un callback.
+    """
+
+    def __init__(self, api_key=None):
+        self.api_key = api_key if api_key else Config.CIELO_API_KEY
         self.ws_url = "wss://feed-api.cielo.finance/api/v1/ws"
         self.last_connection_attempt = 0
         self.connection_failures = 0
 
-    def _request(self, endpoint, params, version="v1"):
-        url = f"https://api.helius.xyz/{version}/{endpoint}"
-        if version == "v1":
-            params["apiKey"] = self.api_key
-        else:  # v0
-            params["api-key"] = self.api_key
-        try:
-            logger.debug(f"Solicitando Helius {version}: {url}")
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error en HeliusClient._request ({version}): {e}")
-            return None
-
-    def get_token_data(self, token):
-        now = time.time()
-        if token in getattr(self, "cache", {}) and now - self.cache[token]["timestamp"] < Config.HELIUS_CACHE_DURATION:
-            return self.cache[token]["data"]
-        data = None
-        endpoint = f"tokens/{token}"
-        data = self._request(endpoint, {}, version="v1")
-        if not data:
-            data = self._request(endpoint, {}, version="v0")
-        if not data:
-            endpoint = f"addresses/{token}/tokens"
-            data = self._request(endpoint, {}, version="v0")
-        if data:
-            if isinstance(data, list) and data:
-                data = data[0]
-            normalized_data = {
-                "price": self._extract_value(data, ["price", "priceUsd"]),
-                "market_cap": self._extract_value(data, ["marketCap", "market_cap"]),
-                "volume": self._extract_value(data, ["volume24h", "volume", "volumeUsd"]),
-                "volume_growth": {
-                    "growth_5m": self._normalize_percentage(self._extract_value(data, ["volumeChange5m", "volume_change_5m"])),
-                    "growth_1h": self._normalize_percentage(self._extract_value(data, ["volumeChange1h", "volume_change_1h"]))
-                },
-                "source": "helius"
-            }
-            if not hasattr(self, "cache"):
-                self.cache = {}
-            self.cache[token] = {"data": normalized_data, "timestamp": now}
-            return normalized_data
-        logger.warning(f"No se pudieron obtener datos para el token {token} desde Helius")
-        return None
-
-    def _extract_value(self, data, possible_keys):
-        for key in possible_keys:
-            if key in data:
-                return data[key]
-        return 0
-
-    def _normalize_percentage(self, value):
-        if value is None:
-            return 0
-        if value > 1 or value < -1:
-            return value / 100
-        return value
-
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
+        """
+        Suscribe múltiples wallets en la conexión WebSocket.
+        """
         subscription_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],
         }
-        chunk_size = 50
+        
+        chunk_size = 50  # Procesamos en bloques pequeños
         for i in range(0, len(wallets), chunk_size):
             chunk = wallets[i:i+chunk_size]
             for wallet in chunk:
@@ -89,29 +41,35 @@ class HeliusClient:
                     "filter": subscription_params
                 }
                 await ws.send(json.dumps(msg))
+                # Pausa corta para evitar saturar la API
                 await asyncio.sleep(0.02)
             if i + chunk_size < len(wallets):
-                print(f"  Progreso: {i+chunk_size}/{len(wallets)} wallets suscritas...")
+                logger.info(f"Progreso: {i+chunk_size}/{len(wallets)} wallets suscritas...")
                 await asyncio.sleep(0.5)
-        print("✅ Todas las wallets han sido suscritas")
+        logger.info("✅ Todas las wallets han sido suscritas")
 
     async def _ping_periodically(self, ws):
+        """
+        Envía pings periódicos para mantener viva la conexión.
+        """
         while True:
             try:
-                await asyncio.sleep(300)
+                await asyncio.sleep(300)  # cada 5 minutos
                 ping_message = {"type": "ping"}
                 await ws.send(json.dumps(ping_message))
-                logger.info("Ping enviado a Cielo WebSocket")
+                logger.debug("📤 Ping enviado a Cielo WebSocket")
             except Exception as e:
-                logger.error(f"Error enviando ping: {e}")
+                logger.warning(f"Error enviando ping: {e}")
                 break
 
     async def _reconnect_with_backoff(self, attempt=0, max_attempts=10):
+        """
+        Manejo mejorado de reconexiones con backoff exponencial.
+        """
         if attempt >= max_attempts:
-            logger.critical("Número máximo de intentos alcanzado. Reiniciando completamente...")
+            logger.critical("Número máximo de intentos alcanzado. Reiniciando conexión...")
             from telegram_utils import send_telegram_message
             send_telegram_message("❌ *Error Crítico*: Conexión a Cielo perdida tras múltiples intentos. Reiniciando...")
-            await asyncio.sleep(60)
             return False
         import random
         delay = min(30, (2 ** attempt) * (0.8 + 0.4 * random.random()))
@@ -120,9 +78,12 @@ class HeliusClient:
         return True
 
     async def run_forever_wallets(self, wallets, on_message_callback, filter_params=None):
+        """
+        Mantiene una conexión WebSocket abierta y se suscribe a las wallets.
+        Reintenta la conexión en caso de error usando backoff exponencial.
+        """
         attempt = 0
         max_retry_delay = 60
-        import websockets
         while True:
             try:
                 self.last_connection_attempt = time.time()
@@ -136,6 +97,8 @@ class HeliusClient:
                     try:
                         async for message in ws:
                             try:
+                                # Log de depuración
+                                await self.log_raw_message(message)
                                 await on_message_callback(message)
                             except Exception as e:
                                 logger.error(f"Error procesando mensaje: {e}", exc_info=True)
@@ -146,7 +109,7 @@ class HeliusClient:
                             await ping_task
                         except asyncio.CancelledError:
                             pass
-            except (asyncio.TimeoutError, websockets.ConnectionClosed, OSError) as e:
+            except (websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
                 attempt += 1
                 retry_delay = min(2 ** attempt, max_retry_delay)
@@ -156,7 +119,15 @@ class HeliusClient:
                 self.connection_failures += 1
                 attempt += 1
                 retry_delay = min(2 ** attempt, max_retry_delay)
-                logger.error(f"Error inesperado: {e}", exc_info=True)
+                logger.error(f"🚨 Error inesperado ({self.connection_failures}): {e}", exc_info=True)
                 await asyncio.sleep(retry_delay)
 
-# También se exporta HeliusClient
+    async def log_raw_message(self, message):
+        """
+        Registra el mensaje recibido para depuración.
+        """
+        try:
+            data = json.loads(message)
+            logger.debug(f"Mensaje recibido: {data.get('type', 'No type')}")
+        except Exception as e:
+            logger.error(f"Error al loguear mensaje: {e}")
