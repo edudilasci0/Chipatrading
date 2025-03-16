@@ -1,8 +1,7 @@
 import time
-import requests
 import asyncio
+import requests
 import logging
-from config import Config
 
 logger = logging.getLogger("dexscreener_client")
 
@@ -17,9 +16,6 @@ class DexScreenerClient:
         self.rate_limit = 10  # 10 peticiones por minuto
     
     async def _apply_rate_limiting(self):
-        """
-        Aplica rate limiting para respetar los límites de DexScreener.
-        """
         now = time.time()
         self.request_timestamps = [ts for ts in self.request_timestamps if now - ts < 60]
         if len(self.request_timestamps) >= self.rate_limit:
@@ -30,15 +26,10 @@ class DexScreenerClient:
         self.request_timestamps.append(time.time())
     
     async def fetch_token_data(self, token):
-        """
-        Obtiene datos de DexScreener para un token específico.
-        """
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
-        
         await self._apply_rate_limiting()
-        
         try:
             url = f"https://api.dexscreener.com/latest/dex/tokens/{token}"
             response = requests.get(url, timeout=5)
