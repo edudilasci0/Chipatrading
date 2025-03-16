@@ -80,12 +80,13 @@ async def main():
             asyncio.create_task(scalper_monitor._periodic_cleanup())
         ]
         
-        cielo_client = CieloAPI(Config.CIELO_API_KEY)
-        cielo_message_handler = fix_on_cielo_message()
+        cielo_client = CieloAPI(Config.HELIUS_API_KEY)
+        # Importante: ahora llamamos fix_on_cielo_message pasando los parámetros para obtener una función que solo requiera 'message'
+        cielo_message_handler = fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_monitor)
         cielo_task = asyncio.create_task(
             cielo_client.run_forever_wallets(
                 wallets, 
-                cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                cielo_message_handler,
                 {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
             )
         )
@@ -110,7 +111,7 @@ async def main():
                                 tasks[i] = asyncio.create_task(
                                     cielo_client.run_forever_wallets(
                                         wallets, 
-                                        cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                                        cielo_message_handler,
                                         {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
                                     )
                                 )
