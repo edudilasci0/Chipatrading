@@ -15,7 +15,7 @@ logger = logging.getLogger("chipatrading")
 
 from config import Config
 from wallet_tracker import WalletTracker
-from cielo_api import CieloAPI
+from cielo_api import HeliusClient, CieloAPI
 from scoring import ScoringSystem
 from signal_logic import SignalLogic, optimize_signal_confidence, enhance_alpha_detection
 from performance_tracker import PerformanceTracker
@@ -28,7 +28,7 @@ bot_running = True
 async def cleanup_discoveries_periodically(scalper_monitor, interval=3600):
     while True:
         try:
-            # Aquí podrías agregar lógica de limpieza específica si es necesario
+            # Aquí podrías agregar lógica de limpieza específica (si la deseas)
             await asyncio.sleep(interval)
         except Exception as e:
             logger.error(f"Error in cleanup_discoveries: {e}")
@@ -50,7 +50,6 @@ async def main():
         scoring_system = ScoringSystem()
         helius_client = None
         if Config.HELIUS_API_KEY:
-            from cielo_api import HeliusClient
             helius_client = HeliusClient(Config.HELIUS_API_KEY)
             logger.info("✅ Cliente Helius inicializado")
         
@@ -70,8 +69,10 @@ async def main():
         signal_logic.wallet_tracker = wallet_tracker
         signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
         signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
+        
         performance_tracker = PerformanceTracker(token_data_service=helius_client)
         signal_logic.performance_tracker = performance_tracker
+        
         scalper_monitor = ScalperActivityMonitor()
         
         telegram_commands = fix_telegram_commands()
@@ -84,10 +85,10 @@ async def main():
             asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor)),
         ]
         
-        cielo_client = CieloAPI(Config.CIELO_API_KEY)
+        cielo_api_instance = CieloAPI(Config.CIELO_API_KEY)
         cielo_message_handler = fix_on_cielo_message(wallet_tracker, scoring_system, signal_logic, scalper_monitor)
         cielo_task = asyncio.create_task(
-            cielo_client.run_forever_wallets(
+            cielo_api_instance.run_forever_wallets(
                 wallets,
                 cielo_message_handler,
                 {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
@@ -112,7 +113,7 @@ async def main():
                                 logger.info("Cleanup task restarted")
                             elif i == 2:
                                 tasks[i] = asyncio.create_task(
-                                    cielo_client.run_forever_wallets(
+                                    cielo_api_instance.run_forever_wallets(
                                         wallets,
                                         cielo_message_handler,
                                         {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
