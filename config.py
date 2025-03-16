@@ -1,28 +1,61 @@
 import os
 import sys
+import json
 
 class Config:
     TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "bb4dbdac-9ac7-4c42-97d3-f6435d0674da")
-    HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "4314df2b-76aa-406a-8635-b9b0e6a0a51e")
+    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "")
+    HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
     DATABASE_PATH = os.environ.get("DATABASE_PATH", "tradingbot.db")
-    
     MIN_TRANSACTION_USD = 200
     MIN_TRADERS_FOR_SIGNAL = 2
     SIGNAL_WINDOW_SECONDS = 540
     MIN_CONFIDENCE_THRESHOLD = 0.3
     MIN_VOLUME_USD = 2000
-    MIN_MARKETCAP = 100000
-
+    HIGH_VOLUME_THRESHOLD = 5000
     DEFAULT_SCORE = 5.0
     MAX_SCORE = 10.0
+    MIN_SCORE = 0.0
+    BUY_SCORE_INCREASE = 0.1
+    SELL_SCORE_INCREASE = 0.2
+    MIN_MARKETCAP = 100000
+    MAX_MARKETCAP = 500000000
+    VOL_NORMALIZATION_FACTOR = 10000.0
+    MEMECOIN_CONFIG = {
+        "MIN_VOLUME_USD": 1000,
+        "MIN_CONFIDENCE": 0.4,
+        "VOLUME_GROWTH_THRESHOLD": 0.3,
+        "TX_RATE_THRESHOLD": 10
+    }
+    SIGNAL_THROTTLING = 10
 
-    HELIUS_CACHE_DURATION = 300
+    _dynamic_config = {}
+
+    @classmethod
+    def load_dynamic_config(cls, db_connection=None):
+        try:
+            import db
+            settings = db.execute_cached_query("SELECT key, value FROM bot_settings")
+            for setting in settings:
+                key = setting['key']
+                value = setting['value']
+                cls._dynamic_config[key] = value
+            print(f"Configuración dinámica cargada: {len(cls._dynamic_config)} parámetros")
+        except Exception as e:
+            print(f"Error cargando configuración dinámica: {e}")
+
+    @classmethod
+    def get(cls, key, default=None):
+        if key in cls._dynamic_config:
+            return cls._dynamic_config[key]
+        if hasattr(cls, key.upper()):
+            return getattr(cls, key.upper())
+        return default
 
     @classmethod
     def check_required_config(cls):
-        required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "CIELO_API_KEY", "HELIUS_API_KEY"]
+        required_vars = ["DATABASE_PATH", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "CIELO_API_KEY", "HELIUS_API_KEY"]
         missing = [var for var in required_vars if not getattr(cls, var)]
         if missing:
             print(f"🚨 ERROR: Faltan variables de entorno: {', '.join(missing)}")
