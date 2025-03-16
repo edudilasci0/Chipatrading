@@ -12,9 +12,6 @@ class HeliusClient:
         self.cache_duration = int(Config.get("HELIUS_CACHE_DURATION", 300))
     
     def _request(self, endpoint, params, version="v1"):
-        """
-        Realiza una solicitud a la API de Helius.
-        """
         url = f"https://api.helius.xyz/{version}/{endpoint}"
         if version == "v1":
             params["apiKey"] = self.api_key
@@ -30,13 +27,9 @@ class HeliusClient:
             return None
     
     def get_token_data(self, token):
-        """
-        Obtiene datos del token usando los endpoints correctos de Helius.
-        """
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
-        
         data = None
         endpoint = f"tokens/{token}"
         data = self._request(endpoint, {}, version="v1")
@@ -45,7 +38,6 @@ class HeliusClient:
         if not data:
             endpoint = f"addresses/{token}/tokens"
             data = self._request(endpoint, {}, version="v0")
-        
         if data:
             if isinstance(data, list) and data:
                 data = data[0]
@@ -54,18 +46,13 @@ class HeliusClient:
                 "market_cap": self._extract_value(data, ["marketCap", "market_cap"]),
                 "volume": self._extract_value(data, ["volume24h", "volume", "volumeUsd"]),
                 "volume_growth": {
-                    "growth_5m": self._normalize_percentage(
-                        self._extract_value(data, ["volumeChange5m", "volume_change_5m"])
-                    ),
-                    "growth_1h": self._normalize_percentage(
-                        self._extract_value(data, ["volumeChange1h", "volume_change_1h"])
-                    )
+                    "growth_5m": self._normalize_percentage(self._extract_value(data, ["volumeChange5m", "volume_change_5m"])),
+                    "growth_1h": self._normalize_percentage(self._extract_value(data, ["volumeChange1h", "volume_change_1h"]))
                 },
                 "source": "helius"
             }
             self.cache[token] = {"data": normalized_data, "timestamp": now}
             return normalized_data
-        
         logger.warning(f"No se pudieron obtener datos para el token {token} desde Helius")
         return None
     
