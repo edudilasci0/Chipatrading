@@ -6,8 +6,7 @@ import db
 
 logger = logging.getLogger("signal_logic")
 
-# Funciones de nivel módulo para optimizar la confianza y detectar tokens emergentes
-
+# Función para optimizar la confianza en la señal
 def optimize_signal_confidence():
     def compute_optimized_confidence(self, wallet_scores, volume_1h, market_cap, 
                                      recent_volume_growth=0, token_type=None, 
@@ -15,9 +14,10 @@ def optimize_signal_confidence():
         if not wallet_scores:
             return 0.0
         import math
+        max_score = float(Config.get("MAX_SCORE", 10.0))
         exp_scores = [min(score ** 1.5, 12.0) for score in wallet_scores]
-        weighted_avg = sum(exp_scores) / (len(exp_scores) * (Config.MAX_SCORE ** 1.5)) * Config.MAX_SCORE
-        score_factor = weighted_avg / Config.MAX_SCORE
+        weighted_avg = sum(exp_scores) / (len(exp_scores) * (max_score ** 1.5)) * max_score
+        score_factor = weighted_avg / max_score
 
         unique_wallets = len(wallet_scores)
         wallet_diversity = min(unique_wallets / 10.0, 1.0)
@@ -29,7 +29,7 @@ def optimize_signal_confidence():
 
         tx_velocity_normalized = min(tx_velocity / 20.0, 1.0)
         pump_dump_risk = 0
-        if tx_velocity > 15 and elite_traders == 0 and high_quality_traders / max(1, len(wallet_scores)) < 0.2:
+        if tx_velocity > 15 and elite_traders == 0 and (high_quality_traders / max(1, len(wallet_scores))) < 0.2:
             pump_dump_risk = 0.3
 
         wallet_factor = (score_factor * 0.4) + (wallet_diversity * 0.3) + (quality_factor * 0.2) + elite_bonus - pump_dump_risk
@@ -70,11 +70,12 @@ def optimize_signal_confidence():
         return round(normalized, 3)
     return compute_optimized_confidence
 
+# Función para detectar tokens emergentes (alpha)
 def enhance_alpha_detection():
     async def detect_emerging_alpha_tokens(self):
         try:
             now = time.time()
-            cutoff = now - 3600
+            cutoff = now - 3600  # Consideramos tokens vistos en la última hora
             alpha_candidates = []
             for token, data in self.token_candidates.items():
                 if data["first_seen"] < cutoff:
@@ -191,6 +192,7 @@ class SignalLogic:
                 })
             except Exception as e:
                 logger.error(f"Error saving transaction in DB: {e}")
+            # Si es una transacción de alto volumen y de trader elite, se fuerza el procesamiento de candidatos
             if amount_usd > float(Config.get("HIGH_VOLUME_THRESHOLD", 5000)) and candidate["whale_activity"]:
                 logger.info(f"High volume transaction detected: {token} | ${amount_usd:.2f}")
                 asyncio.create_task(self._process_candidates())
@@ -201,6 +203,7 @@ class SignalLogic:
     async def get_token_market_data(self, token):
         data = None
         source = "none"
+        # Para tokens nuevos tipo meme, asignamos datos predeterminados
         if token.endswith('pump') or token.endswith('ai') or token.endswith('erc') or token.endswith('inu'):
             return {
                 "price": 0.00001,
@@ -267,7 +270,7 @@ class SignalLogic:
                     wallet = tx.get("wallet")
                     if wallet in tracked_wallets and tx.get("type") == "BUY":
                         traders_with_buys.setdefault(wallet, []).append(tx)
-                if len(traders_with_buys) < 2:
+                if len(traders_with_buys) < int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2)):
                     continue
                 logger.info(f"Token {token} has {len(traders_with_buys)} known traders!")
                 trader_count = len(data["wallets"])
@@ -275,7 +278,7 @@ class SignalLogic:
                 buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
                 buy_ratio = len(buy_txs) / max(1, len(recent_txs))
                 timestamps = [tx["timestamp"] for tx in recent_txs]
-                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps))/60) if len(timestamps) >= 2 else 0
+                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps)) / 60) if len(timestamps) >= 2 else 0
                 wallet_scores = [self.scoring_system.get_score(wallet) for wallet in traders_with_buys.keys()]
                 is_pump_token = token.endswith('pump')
                 token_type = "meme" if is_pump_token else "standard"
@@ -285,7 +288,7 @@ class SignalLogic:
                 if not market_data:
                     market_data = await self.get_token_market_data(token)
                 volume_growth = market_data.get("volume_growth", {}).get("growth_5m", 0)
-                confidence = self.scoring_system.compute_confidence(
+                confidence = self.compute_confidence(
                     wallet_scores=wallet_scores,
                     volume_1h=volume_usd,
                     market_cap=market_data.get("market_cap", 0),
@@ -405,3 +408,17 @@ class SignalLogic:
             logger.info(f"Signal generated for {token} with confidence {confidence:.2f}")
         except Exception as e:
             logger.error(f"Error in _generate_signals: {e}", exc_info=True)
+    
+    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0, token_type=None, whale_activity=False):
+        if not wallet_scores:
+            return 0.0
+        avg_score = sum(wallet_scores) / len(wallet_scores)
+        confidence = avg_score / 10.0 * 0.7
+        if volume_1h > 1000:
+            confidence += 0.1
+        if market_cap < 5000000:
+            confidence += 0.1
+        return min(1.0, confidence)
+    
+    def get_active_candidates_count(self):
+        return len(self.token_candidates)
