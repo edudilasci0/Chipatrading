@@ -14,6 +14,9 @@ logging.basicConfig(
 logger = logging.getLogger("chipatrading")
 
 from config import Config
+# Inicializar explícitamente la configuración al comienzo
+Config.initialize()
+
 from wallet_tracker import WalletTracker
 from cielo_api import CieloAPI  # WebSocket connection to Cielo
 from helius_client import HeliusClient  # For Helius API calls
@@ -45,7 +48,7 @@ async def main():
         
         wallet_tracker = WalletTracker()
         wallets = wallet_tracker.get_wallets()
-        logger.info(f"Wallets loaded: {wallets}")
+        logger.info(f"Wallets loaded: {len(wallets)}")
         
         scoring_system = ScoringSystem()
         helius_client = HeliusClient(Config.HELIUS_API_KEY)
