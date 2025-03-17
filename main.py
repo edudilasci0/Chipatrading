@@ -14,12 +14,12 @@ logging.basicConfig(
 logger = logging.getLogger("chipatrading")
 
 from config import Config
-# Inicializar explícitamente la configuración al comienzo
+# Asegurarse de inicializar la configuración
 Config.initialize()
 
 from wallet_tracker import WalletTracker
-from cielo_api import CieloAPI  # WebSocket connection to Cielo
-from helius_client import HeliusClient  # For Helius API calls
+from cielo_api import CieloAPI   # Este módulo se encarga de la conexión WebSocket a Cielo
+from helius_client import HeliusClient  # Cliente para consultas a Helius
 from scoring import ScoringSystem
 from signal_logic import SignalLogic, optimize_signal_confidence, enhance_alpha_detection
 from performance_tracker import PerformanceTracker
@@ -32,7 +32,7 @@ bot_running = True
 async def cleanup_discoveries_periodically(scalper_monitor, interval=3600):
     while True:
         try:
-            # Aquí se puede implementar lógica de limpieza de tokens inactivos, si se desea.
+            # Aquí se podría implementar la lógica para limpiar datos antiguos
             await asyncio.sleep(interval)
         except Exception as e:
             logger.error(f"Error in cleanup_discoveries: {e}")
@@ -62,7 +62,7 @@ async def main():
         except Exception as e:
             logger.warning(f"GMGN Client initialization failed: {e}")
         
-        # Initialize DexScreenerClient as backup
+        # Inicializar DexScreenerClient como respaldo (si está implementado)
         dexscreener_client = None
         try:
             from dexscreener_client import DexScreenerClient
@@ -72,11 +72,11 @@ async def main():
             logger.warning(f"DexScreener Client initialization failed: {e}")
         
         signal_logic = SignalLogic(scoring_system=scoring_system, helius_client=helius_client, gmgn_client=gmgn_client)
-        signal_logic.wallet_tracker = wallet_tracker  # Set wallet tracker reference
+        signal_logic.wallet_tracker = wallet_tracker  # Asignar referencia a WalletTracker
         if dexscreener_client:
             signal_logic.dexscreener_client = dexscreener_client
         
-        # Apply module-level optimizations to SignalLogic
+        # Aplicar optimizaciones al objeto SignalLogic
         signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
         signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
         if not hasattr(signal_logic, 'get_active_candidates_count'):
@@ -87,9 +87,10 @@ async def main():
         
         scalper_monitor = ScalperActivityMonitor()
         
-        # Fix telegram commands call: call the function returned by fix_telegram_commands without await.
+        # Iniciar el bot de Telegram usando fix_telegram_commands (esta función inicia internamente el polling)
         telegram_commands_function = fix_telegram_commands()
-        is_bot_active = telegram_commands_function(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
+        # Nota: No usamos 'await' aquí, ya que telegram_commands_function no es una coroutine.
+        telegram_commands_function(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
         
         send_telegram_message("🚀 *Trading Bot Started*\nMonitoring Solana transactions...")
         
@@ -100,10 +101,11 @@ async def main():
         
         cielo_client = CieloAPI(Config.CIELO_API_KEY)
         cielo_message_handler = fix_on_cielo_message()
+        # CORRECCIÓN PRINCIPAL: usar lambda para pasar correctamente todos los parámetros a on_cielo_message
         tasks.append(asyncio.create_task(
             cielo_client.run_forever_wallets(
                 wallets,
-                cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                lambda message: cielo_message_handler(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor),
                 {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
             )
         ))
@@ -127,7 +129,7 @@ async def main():
                                 tasks[i] = asyncio.create_task(
                                     cielo_client.run_forever_wallets(
                                         wallets,
-                                        cielo_message_handler(wallet_tracker, scoring_system, signal_logic, scalper_monitor),
+                                        lambda message: cielo_message_handler(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor),
                                         {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
                                     )
                                 )
@@ -136,6 +138,7 @@ async def main():
                         logger.error(f"Error checking task #{i}: {e}", exc_info=True)
             logger.info(f"Bot status: {len(signal_logic.token_candidates)} tokens monitored, {db.count_signals_today()} signals today")
             await asyncio.sleep(30)
+            
     except Exception as e:
         logger.error(f"Critical error in main: {e}", exc_info=True)
         send_telegram_message(f"⚠️ *Critical error*: Bot stopped: {e}")
