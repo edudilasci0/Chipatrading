@@ -1,11 +1,9 @@
+# performance_tracker.py
 import asyncio
 import time
-import requests
-import json
+import logging
 from datetime import datetime, timedelta
 import db
-from telegram_utils import send_telegram_message
-import logging
 
 logger = logging.getLogger("performance_tracker")
 
@@ -141,6 +139,9 @@ class PerformanceTracker:
             volatility: Volatilidad calculada
             trend: Predicción de tendencia (Ascendente, Descendente, Estable)
         """
+        # Importación dinámica para evitar la dependencia circular
+        from telegram_utils import send_telegram_message
+        
         # Selección de emoji según el desempeño
         if percent_change > 50:
             emoji = "🚀"  # Excelente
