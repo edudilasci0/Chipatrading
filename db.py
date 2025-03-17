@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from config import Config
 import threading
+import random
 
 logger = logging.getLogger("database")
 handler = logging.StreamHandler()
@@ -237,13 +238,13 @@ def init_db():
                         logger.error(f"⚠️ Error al crear {idx_name}: {e2}")
                         conn.rollback()
             default_settings = [
-                ("min_transaction_usd", str(Config.MIN_TRANSACTION_USD)),
-                ("min_traders_for_signal", str(Config.MIN_TRADERS_FOR_SIGNAL)),
+                ("min_transaction_usd", str(Config.get("MIN_TRANSACTION_USD", 200))),
+                ("min_traders_for_signal", str(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))),
                 ("signal_window_seconds", "540"),
-                ("min_confidence_threshold", str(Config.MIN_CONFIDENCE_THRESHOLD)),
+                ("min_confidence_threshold", str(Config.get("MIN_CONFIDENCE_THRESHOLD", 0.3))),
                 ("rugcheck_min_score", "50"),
-                ("min_volume_usd", str(Config.MIN_VOLUME_USD)),
-                ("signal_throttling", "10"),
+                ("min_volume_usd", str(Config.get("MIN_VOLUME_USD", 2000))),
+                ("signal_throttling", str(Config.get("SIGNAL_THROTTLING", 10))),
                 ("adapt_confidence_threshold", "true"),
                 ("high_quality_trader_score", "7.0")
             ]
@@ -338,7 +339,7 @@ def get_wallet_score(wallet):
     if results:
         return float(results[0]['score'])
     else:
-        return Config.DEFAULT_SCORE
+        return Config.get("DEFAULT_SCORE", 5.0)
 
 @retry_db_operation()
 def save_signal(token, trader_count, confidence, initial_price=None):
@@ -559,3 +560,56 @@ def save_failed_token(token, reason):
     """
     execute_cached_query(query, (token, reason), write_query=True)
     return True
+
+@retry_db_operation()
+def save_signal_performance(token, signal_id, timeframe, percent_change, confidence, traders_count):
+    query = """
+    INSERT INTO signal_performance (token, signal_id, timeframe, percent_change, confidence, traders_count)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    ON CONFLICT (token, timeframe) 
+    DO UPDATE SET 
+        percent_change = EXCLUDED.percent_change,
+        confidence = EXCLUDED.confidence,
+        traders_count = EXCLUDED.traders_count,
+        timestamp = NOW()
+    """
+    params = (token, signal_id, timeframe, percent_change, confidence, traders_count)
+    execute_cached_query(query, params, write_query=True)
+    return True
+
+@retry_db_operation()
+def get_signals_without_outcomes():
+    query = """
+    SELECT id, token, confidence, trader_count, initial_price
+    FROM signals
+    WHERE outcome_collected = FALSE
+    ORDER BY created_at DESC
+    LIMIT 50
+    """
+    return execute_cached_query(query, max_age=60)
+
+@retry_db_operation()
+def mark_signal_outcome_collected(signal_id):
+    query = """
+    UPDATE signals
+    SET outcome_collected = TRUE
+    WHERE id = %s
+    """
+    execute_cached_query(query, (signal_id,), write_query=True)
+    return True
+
+@retry_db_operation()
+def get_trader_names_mapping():
+    """
+    Retorna un mapeo de wallets a nombres de traders según los datos almacenados
+    """
+    query = """
+    SELECT wallet, value as name
+    FROM bot_settings
+    WHERE key LIKE 'trader_name_%'
+    """
+    results = execute_cached_query(query, max_age=3600)
+    mapping = {}
+    for row in results:
+        mapping[row['wallet']] = row['name']
+    return mapping
