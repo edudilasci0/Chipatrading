@@ -1,155 +1,138 @@
-import os
-import sys
-import time
-import signal
-import asyncio
+# telegram_utils.py
 import logging
-from datetime import datetime
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger("chipatrading")
-
+import requests
+import time
 from config import Config
-# Asegurarse de inicializar la configuración
-Config.initialize()
-
-from wallet_tracker import WalletTracker
-from cielo_api import CieloAPI   # Este módulo se encarga de la conexión WebSocket a Cielo
-from helius_client import HeliusClient  # Cliente para consultas a Helius
-from scoring import ScoringSystem
-from signal_logic import SignalLogic, optimize_signal_confidence, enhance_alpha_detection
-from performance_tracker import PerformanceTracker
-from telegram_utils import send_telegram_message, fix_telegram_commands, fix_on_cielo_message
-from scalper_monitor import ScalperActivityMonitor
 import db
 
-bot_running = True
+logger = logging.getLogger("telegram_utils")
 
-async def cleanup_discoveries_periodically(scalper_monitor, interval=3600):
-    while True:
+def send_telegram_message(message):
+    if len(message) > 4096:
+        message = message[:4090] + "...\n[Message truncated]"
+        logger.warning("Message truncated due to length.")
+    bot_token = Config.TELEGRAM_BOT_TOKEN
+    chat_id = Config.TELEGRAM_CHAT_ID
+    if not bot_token or not chat_id:
+        logger.warning("Telegram credentials missing.")
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    retries = 3
+    delay = 2
+    for i in range(retries):
         try:
-            # Aquí se podría implementar la lógica para limpiar datos antiguos
-            await asyncio.sleep(interval)
+            response = requests.post(url, data=data, timeout=10)
+            if response.status_code == 200:
+                logger.debug("Message sent")
+                return True
+            else:
+                logger.warning(f"Error {response.status_code}: {response.text}")
         except Exception as e:
-            logger.error(f"Error in cleanup_discoveries: {e}")
-            await asyncio.sleep(60)
+            logger.error(f"Error sending telegram message (attempt {i+1}): {e}")
+        time.sleep(delay)
+        delay *= 2
+    return False
 
-async def main():
-    global bot_running
+async def process_telegram_commands(bot_token, chat_id, signal_logic):
     try:
-        print("\n==== STARTING TRADING BOT ====")
-        print(f"Date/Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        Config.check_required_config()
-        db.init_db()
-        
-        wallet_tracker = WalletTracker()
-        wallets = wallet_tracker.get_wallets()
-        logger.info(f"Wallets loaded: {len(wallets)}")
-        
-        scoring_system = ScoringSystem()
-        helius_client = HeliusClient(Config.HELIUS_API_KEY)
-        logger.info("✅ Helius Client initialized")
-        
-        gmgn_client = None
-        try:
-            from gmgn_client import GMGNClient
-            gmgn_client = GMGNClient()
-            logger.info("✅ GMGN Client initialized")
-        except Exception as e:
-            logger.warning(f"GMGN Client initialization failed: {e}")
-        
-        # Inicializar DexScreenerClient como respaldo (si está implementado)
-        dexscreener_client = None
-        try:
-            from dexscreener_client import DexScreenerClient
-            dexscreener_client = DexScreenerClient()
-            logger.info("✅ DexScreener Client initialized")
-        except Exception as e:
-            logger.warning(f"DexScreener Client initialization failed: {e}")
-        
-        signal_logic = SignalLogic(scoring_system=scoring_system, helius_client=helius_client, gmgn_client=gmgn_client)
-        signal_logic.wallet_tracker = wallet_tracker  # Asignar referencia a WalletTracker
-        if dexscreener_client:
-            signal_logic.dexscreener_client = dexscreener_client
-        
-        # Aplicar optimizaciones al objeto SignalLogic
-        signal_logic.compute_confidence = optimize_signal_confidence().__get__(signal_logic, SignalLogic)
-        signal_logic.detect_emerging_alpha_tokens = enhance_alpha_detection().__get__(signal_logic, SignalLogic)
-        if not hasattr(signal_logic, 'get_active_candidates_count'):
-            signal_logic.get_active_candidates_count = lambda: len(signal_logic.token_candidates)
-        
-        performance_tracker = PerformanceTracker(token_data_service=helius_client)
-        signal_logic.performance_tracker = performance_tracker
-        
-        scalper_monitor = ScalperActivityMonitor()
-        
-        # Iniciar el bot de Telegram usando fix_telegram_commands (esta función inicia internamente el polling)
-        telegram_commands_function = fix_telegram_commands()
-        # Nota: No usamos 'await' aquí, ya que telegram_commands_function no es una coroutine.
-        telegram_commands_function(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID, signal_logic)
-        
-        send_telegram_message("🚀 *Trading Bot Started*\nMonitoring Solana transactions...")
-        
-        tasks = [
-            asyncio.create_task(signal_logic._process_candidates()),
-            asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
-        ]
-        
-        cielo_client = CieloAPI(Config.CIELO_API_KEY)
-        cielo_message_handler = fix_on_cielo_message()
-        # CORRECCIÓN PRINCIPAL: usar lambda para pasar correctamente todos los parámetros a on_cielo_message
-        tasks.append(asyncio.create_task(
-            cielo_client.run_forever_wallets(
-                wallets,
-                lambda message: cielo_message_handler(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor),
-                {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
-            )
-        ))
-        
-        logger.info(f"✅ Bot started with {len(tasks)} tasks")
-        
-        while bot_running:
-            for i, task in enumerate(tasks):
-                if task.done():
-                    try:
-                        err = task.exception()
-                        if err:
-                            logger.error(f"Task #{i} failed: {err}")
-                            if i == 0:
-                                tasks[i] = asyncio.create_task(signal_logic._process_candidates())
-                                logger.info("Signal processing task restarted")
-                            elif i == 1:
-                                tasks[i] = asyncio.create_task(cleanup_discoveries_periodically(scalper_monitor))
-                                logger.info("Cleanup task restarted")
-                            elif i == 2:
-                                tasks[i] = asyncio.create_task(
-                                    cielo_client.run_forever_wallets(
-                                        wallets,
-                                        lambda message: cielo_message_handler(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor),
-                                        {"chains": ["solana"], "tx_types": ["swap", "transfer"]}
-                                    )
-                                )
-                                logger.info("Cielo WebSocket task restarted")
-                    except Exception as e:
-                        logger.error(f"Error checking task #{i}: {e}", exc_info=True)
-            logger.info(f"Bot status: {len(signal_logic.token_candidates)} tokens monitored, {db.count_signals_today()} signals today")
-            await asyncio.sleep(30)
-            
-    except Exception as e:
-        logger.error(f"Critical error in main: {e}", exc_info=True)
-        send_telegram_message(f"⚠️ *Critical error*: Bot stopped: {e}")
-        sys.exit(1)
+        from telegram import ParseMode
+        from telegram.ext import Updater, CommandHandler
+    except ImportError:
+        logger.error("Install python-telegram-bot: pip install python-telegram-bot==13.15")
+        return True
 
-if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    finally:
-        loop.close()
+    bot_status = {"active": True, "verbosity": logging.INFO}
+
+    def start_command(update, context):
+        if str(update.effective_chat.id) != str(chat_id):
+            update.message.reply_text("⛔️ Not authorized.")
+            return
+        bot_status["active"] = True
+        update.message.reply_text("✅ Bot activated.")
+
+    def stop_command(update, context):
+        if str(update.effective_chat.id) != str(chat_id):
+            update.message.reply_text("⛔️ Not authorized.")
+            return
+        bot_status["active"] = False
+        update.message.reply_text("🛑 Bot deactivated.")
+
+    def status_command(update, context):
+        if str(update.effective_chat.id) != str(chat_id):
+            update.message.reply_text("⛔️ Not authorized.")
+            return
+        active_tokens = signal_logic.get_active_candidates_count() if hasattr(signal_logic, "get_active_candidates_count") else 0
+        update.message.reply_text(f"*Bot Status:*\nActive: {'✅' if bot_status['active'] else '🛑'}\nTokens monitored: `{active_tokens}`", parse_mode=ParseMode.MARKDOWN)
+
+    updater = Updater(bot_token)
+    dispatcher = updater.dispatcher
+    dispatcher.add_handler(CommandHandler("start", start_command))
+    dispatcher.add_handler(CommandHandler("stop", stop_command))
+    dispatcher.add_handler(CommandHandler("status", status_command))
+    updater.start_polling()
+    logger.info("✅ Telegram Bot started - Commands enabled")
+    return bot_status["active"]
+
+def fix_telegram_commands():
+    return process_telegram_commands
+
+def fix_on_cielo_message():
+    async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
+        try:
+            import json
+            import time
+            data = json.loads(message)
+            msg_type = data.get("type", "unknown")
+            if msg_type == "tx" and "data" in data:
+                tx_data = data["data"]
+                normalized_tx = {}
+                normalized_tx["wallet"] = tx_data.get("wallet")
+                if not normalized_tx["wallet"]:
+                    logger.debug("Transaction ignored: Missing wallet")
+                    return
+                if tx_data.get("tx_type") == "swap":
+                    token0_is_native = tx_data.get("token0_address") in ["native", "So11111111111111111111111111111111111111112"]
+                    token1_is_native = tx_data.get("token1_address") in ["native", "So11111111111111111111111111111111111111112"]
+                    if token1_is_native and not token0_is_native:
+                        normalized_tx["token"] = tx_data.get("token0_address")
+                        normalized_tx["type"] = "SELL"
+                        normalized_tx["token_name"] = tx_data.get("token0_name", "Unknown")
+                        normalized_tx["token_symbol"] = tx_data.get("token0_symbol", "???")
+                        normalized_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
+                    elif token0_is_native and not token1_is_native:
+                        normalized_tx["token"] = tx_data.get("token1_address")
+                        normalized_tx["type"] = "BUY"
+                        normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
+                        normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
+                        normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+                    else:
+                        normalized_tx["token"] = tx_data.get("token1_address")
+                        normalized_tx["type"] = "BUY"
+                        normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
+                        normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
+                        normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
+                elif tx_data.get("tx_type") == "transfer":
+                    normalized_tx["token"] = tx_data.get("contract_address")
+                    normalized_tx["type"] = "TRANSFER"
+                    normalized_tx["token_name"] = tx_data.get("name", "Unknown")
+                    normalized_tx["token_symbol"] = tx_data.get("symbol", "???")
+                    normalized_tx["amount_usd"] = float(tx_data.get("amount_usd", 0))
+                else:
+                    logger.debug(f"Transaction type not processed: {tx_data.get('tx_type')}")
+                    return
+                normalized_tx["timestamp"] = tx_data.get("timestamp", int(time.time()))
+                min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+                if normalized_tx["amount_usd"] < min_tx_usd:
+                    return
+                if not normalized_tx.get("token") or normalized_tx["token"] in ["native", "So11111111111111111111111111111111111111112"]:
+                    logger.debug("Transaction ignored: Token is native or missing")
+                    return
+                logger.info(f"Normalized transaction: {normalized_tx['wallet']} | {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
+                signal_logic.process_transaction(normalized_tx)
+                scalper_monitor.process_transaction(normalized_tx)
+            elif msg_type not in ["wallet_subscribed", "pong"]:
+                logger.debug(f"Message type {msg_type} not processed")
+        except Exception as e:
+            logger.error(f"Error in on_cielo_message: {e}", exc_info=True)
+    return on_cielo_message
