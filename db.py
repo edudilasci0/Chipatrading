@@ -604,12 +604,52 @@ def get_trader_names_mapping():
     Retorna un mapeo de wallets a nombres de traders según los datos almacenados
     """
     query = """
-    SELECT wallet, value as name
+    SELECT key, value as name
     FROM bot_settings
     WHERE key LIKE 'trader_name_%'
     """
     results = execute_cached_query(query, max_age=3600)
     mapping = {}
     for row in results:
-        mapping[row['wallet']] = row['name']
+        wallet = row['key'].replace('trader_name_', '')
+        mapping[wallet] = row['name']
     return mapping
+
+@retry_db_operation()
+def get_trader_name_from_wallet(wallet):
+    """
+    Retorna un nombre humano para la wallet, utilizando el JSON de traders si está disponible
+    """
+    try:
+        # Verificamos en la base de datos
+        query = """
+        SELECT value as name
+        FROM bot_settings
+        WHERE key = %s
+        """
+        results = execute_cached_query(query, (f"trader_name_{wallet}",), max_age=3600)
+        if results and results[0].get('name'):
+            return results[0]['name']
+            
+        # Si no encontramos, buscamos en el JSON de traders
+        if not hasattr(get_trader_name_from_wallet, '_trader_mapping'):
+            # Inicializar la caché de mapeo si no existe
+            get_trader_name_from_wallet._trader_mapping = {}
+            # Intentar cargar desde traders_data.json
+            try:
+                import json
+                with open('traders_data.json', 'r') as f:
+                    traders_data = json.load(f)
+                    for trader in traders_data:
+                        if 'Wallet' in trader and 'Trader' in trader:
+                            get_trader_name_from_wallet._trader_mapping[trader['Wallet']] = trader['Trader']
+            except Exception as e:
+                logger.warning(f"Error cargando traders_data.json: {e}")
+        
+        # Ahora buscar en la caché
+        if hasattr(get_trader_name_from_wallet, '_trader_mapping'):
+            return get_trader_name_from_wallet._trader_mapping.get(wallet, wallet)
+    except Exception as e:
+        logger.error(f"Error en get_trader_name_from_wallet: {e}")
+    
+    return wallet  # Devuelve la wallet original si no hay nombre
