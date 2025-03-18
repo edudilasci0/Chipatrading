@@ -49,19 +49,22 @@ class PerformanceTracker:
         timestamp = int(time.time())
         # Obtener precio inicial usando token_data_service si está disponible
         initial_price = self._get_token_price(token)
+        if initial_price == 0 and signal_info.get("initial_price"):
+            initial_price = signal_info.get("initial_price")
         
         performance_data = {
             "timestamp": timestamp,
             "initial_price": initial_price,
-            "min_price": initial_price,   # Para calcular volatilidad
+            "min_price": initial_price if initial_price > 0 else 0,
             "initial_time": timestamp,
             "performances": {},  # Resultados por intervalo
-            "max_price": initial_price,
+            "max_price": initial_price if initial_price > 0 else 0,
             "max_gain": 0,
             "confidence": signal_info.get("confidence", 0),
             "traders_count": signal_info.get("traders_count", 0),
             "total_volume": signal_info.get("total_volume", 0),
-            "signal_id": signal_info.get("signal_id", None)
+            "signal_id": signal_info.get("signal_id", None),
+            "token_name": signal_info.get("token_name", "")
         }
         
         self.signal_performance[token] = performance_data
@@ -114,9 +117,10 @@ class PerformanceTracker:
                 }
                 self.signal_performance[token]["performances"][label] = performance_entry
                 
-                # Calcular volatilidad (diferencia entre max y min)
-                volatility = ((self.signal_performance[token]["max_price"] - self.signal_performance[token]["min_price"]) / initial_price * 100) if initial_price > 0 else 0
-                # Calcular tendencia básica
+                # Calcular volatilidad (desviación estándar de cambios porcentuales)
+                volatility = self._calculate_volatility(token)
+                
+                # Calcular tendencia básica con múltiples puntos
                 trend = self._calculate_trend(token)
                 
                 # Enviar reporte con información ampliada
@@ -156,32 +160,37 @@ class PerformanceTracker:
         
         signal_id = self.signal_performance[token].get("signal_id", "")
         
-        # Enlaces a múltiples exploradores
-        neobullx_link = f"https://neo.bullx.io/terminal?chainId=1399811149&address={token}"
-        solscan_link = f"https://solscan.io/token/{token}"
-        birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
+        # Formatear volumen para mejor lectura
+        total_volume = self.signal_performance[token].get("total_volume", 0)
+        if total_volume > 1000000:
+            volume_display = f"${total_volume/1000000:.2f}M"
+        elif total_volume > 1000:
+            volume_display = f"${total_volume/1000:.2f}K"
+        else:
+            volume_display = f"${total_volume:.2f}"
         
-        # Se incluyen volumen y tendencia si están disponibles
-        total_volume = self.signal_performance[token].get("total_volume", "N/A")
         traders = self.signal_performance[token].get("traders_count", "N/A")
         
+        # Enlaces a múltiples exploradores
+        solscan_link = f"https://solscan.io/token/{token}"
+        birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
+        dexscreener_link = f"https://dexscreener.com/solana/{token}"
+        
+        token_name_display = f"{self.signal_performance[token].get('token_name', '')} " if self.signal_performance[token].get('token_name') else ""
+        
         message = (
-            f"*🔍 Seguimiento {timeframe} {signal_id}*\n\n"
-            f"Token: `{token}`\n"
+            f"*🔍 Seguimiento {timeframe} #{signal_id}*\n\n"
+            f"Token: {token_name_display}`{token}`\n"
             f"Cambio: *{percent_change:.2f}%* {emoji}\n"
             f"Volatilidad: *{volatility:.2f}%*\n"
             f"Tendencia: *{trend}*\n"
-            f"Volumen: `{total_volume}`\n"
+            f"Volumen: `{volume_display}`\n"
             f"Traders activos: `{traders}`\n\n"
             f"🔗 *Exploradores:*\n"
-            f"• [Neo BullX]({neobullx_link})\n"
             f"• [Solscan]({solscan_link})\n"
             f"• [Birdeye]({birdeye_link})\n"
+            f"• [DexScreener]({dexscreener_link})\n"
         )
-        
-        # Si se dispone de una predicción de tendencia adicional, se puede incluir
-        if "trend_prediction" in self.signal_performance[token]:
-            message += f"\n📈 Predicción de tendencia: {self.signal_performance[token]['trend_prediction']}\n"
         
         send_telegram_message(message)
     
@@ -263,19 +272,76 @@ class PerformanceTracker:
     
     def _calculate_trend(self, token):
         """
-        Calcula una tendencia básica comparando los últimos dos registros de performance.
-        Retorna 'Ascendente', 'Descendente' o 'Estable'.
+        Calcula una tendencia más precisa analizando múltiples puntos de datos.
         """
         perf = self.signal_performance.get(token, {}).get("performances", {})
         entries = list(perf.values())
-        if len(entries) >= 2:
-            entries.sort(key=lambda x: x["timestamp"])
-            prev = entries[-2]["percent_change"]
-            last = entries[-1]["percent_change"]
-            if last > prev:
-                return "Ascendente"
-            elif last < prev:
-                return "Descendente"
-            else:
-                return "Estable"
-        return "No determinado"
+        
+        if len(entries) < 2:
+            return "No determinado"
+            
+        entries.sort(key=lambda x: x["timestamp"])
+        
+        # Calcular cambio porcentual promedio entre puntos consecutivos
+        changes = []
+        for i in range(1, len(entries)):
+            prev_price = entries[i-1]["price"] 
+            curr_price = entries[i]["price"]
+            if prev_price > 0:
+                change = ((curr_price - prev_price) / prev_price) * 100
+                changes.append(change)
+        
+        if not changes:
+            return "Estable"
+        
+        avg_change = sum(changes) / len(changes)
+        
+        # Determinar tendencia basada en cambio promedio
+        if avg_change > 3.0:
+            return "Fuertemente Alcista 📈📈"
+        elif avg_change > 1.0:
+            return "Alcista 📈"
+        elif avg_change < -3.0:
+            return "Fuertemente Bajista 📉📉"
+        elif avg_change < -1.0:
+            return "Bajista 📉" 
+        else:
+            return "Lateral ↔️"
+
+    def _calculate_volatility(self, token):
+        """
+        Calcula la volatilidad real del token.
+        """
+        perf = self.signal_performance.get(token, {})
+        
+        # Verificar si hay datos suficientes
+        if not perf or 'performances' not in perf or not perf['performances']:
+            return 0.0
+        
+        entries = list(perf['performances'].values())
+        if len(entries) < 2:
+            return 0.0
+        
+        # Extraer precios
+        prices = [entry.get('price', 0) for entry in entries if entry.get('price', 0) > 0]
+        if not prices or len(prices) < 2:
+            return 0.0
+        
+        # Calcular volatilidad como desviación estándar de los cambios porcentuales
+        changes = []
+        for i in range(1, len(prices)):
+            if prices[i-1] > 0:
+                pct_change = ((prices[i] - prices[i-1]) / prices[i-1]) * 100
+                changes.append(pct_change)
+        
+        if not changes:
+            return 0.0
+        
+        try:
+            import numpy as np
+            return np.std(changes)
+        except ImportError:
+            # Fallback si numpy no está disponible
+            mean = sum(changes) / len(changes)
+            variance = sum((x - mean) ** 2 for x in changes) / len(changes)
+            return variance ** 0.5
