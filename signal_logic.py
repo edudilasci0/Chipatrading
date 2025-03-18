@@ -346,9 +346,14 @@ class SignalLogic:
             token_opportunity = best_candidate["token_type"]
             market_data = best_candidate.get("market_data", {})
             initial_price = market_data.get("price", 0)
+            market_cap = market_data.get("market_cap", 0)
+            token_name = market_data.get("name", "")
+            
             signal_id = db.save_signal(token, trader_count, confidence, initial_price)
+            
             features = {
                 "token": token,
+                "token_name": token_name,
                 "trader_count": trader_count,
                 "num_transactions": len(best_candidate["recent_transactions"]),
                 "total_volume_usd": best_candidate["volume_usd"],
@@ -364,16 +369,20 @@ class SignalLogic:
                 "window_seconds": float(Config.get("SIGNAL_WINDOW_SECONDS", 540)),
                 "known_traders": best_candidate.get("known_traders", [])
             }
+            
             db.save_signal_features(signal_id, token, features)
+            
             if self.performance_tracker:
                 signal_info = {
                     "confidence": confidence,
                     "traders_count": trader_count,
                     "total_volume": best_candidate["volume_usd"],
                     "signal_id": signal_id,
+                    "token_name": token_name,
                     "known_traders": best_candidate.get("known_traders", [])
                 }
                 self.performance_tracker.add_signal(token, signal_info)
+                
             signal_data = {
                 "token": token,
                 "confidence": confidence,
@@ -382,29 +391,30 @@ class SignalLogic:
                 "token_type": token_opportunity,
                 "tx_velocity": tx_velocity,
                 "buy_ratio": buy_ratio,
+                "token_name": token_name,
+                "market_cap": market_cap,
                 "known_traders": best_candidate.get("known_traders", [])
             }
+            
             self.recent_signals.append(signal_data)
             if len(self.recent_signals) > 20:
                 self.recent_signals = self.recent_signals[-20:]
             self.watched_tokens.add(token)
-            from telegram_utils import send_telegram_message
-            traders_info = ", ".join(best_candidate.get("known_traders", [])[:5])
-            if len(best_candidate.get("known_traders", [])) > 5:
-                traders_info += f" and {len(best_candidate.get('known_traders', [])) - 5} more"
-            token_type_tag = "🔴 PUMP TOKEN" if token.endswith("pump") else ""
-            msg = (
-                f"🚨 *SIGNAL DETECTED*\n\n"
-                f"Token: `{token}`\n"
-                f"Confidence: `{confidence:.2f}`\n"
-                f"TX Velocity: `{tx_velocity:.2f}` tx/min\n"
-                f"Traders: {traders_info}\n"
-                f"{token_type_tag}\n\n"
-                f"🔗 *Explorers:*\n"
-                f"• [Solscan](https://solscan.io/token/{token})\n"
-                f"• [Birdeye](https://birdeye.so/token/{token}?chain=solana)\n"
+            
+            # Usar la función mejorada para enviar la señal
+            from telegram_utils import send_enhanced_signal
+            token_type_tag = "🔴 TOKEN PUMP" if token.endswith("pump") else ""
+            send_enhanced_signal(
+                token=token,
+                confidence=confidence,
+                tx_velocity=tx_velocity,
+                traders=best_candidate.get("known_traders", []),
+                token_type=token_type_tag,
+                token_name=token_name,
+                market_cap=market_cap,
+                initial_price=initial_price
             )
-            send_telegram_message(msg)
+            
             logger.info(f"Signal generated for {token} with confidence {confidence:.2f}")
         except Exception as e:
             logger.error(f"Error in _generate_signals: {e}", exc_info=True)
