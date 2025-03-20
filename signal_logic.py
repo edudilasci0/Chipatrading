@@ -1,140 +1,49 @@
+# signal_logic.py
 import time
 import asyncio
 import logging
+import math
 from config import Config
 import db
 
+# Importar módulos de análisis avanzado
+from whale_detector import WhaleDetector
+from market_metrics import MarketMetricsAnalyzer
+from token_analyzer import TokenAnalyzer
+from trader_profiler import TraderProfiler
+from telegram_utils import send_enhanced_signal
+
 logger = logging.getLogger("signal_logic")
 
-# Función para optimizar la confianza en la señal
-def optimize_signal_confidence():
-    def compute_optimized_confidence(self, wallet_scores, volume_1h, market_cap, 
-                                     recent_volume_growth=0, token_type=None, 
-                                     whale_activity=False, tx_velocity=0):
-        if not wallet_scores:
-            return 0.0
-        import math
-        max_score = float(Config.get("MAX_SCORE", 10.0))
-        exp_scores = [min(score ** 1.5, 12.0) for score in wallet_scores]
-        weighted_avg = sum(exp_scores) / (len(exp_scores) * (max_score ** 1.5)) * max_score
-        score_factor = weighted_avg / max_score
-
-        unique_wallets = len(wallet_scores)
-        wallet_diversity = min(unique_wallets / 10.0, 1.0)
-        high_quality_traders = sum(1 for score in wallet_scores if score > 8.0)
-        elite_traders = sum(1 for score in wallet_scores if score > 9.0)
-        quality_ratio = (high_quality_traders + (elite_traders * 2)) / max(1, len(wallet_scores))
-        quality_factor = min(quality_ratio * 1.5, 1.0)
-        elite_bonus = min(elite_traders * 0.1, 0.3)
-
-        tx_velocity_normalized = min(tx_velocity / 20.0, 1.0)
-        pump_dump_risk = 0
-        if tx_velocity > 15 and elite_traders == 0 and (high_quality_traders / max(1, len(wallet_scores))) < 0.2:
-            pump_dump_risk = 0.3
-
-        wallet_factor = (score_factor * 0.4) + (wallet_diversity * 0.3) + (quality_factor * 0.2) + elite_bonus - pump_dump_risk
-
-        if token_type == "meme":
-            growth_factor = min(recent_volume_growth * 3.0, 1.0)
-            market_cap_threshold = 10_000_000
-        else:
-            growth_factor = min(recent_volume_growth * 1.5, 1.0)
-            market_cap_threshold = 5_000_000
-
-        market_factor = 0.8
-        if market_cap > 0:
-            if market_cap < market_cap_threshold:
-                market_factor = 0.9
-            elif market_cap > 100_000_000:
-                market_factor = 0.6
-
-        tx_velocity_factor = 0
-        if token_type == "meme" and tx_velocity > 5:
-            tx_velocity_factor = min(0.2, tx_velocity / 25.0)
-        elif tx_velocity > 10:
-            tx_velocity_factor = min(0.15, tx_velocity / 30.0)
-
-        weighted_score = (wallet_factor * 0.65) + (market_factor * 0.35) + tx_velocity_factor
-
-        if whale_activity:
-            weighted_score *= 1.1
-
-        if token_type and token_type.lower() in self.token_type_scores:
-            multiplier = self.token_type_scores[token_type.lower()]
-            weighted_score *= multiplier
-
-        def sigmoid_normalize(x, center=0.5, steepness=8):
-            return 1 / (1 + math.exp(-steepness * (x - center)))
-            
-        normalized = max(0.1, min(1.0, sigmoid_normalize(weighted_score, 0.5, 8)))
-        return round(normalized, 3)
-    return compute_optimized_confidence
-
-# Función para detectar tokens emergentes (alpha)
-def enhance_alpha_detection():
-    async def detect_emerging_alpha_tokens(self):
-        try:
-            now = time.time()
-            cutoff = now - 3600  # Consideramos tokens vistos en la última hora
-            alpha_candidates = []
-            for token, data in self.token_candidates.items():
-                if data["first_seen"] < cutoff:
-                    continue
-                if len(data["wallets"]) < 2:
-                    continue
-                has_elite_trader = False
-                trader_scores = []
-                for wallet in data["wallets"]:
-                    score = self.scoring_system.get_score(wallet)
-                    trader_scores.append(score)
-                    if score > 9.0:
-                        has_elite_trader = True
-                if not has_elite_trader and len(data["wallets"]) < 3:
-                    continue
-                market_data = await self.get_token_market_data(token)
-                if market_data.get("market_cap", 0) > 20_000_000:
-                    continue
-                volume_1h = market_data.get("volume", 0)
-                if volume_1h < 1000:
-                    continue
-                avg_score = sum(trader_scores) / len(trader_scores) if trader_scores else 0
-                alpha_score = ((avg_score / 10.0) * 0.4 +
-                               (min(len(data["wallets"]) / 5.0, 1.0) * 0.2) +
-                               (min(volume_1h / 5000.0, 1.0) * 0.2) +
-                               (0.2 if has_elite_trader else 0))
-                alpha_candidates.append({
-                    "token": token,
-                    "alpha_score": alpha_score,
-                    "traders_count": len(data["wallets"]),
-                    "elite_traders": has_elite_trader,
-                    "first_seen": data["first_seen"],
-                    "volume_1h": volume_1h,
-                    "market_cap": market_data.get("market_cap", 0)
-                })
-            alpha_candidates.sort(key=lambda x: x["alpha_score"], reverse=True)
-            return [c for c in alpha_candidates if c["alpha_score"] > 0.7]
-        except Exception as e:
-            logger.error(f"Error in detect_emerging_alpha_tokens: {e}", exc_info=True)
-            return []
-    return detect_emerging_alpha_tokens
-
 class SignalLogic:
-    def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None, rugcheck_api=None, ml_predictor=None, pattern_detector=None):
+    def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None,
+                 rugcheck_api=None, ml_predictor=None, pattern_detector=None,
+                 wallet_tracker=None):
+        """
+        Inicializa la clase con los parámetros actuales e instancia los nuevos módulos.
+        """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
         self.gmgn_client = gmgn_client
         self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
-        self.performance_tracker = None
+        self.wallet_tracker = wallet_tracker
         self.token_candidates = {}
         self.recent_signals = []
         self.last_signal_check = time.time()
         self.watched_tokens = set()
-        self.wallet_tracker = None  # Se asigna externamente
         self.token_type_scores = {}
         self._init_token_type_scores()
-    
+        
+        # Instanciar módulos de análisis avanzado
+        self.whale_detector = WhaleDetector(helius_client=self.helius_client)
+        self.market_metrics = MarketMetricsAnalyzer(helius_client=self.helius_client)
+        self.token_analyzer = TokenAnalyzer(helius_client=self.helius_client)
+        self.trader_profiler = TraderProfiler()
+        
+        self.performance_tracker = None  # Se asigna externamente
+
     def _init_token_type_scores(self):
         self.token_type_scores = {
             "meme": 1.2,
@@ -142,6 +51,13 @@ class SignalLogic:
         }
     
     def process_transaction(self, tx_data):
+        """
+        Procesa una transacción entrante:
+         - Valida los datos
+         - Actualiza el registro de candidatos
+         - Guarda la transacción en DB
+         - Llama al procesamiento de candidatos en caso de transacción de alto volumen
+        """
         try:
             if not tx_data or "token" not in tx_data:
                 return
@@ -192,7 +108,7 @@ class SignalLogic:
                 })
             except Exception as e:
                 logger.error(f"Error saving transaction in DB: {e}")
-            # Si es una transacción de alto volumen y de trader elite, se fuerza el procesamiento de candidatos
+            # Si es una transacción de alto volumen y de trader elite, forzar el procesamiento
             if amount_usd > float(Config.get("HIGH_VOLUME_THRESHOLD", 5000)) and candidate["whale_activity"]:
                 logger.info(f"High volume transaction detected: {token} | ${amount_usd:.2f}")
                 asyncio.create_task(self._process_candidates())
@@ -200,10 +116,266 @@ class SignalLogic:
         except Exception as e:
             logger.error(f"Error processing transaction in SignalLogic: {e}", exc_info=True)
     
+    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0,
+                           token_type=None, whale_activity=False, volume_acceleration=0, holder_growth=0):
+        """
+        Calcula la puntuación de confianza integrando múltiples factores:
+         - Calidad de traders (35%)
+         - Actividad de ballenas (20%)
+         - Crecimiento de holders (15%)
+         - Análisis de liquidez (15%)
+         - Aceleración de volumen y patrones técnicos (15%)
+        Se utiliza una función sigmoidea para normalizar el resultado entre 0.1 y 0.95.
+        """
+        if not wallet_scores:
+            return 0.0
+        # Calidad de traders: promedio de wallet_scores / 10
+        trader_quality = sum(wallet_scores) / (10 * len(wallet_scores))
+        # Factor ballenas: 1 si hay actividad, 0 en caso contrario
+        whale_factor = 1.0 if whale_activity else 0.0
+        # Crecimiento de holders: se espera un porcentaje; normalizamos dividiendo por 100
+        holder_factor = min(max(holder_growth / 100.0, 0), 1)
+        # Factor liquidez: se calcula como inversamente proporcional al market cap (umbral 100M)
+        liquidity_factor = max(0, min(1, 1 - (market_cap / 100_000_000))) if market_cap > 0 else 0.5
+        # Factor de volumen técnico: basado en la aceleración del volumen
+        volume_factor = min(volume_acceleration / 10.0, 1)
+        
+        composite_score = (0.20 * whale_factor +
+                           0.15 * holder_factor +
+                           0.15 * liquidity_factor +
+                           0.15 * volume_factor +
+                           0.35 * trader_quality)
+        
+        # Función sigmoidea para normalizar
+        def sigmoid(x, center=0.5, steepness=8):
+            return 1 / (1 + math.exp(-steepness * (x - center)))
+        
+        raw_conf = sigmoid(composite_score, center=0.5, steepness=8)
+        normalized_conf = max(0.1, min(0.95, raw_conf))
+        return round(normalized_conf, 3)
+    
+    async def _extend_token_analysis(self, token, market_data=None):
+        """
+        Extiende el análisis del token integrando resultados de:
+         - WhaleDetector
+         - MarketMetricsAnalyzer
+         - TokenAnalyzer
+         - TraderProfiler
+        Retorna un diccionario con todos los indicadores relevantes.
+        """
+        analysis = {}
+        try:
+            whale_result = await self.whale_detector.detect_large_transactions(
+                token, recent_transactions=[], market_cap=market_data.get("market_cap", 0) if market_data else 0
+            )
+        except Exception as e:
+            logger.error(f"Error in whale analysis for {token}: {e}", exc_info=True)
+            whale_result = {}
+        try:
+            market_result = await self.market_metrics.calculate_market_health(token)
+        except Exception as e:
+            logger.error(f"Error in market metrics for {token}: {e}", exc_info=True)
+            market_result = {}
+        try:
+            token_result = await self.token_analyzer.analyze_volume_patterns(
+                token, volume_1h=market_data.get("volume", 0) if market_data else 0, market_data=market_data
+            )
+        except Exception as e:
+            logger.error(f"Error in token analysis for {token}: {e}", exc_info=True)
+            token_result = {}
+        try:
+            trader_result = await self.trader_profiler.get_trader_profile(token)
+        except Exception as e:
+            logger.error(f"Error in trader profiling for {token}: {e}", exc_info=True)
+            trader_result = {}
+        
+        analysis["whale"] = whale_result
+        analysis["market"] = market_result
+        analysis["token"] = token_result
+        analysis["trader"] = trader_result
+        return analysis
+    
+    async def _process_candidates(self):
+        """
+        Evalúa los tokens candidatos utilizando un análisis compuesto y
+        calcula la puntuación de confianza de la señal.
+        """
+        try:
+            now = time.time()
+            window = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
+            cutoff = now - window
+            candidates = []
+            for token, data in list(self.token_candidates.items()):
+                recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
+                if not recent_txs or token in self.watched_tokens:
+                    continue
+                tracked_wallets = set(self.wallet_tracker.get_wallets()) if self.wallet_tracker else set()
+                traders_with_buys = {}
+                for tx in recent_txs:
+                    wallet = tx.get("wallet")
+                    if wallet in tracked_wallets and tx.get("type") == "BUY":
+                        traders_with_buys.setdefault(wallet, []).append(tx)
+                if len(traders_with_buys) < int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2)):
+                    continue
+                trader_count = len(data["wallets"])
+                volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
+                buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
+                buy_ratio = len(buy_txs) / max(1, len(recent_txs))
+                timestamps = [tx["timestamp"] for tx in recent_txs]
+                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps)) / 60) if len(timestamps) >= 2 else 0
+                wallet_scores = [self.scoring_system.get_score(wallet) for wallet in traders_with_buys.keys()] if self.scoring_system else [5.0]*len(traders_with_buys)
+                is_pump_token = token.endswith('pump')
+                token_type = "meme" if is_pump_token else "standard"
+                market_data = await self.get_token_market_data(token)
+                extended_analysis = await self._extend_token_analysis(token, market_data)
+                volume_acceleration = extended_analysis.get("token", {}).get("volume_acceleration", 0)
+                holder_growth = extended_analysis.get("market", {}).get("holder_growth_rate", 0)
+                confidence = self.compute_confidence(
+                    wallet_scores=wallet_scores,
+                    volume_1h=volume_usd,
+                    market_cap=market_data.get("market_cap", 0),
+                    recent_volume_growth=market_data.get("volume_growth", {}).get("growth_5m", 0),
+                    token_type=token_type,
+                    whale_activity=data.get("whale_activity", False),
+                    volume_acceleration=volume_acceleration,
+                    holder_growth=holder_growth
+                )
+                elite_traders = sum(1 for score in wallet_scores if score > 9.0)
+                if elite_traders > 0:
+                    confidence = min(0.95, confidence * 1.1)
+                candidate = {
+                    "token": token,
+                    "confidence": confidence,
+                    "trader_count": trader_count,
+                    "volume_usd": volume_usd,
+                    "recent_transactions": recent_txs,
+                    "tx_velocity": tx_velocity,
+                    "buy_ratio": buy_ratio,
+                    "token_type": token_type,
+                    "market_data": market_data,
+                    "extended_analysis": extended_analysis,
+                    "elite_trader_count": elite_traders,
+                    "high_quality_count": sum(1 for score in wallet_scores if score > 7.5),
+                    "known_traders": list(traders_with_buys.keys())
+                }
+                candidates.append(candidate)
+            candidates.sort(key=lambda x: x["confidence"], reverse=True)
+            await self._generate_signals(candidates)
+        except Exception as e:
+            logger.error(f"Error in _process_candidates: {e}", exc_info=True)
+    
+    async def _generate_signals(self, candidates):
+        """
+        Genera señales clasificadas en niveles S, A, B, C y envía una notificación enriquecida.
+        """
+        try:
+            now = time.time()
+            signal_throttling = int(Config.get("SIGNAL_THROTTLING", 10))
+            recent_signals_count = db.count_signals_last_hour()
+            if recent_signals_count >= signal_throttling:
+                logger.info(f"Signal limit reached ({recent_signals_count}/{signal_throttling})")
+                return
+            if self.recent_signals and now - self.recent_signals[-1]["timestamp"] < 180:
+                return
+            min_confidence = float(Config.get("MIN_CONFIDENCE_THRESHOLD", 0.3))
+            qualifying_candidates = [c for c in candidates if c["confidence"] >= min_confidence]
+            if not qualifying_candidates:
+                return
+            best_candidate = qualifying_candidates[0]
+            token = best_candidate["token"]
+            for sig in self.recent_signals:
+                if sig["token"] == token and now - sig["timestamp"] < 3600:
+                    return
+            confidence = best_candidate["confidence"]
+            trader_count = len(best_candidate.get("known_traders", []))
+            tx_velocity = best_candidate["tx_velocity"]
+            buy_ratio = best_candidate["buy_ratio"]
+            token_opportunity = best_candidate["token_type"]
+            market_data = best_candidate.get("market_data", {})
+            initial_price = market_data.get("price", 0)
+            market_cap = market_data.get("market_cap", 0)
+            token_name = market_data.get("name", "")
+            
+            # Clasificar la señal según la confianza
+            if confidence >= 0.9:
+                signal_level = "S"
+            elif confidence >= 0.8:
+                signal_level = "A"
+            elif confidence >= 0.6:
+                signal_level = "B"
+            else:
+                signal_level = "C"
+            
+            signal_id = db.save_signal(token, trader_count, confidence, initial_price)
+            
+            features = {
+                "token": token,
+                "token_name": token_name,
+                "trader_count": trader_count,
+                "num_transactions": len(best_candidate["recent_transactions"]),
+                "total_volume_usd": best_candidate["volume_usd"],
+                "avg_volume_per_trader": best_candidate["volume_usd"] / max(1, trader_count),
+                "buy_ratio": buy_ratio,
+                "tx_velocity": tx_velocity,
+                "market_cap": market_data.get("market_cap", 0),
+                "volume_1h": market_data.get("volume", 0),
+                "volume_growth_5m": market_data.get("volume_growth", {}).get("growth_5m", 0),
+                "volume_growth_1h": market_data.get("volume_growth", {}).get("growth_1h", 0),
+                "whale_flag": 1 if best_candidate.get("whale_activity") else 0,
+                "is_meme": 1 if token_opportunity == "meme" else 0,
+                "signal_level": signal_level,
+                "known_traders": best_candidate.get("known_traders", []),
+                "extended_analysis": best_candidate.get("extended_analysis", {})
+            }
+            
+            db.save_signal_features(signal_id, token, features)
+            
+            if self.performance_tracker:
+                signal_info = {
+                    "confidence": confidence,
+                    "traders_count": trader_count,
+                    "total_volume": best_candidate["volume_usd"],
+                    "signal_id": signal_id,
+                    "token_name": token_name,
+                    "known_traders": best_candidate.get("known_traders", [])
+                }
+                self.performance_tracker.add_signal(token, signal_info)
+                
+            self.recent_signals.append({
+                "token": token,
+                "confidence": confidence,
+                "timestamp": now,
+                "signal_id": signal_id,
+                "signal_level": signal_level
+            })
+            if len(self.recent_signals) > 20:
+                self.recent_signals = self.recent_signals[-20:]
+            self.watched_tokens.add(token)
+            
+            # Enviar señal enriquecida a Telegram
+            send_enhanced_signal(
+                token=token,
+                confidence=confidence,
+                tx_velocity=tx_velocity,
+                traders=best_candidate.get("known_traders", []),
+                token_type="🔴 TOKEN PUMP" if token.endswith("pump") else "",
+                token_name=token_name,
+                market_cap=market_cap,
+                initial_price=initial_price,
+                extended_analysis=best_candidate.get("extended_analysis", {}),
+                signal_level=signal_level
+            )
+            
+            logger.info(f"Signal generated for {token} with confidence {confidence:.2f} (Level {signal_level})")
+        except Exception as e:
+            logger.error(f"Error in _generate_signals: {e}", exc_info=True)
+    
     async def get_token_market_data(self, token):
+        """
+        Obtiene datos de mercado para el token, utilizando diversas fuentes.
+        """
         data = None
         source = "none"
-        # Para tokens nuevos tipo meme, asignamos datos predeterminados
         if token.endswith('pump') or token.endswith('ai') or token.endswith('erc') or token.endswith('inu'):
             return {
                 "price": 0.00001,
@@ -253,182 +425,6 @@ class SignalLogic:
             logger.info(f"Using default market data for {token} - APIs failed")
         data["source"] = source
         return data
-    
-    async def _process_candidates(self):
-        try:
-            now = time.time()
-            window = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
-            cutoff = now - window
-            candidates = []
-            for token, data in list(self.token_candidates.items()):
-                recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
-                if not recent_txs or token in self.watched_tokens:
-                    continue
-                tracked_wallets = set(self.wallet_tracker.get_wallets())
-                traders_with_buys = {}
-                for tx in recent_txs:
-                    wallet = tx.get("wallet")
-                    if wallet in tracked_wallets and tx.get("type") == "BUY":
-                        traders_with_buys.setdefault(wallet, []).append(tx)
-                if len(traders_with_buys) < int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2)):
-                    continue
-                logger.info(f"Token {token} has {len(traders_with_buys)} known traders!")
-                trader_count = len(data["wallets"])
-                volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
-                buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
-                buy_ratio = len(buy_txs) / max(1, len(recent_txs))
-                timestamps = [tx["timestamp"] for tx in recent_txs]
-                tx_velocity = len(recent_txs) / max(1, (max(timestamps) - min(timestamps)) / 60) if len(timestamps) >= 2 else 0
-                wallet_scores = [self.scoring_system.get_score(wallet) for wallet in traders_with_buys.keys()]
-                is_pump_token = token.endswith('pump')
-                token_type = "meme" if is_pump_token else "standard"
-                market_data = None
-                if is_pump_token and hasattr(self, 'dexscreener_client') and self.dexscreener_client:
-                    market_data = await self.dexscreener_client.fetch_token_data(token)
-                if not market_data:
-                    market_data = await self.get_token_market_data(token)
-                volume_growth = market_data.get("volume_growth", {}).get("growth_5m", 0)
-                confidence = self.compute_confidence(
-                    wallet_scores=wallet_scores,
-                    volume_1h=volume_usd,
-                    market_cap=market_data.get("market_cap", 0),
-                    recent_volume_growth=volume_growth,
-                    token_type=token_type,
-                    whale_activity=data.get("whale_activity", False),
-                    tx_velocity=tx_velocity
-                )
-                elite_traders = sum(1 for score in wallet_scores if score > 9.0)
-                if elite_traders > 0:
-                    confidence = min(1.0, confidence * 1.2)
-                candidate = {
-                    "token": token,
-                    "confidence": confidence,
-                    "trader_count": trader_count,
-                    "volume_usd": volume_usd,
-                    "recent_transactions": recent_txs,
-                    "tx_velocity": tx_velocity,
-                    "buy_ratio": buy_ratio,
-                    "token_type": token_type,
-                    "market_data": market_data,
-                    "elite_trader_count": elite_traders,
-                    "high_quality_count": sum(1 for score in wallet_scores if score > 7.5),
-                    "known_traders": list(traders_with_buys.keys())
-                }
-                candidates.append(candidate)
-            candidates.sort(key=lambda x: x["confidence"], reverse=True)
-            await self._generate_signals(candidates)
-        except Exception as e:
-            logger.error(f"Error in _process_candidates: {e}", exc_info=True)
-    
-    async def _generate_signals(self, candidates):
-        try:
-            now = time.time()
-            signal_throttling = int(Config.get("SIGNAL_THROTTLING", 10))
-            recent_signals_count = db.count_signals_last_hour()
-            if recent_signals_count >= signal_throttling:
-                logger.info(f"Signal limit reached ({recent_signals_count}/{signal_throttling})")
-                return
-            if self.recent_signals and now - self.recent_signals[-1]["timestamp"] < 180:
-                return
-            min_confidence = float(Config.get("MIN_CONFIDENCE_THRESHOLD", 0.3))
-            qualifying_candidates = [c for c in candidates if c["confidence"] >= min_confidence]
-            if not qualifying_candidates:
-                return
-            best_candidate = qualifying_candidates[0]
-            token = best_candidate["token"]
-            for sig in self.recent_signals:
-                if sig["token"] == token and now - sig["timestamp"] < 3600:
-                    return
-            confidence = best_candidate["confidence"]
-            trader_count = len(best_candidate.get("known_traders", []))
-            tx_velocity = best_candidate["tx_velocity"]
-            buy_ratio = best_candidate["buy_ratio"]
-            token_opportunity = best_candidate["token_type"]
-            market_data = best_candidate.get("market_data", {})
-            initial_price = market_data.get("price", 0)
-            market_cap = market_data.get("market_cap", 0)
-            token_name = market_data.get("name", "")
-            
-            signal_id = db.save_signal(token, trader_count, confidence, initial_price)
-            
-            features = {
-                "token": token,
-                "token_name": token_name,
-                "trader_count": trader_count,
-                "num_transactions": len(best_candidate["recent_transactions"]),
-                "total_volume_usd": best_candidate["volume_usd"],
-                "avg_volume_per_trader": best_candidate["volume_usd"] / max(1, trader_count),
-                "buy_ratio": buy_ratio,
-                "tx_velocity": tx_velocity,
-                "market_cap": market_data.get("market_cap", 0),
-                "volume_1h": market_data.get("volume", 0),
-                "volume_growth_5m": market_data.get("volume_growth", {}).get("growth_5m", 0),
-                "volume_growth_1h": market_data.get("volume_growth", {}).get("growth_1h", 0),
-                "whale_flag": 1 if best_candidate.get("whale_activity") else 0,
-                "is_meme": 1 if token_opportunity == "meme" else 0,
-                "window_seconds": float(Config.get("SIGNAL_WINDOW_SECONDS", 540)),
-                "known_traders": best_candidate.get("known_traders", [])
-            }
-            
-            db.save_signal_features(signal_id, token, features)
-            
-            if self.performance_tracker:
-                signal_info = {
-                    "confidence": confidence,
-                    "traders_count": trader_count,
-                    "total_volume": best_candidate["volume_usd"],
-                    "signal_id": signal_id,
-                    "token_name": token_name,
-                    "known_traders": best_candidate.get("known_traders", [])
-                }
-                self.performance_tracker.add_signal(token, signal_info)
-                
-            signal_data = {
-                "token": token,
-                "confidence": confidence,
-                "timestamp": now,
-                "signal_id": signal_id,
-                "token_type": token_opportunity,
-                "tx_velocity": tx_velocity,
-                "buy_ratio": buy_ratio,
-                "token_name": token_name,
-                "market_cap": market_cap,
-                "known_traders": best_candidate.get("known_traders", [])
-            }
-            
-            self.recent_signals.append(signal_data)
-            if len(self.recent_signals) > 20:
-                self.recent_signals = self.recent_signals[-20:]
-            self.watched_tokens.add(token)
-            
-            # Usar la función mejorada para enviar la señal
-            from telegram_utils import send_enhanced_signal
-            token_type_tag = "🔴 TOKEN PUMP" if token.endswith("pump") else ""
-            send_enhanced_signal(
-                token=token,
-                confidence=confidence,
-                tx_velocity=tx_velocity,
-                traders=best_candidate.get("known_traders", []),
-                token_type=token_type_tag,
-                token_name=token_name,
-                market_cap=market_cap,
-                initial_price=initial_price
-            )
-            
-            logger.info(f"Signal generated for {token} with confidence {confidence:.2f}")
-        except Exception as e:
-            logger.error(f"Error in _generate_signals: {e}", exc_info=True)
-    
-    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0, token_type=None, whale_activity=False):
-        if not wallet_scores:
-            return 0.0
-        avg_score = sum(wallet_scores) / len(wallet_scores)
-        confidence = avg_score / 10.0 * 0.7
-        if volume_1h > 1000:
-            confidence += 0.1
-        if market_cap < 5000000:
-            confidence += 0.1
-        return min(1.0, confidence)
     
     def get_active_candidates_count(self):
         return len(self.token_candidates)
