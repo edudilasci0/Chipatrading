@@ -39,7 +39,7 @@ class SignalLogic:
         # Instanciar módulos de análisis avanzado
         self.whale_detector = WhaleDetector(helius_client=self.helius_client)
         self.market_metrics = MarketMetricsAnalyzer(helius_client=self.helius_client)
-        self.token_analyzer = TokenAnalyzer(helius_client=self.helius_client)
+        self.token_analyzer = TokenAnalyzer(token_data_service=self.helius_client)
         self.trader_profiler = TraderProfiler()
         
         self.performance_tracker = None  # Se asigna externamente
