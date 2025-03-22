@@ -11,8 +11,8 @@ class PerformanceTracker:
     """
     Realiza seguimiento del rendimiento de las señales emitidas
     con intervalos específicos de monitoreo.
-    Ahora utiliza el servicio de datos (token_data_service) en lugar de DexScreener.
-    Se implementan fallbacks, interpolación de datos y análisis básico (volatilidad y tendencia).
+    Ahora con seguimiento en tiempo real de la evolución de señales,
+    incorporando datos sobre cambios en volumen, liquidez y comportamiento de traders.
     """
     
     TRACK_INTERVALS = [
@@ -26,17 +26,25 @@ class PerformanceTracker:
         (1440, "24h")     # 24 horas
     ]
     
-    def __init__(self, token_data_service=None):
+    def __init__(self, token_data_service=None, dex_monitor=None, market_metrics=None, whale_detector=None):
         """
-        Inicializa el tracker de rendimiento.
+        Inicializa el tracker de rendimiento con servicios adicionales.
         
         Args:
             token_data_service: Servicio de datos de tokens (por ejemplo, HeliusClient)
+            dex_monitor: Monitor de DEX para datos de liquidez en tiempo real
+            market_metrics: Analizador de métricas de mercado 
+            whale_detector: Detector de actividad de ballenas
         """
         self.token_data_service = token_data_service
+        self.dex_monitor = dex_monitor
+        self.market_metrics = market_metrics
+        self.whale_detector = whale_detector
         self.signal_performance = {}  # {token: performance_data}
         self.last_prices = {}         # {token: price}
-        logger.info(f"PerformanceTracker inicializado con servicio: {type(token_data_service).__name__ if token_data_service else 'Ninguno'}")
+        self.signal_updates = {}      # {token: last_update_timestamp}
+        self.early_stage_monitoring = {}  # {token: bool} - Monitoreo intensivo en etapa temprana
+        logger.info(f"PerformanceTracker inicializado con servicios avanzados")
     
     def add_signal(self, token, signal_info):
         """
@@ -64,23 +72,64 @@ class PerformanceTracker:
             "traders_count": signal_info.get("traders_count", 0),
             "total_volume": signal_info.get("total_volume", 0),
             "signal_id": signal_info.get("signal_id", None),
-            "token_name": signal_info.get("token_name", "")
+            "token_name": signal_info.get("token_name", ""),
+            "known_traders": signal_info.get("known_traders", []),
+            "liquidity_initial": 0,
+            "holder_count_initial": 0,
+            "whale_activity": False,
+            "liquidity_change": 0,
+            "holder_growth": 0,
+            "volume_change": 0
         }
+        
+        # Obtener liquidez inicial si está disponible
+        if self.dex_monitor:
+            asyncio.create_task(self._get_initial_liquidity(token, performance_data))
+        
+        # Obtener cantidad de holders inicial si está disponible
+        if self.market_metrics:
+            asyncio.create_task(self._get_initial_holders(token, performance_data))
         
         self.signal_performance[token] = performance_data
         self.last_prices[token] = initial_price
+        self.signal_updates[token] = timestamp
+        self.early_stage_monitoring[token] = True  # Activar monitoreo intensivo
         
         # Iniciar seguimiento asíncrono
         asyncio.create_task(self._track_performance(token))
         logger.info(f"Iniciado seguimiento para token {token} con precio inicial ${initial_price}")
     
+    async def _get_initial_liquidity(self, token, performance_data):
+        """Obtiene y almacena la liquidez inicial del token"""
+        try:
+            if self.dex_monitor:
+                liquidity_data = await self.dex_monitor.get_combined_liquidity_data(token)
+                performance_data["liquidity_initial"] = liquidity_data.get("total_liquidity_usd", 0)
+                logger.debug(f"Liquidez inicial para {token}: ${performance_data['liquidity_initial']}")
+        except Exception as e:
+            logger.error(f"Error obteniendo liquidez inicial para {token}: {e}")
+    
+    async def _get_initial_holders(self, token, performance_data):
+        """Obtiene y almacena el número inicial de holders del token"""
+        try:
+            if self.market_metrics:
+                holder_data = await self.market_metrics.get_holder_growth(token)
+                performance_data["holder_count_initial"] = holder_data.get("holder_count", 0)
+                logger.debug(f"Holders iniciales para {token}: {performance_data['holder_count_initial']}")
+        except Exception as e:
+            logger.error(f"Error obteniendo holders iniciales para {token}: {e}")
+    
     async def _track_performance(self, token):
         """
-        Realiza seguimiento de rendimiento en múltiples intervalos.
+        Realiza seguimiento de rendimiento en múltiples intervalos con monitoreo en tiempo real.
         
         Args:
             token: Dirección del token a seguir
         """
+        # Monitoreo intensivo durante la primera hora
+        if self.early_stage_monitoring.get(token, False):
+            await self._early_stage_monitoring(token)
+        
         for minutes, label in self.TRACK_INTERVALS:
             try:
                 await asyncio.sleep(minutes * 60)
@@ -89,112 +138,243 @@ class PerformanceTracker:
                     logger.warning(f"Token {token} ya no está en seguimiento, cancelando monitor")
                     break
                 
-                # Obtener precio de forma asíncrona
-                current_price = await self._async_get_token_price(token)
-                if not current_price or current_price == 0:
-                    # Intentar interpolar si no se obtuvo precio
-                    current_price = self._interpolate_price(token)
-                    logger.info(f"Precio interpolado para {token}: ${current_price}")
+                # Obtener datos combinados para reporte enriquecido
+                performance_data = await self._gather_performance_data(token)
                 
                 # Actualizar precio mínimo si es menor
-                if current_price < self.signal_performance[token]["min_price"]:
-                    self.signal_performance[token]["min_price"] = current_price
+                if performance_data["current_price"] < self.signal_performance[token]["min_price"]:
+                    self.signal_performance[token]["min_price"] = performance_data["current_price"]
                 
                 initial_price = self.signal_performance[token]["initial_price"]
-                percent_change = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
+                percent_change = ((performance_data["current_price"] - initial_price) / initial_price) * 100 if initial_price > 0 else 0
                 
                 # Actualizar máximo y ganancia máxima
-                if current_price > self.signal_performance[token]["max_price"]:
-                    self.signal_performance[token]["max_price"] = current_price
-                    max_gain = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
+                if performance_data["current_price"] > self.signal_performance[token]["max_price"]:
+                    self.signal_performance[token]["max_price"] = performance_data["current_price"]
+                    max_gain = ((performance_data["current_price"] - initial_price) / initial_price) * 100 if initial_price > 0 else 0
                     self.signal_performance[token]["max_gain"] = max_gain
                 
                 # Guardar el resultado del intervalo
                 performance_entry = {
-                    "price": current_price,
+                    "price": performance_data["current_price"],
                     "percent_change": percent_change,
-                    "timestamp": int(time.time())
+                    "timestamp": int(time.time()),
+                    "liquidity": performance_data.get("liquidity", 0),
+                    "volume": performance_data.get("volume", 0),
+                    "holder_count": performance_data.get("holder_count", 0),
+                    "whale_activity": performance_data.get("whale_activity", False)
                 }
                 self.signal_performance[token]["performances"][label] = performance_entry
                 
-                # Calcular volatilidad (desviación estándar de cambios porcentuales)
-                volatility = self._calculate_volatility(token)
-                
-                # Calcular tendencia básica con múltiples puntos
-                trend = self._calculate_trend(token)
-                
                 # Enviar reporte con información ampliada
-                self._send_performance_report(token, label, percent_change, volatility, trend)
-                self._save_performance_data(token, label, percent_change)
+                from telegram_utils import send_performance_report
                 
-                logger.info(f"Actualización para {token} ({label}): {percent_change:.2f}% | Volatilidad: {volatility:.2f}% | Tendencia: {trend}")
+                # Formatear volumen para mejor lectura
+                volume = performance_data.get("volume", 0)
+                if volume > 1000000:
+                    volume_display = f"${volume/1000000:.2f}M"
+                elif volume > 1000:
+                    volume_display = f"${volume/1000:.2f}K"
+                else:
+                    volume_display = f"${volume:.2f}"
+                
+                send_performance_report(
+                    token=token,
+                    signal_id=self.signal_performance[token].get("signal_id", ""),
+                    timeframe=label,
+                    percent_change=percent_change,
+                    volatility=performance_data.get("volatility", 0),
+                    trend=performance_data.get("trend", "Neutral"),
+                    volume_display=volume_display,
+                    traders_count=len(performance_data.get("active_traders", [])),
+                    whale_activity=performance_data.get("whale_activity", False),
+                    liquidity_change=performance_data.get("liquidity_change", 0)
+                )
+                
+                # Guardar en base de datos
+                self._save_performance_data(token, label, percent_change, performance_data)
+                
+                logger.info(f"Actualización para {token} ({label}): {percent_change:.2f}% | Liq: ${performance_data.get('liquidity', 0):.2f} | Vol: {volume_display}")
                 
             except Exception as e:
                 logger.error(f"🚨 Error en seguimiento de {token} a {label}: {e}")
     
-    def _send_performance_report(self, token, timeframe, percent_change, volatility, trend):
+    async def _early_stage_monitoring(self, token):
         """
-        Envía un reporte de rendimiento a Telegram con información ampliada.
+        Monitoreo intensivo durante la primera hora después de la señal.
+        Actualizaciones cada 3-5 minutos para capturar movimientos rápidos.
+        """
+        early_intervals = [3, 8, 15, 25]  # Minutos
+        
+        for minutes in early_intervals:
+            try:
+                await asyncio.sleep(minutes * 60)
+                
+                if token not in self.signal_performance:
+                    return
+                
+                # Verificar si todavía estamos en la primera hora
+                now = time.time()
+                signal_time = self.signal_performance[token]["timestamp"]
+                if now - signal_time > 3600:  # 1 hora
+                    self.early_stage_monitoring[token] = False
+                    return
+                
+                # Recopilar datos y actualizar
+                performance_data = await self._gather_performance_data(token)
+                
+                # Sólo actualizamos datos, no enviamos reporte completo
+                self.last_prices[token] = performance_data["current_price"]
+                self.signal_updates[token] = now
+                
+                # Si hay un cambio significativo (>10%), enviar actualización rápida
+                initial_price = self.signal_performance[token]["initial_price"]
+                if initial_price > 0:
+                    percent_change = ((performance_data["current_price"] - initial_price) / initial_price) * 100
+                    if abs(percent_change) > 10:
+                        # Enviar actualización rápida
+                        from telegram_utils import send_telegram_message
+                        
+                        # Determinar emoji basado en el cambio
+                        emoji = "🚀" if percent_change > 10 else "⚠️"
+                        
+                        message = (
+                            f"*{emoji} Actualización Rápida #{self.signal_performance[token].get('signal_id', '')}*\n\n"
+                            f"Token: `{token}`\n"
+                            f"Cambio: *{percent_change:.2f}%*\n"
+                            f"Tiempo desde señal: {int((now - signal_time) / 60)} min\n\n"
+                            f"[Ver en Birdeye](https://birdeye.so/token/{token}?chain=solana)"
+                        )
+                        
+                        send_telegram_message(message)
+                
+                logger.debug(f"Monitoreo temprano para {token}: {percent_change:.2f}% después de {int((now - signal_time) / 60)} min")
+                
+            except Exception as e:
+                logger.error(f"Error en monitoreo temprano de {token}: {e}")
+    
+    async def _gather_performance_data(self, token):
+        """
+        Recopila datos de rendimiento de múltiples fuentes para un análisis enriquecido.
         
         Args:
             token: Dirección del token
-            timeframe: Intervalo de tiempo
-            percent_change: Porcentaje de cambio
-            volatility: Volatilidad calculada
-            trend: Predicción de tendencia (Ascendente, Descendente, Estable)
+            
+        Returns:
+            dict: Datos de rendimiento combinados
         """
-        # Importación dinámica para evitar la dependencia circular
-        from telegram_utils import send_telegram_message
+        result = {
+            "current_price": self._get_token_price(token),
+            "timestamp": int(time.time())
+        }
         
-        # Selección de emoji según el desempeño
-        if percent_change > 50:
-            emoji = "🚀"  # Excelente
-        elif percent_change > 20:
-            emoji = "🔥"  # Muy bueno
-        elif percent_change > 0:
-            emoji = "✅"  # Positivo
-        elif percent_change > -20:
-            emoji = "⚠️"  # Moderado
-        else:
-            emoji = "❌"  # Muy negativo
+        # Tareas asíncronas para recopilar datos en paralelo
+        tasks = []
         
-        signal_id = self.signal_performance[token].get("signal_id", "")
+        # 1. Datos de DEX (liquidez)
+        if self.dex_monitor:
+            tasks.append(self._get_liquidity_data(token, result))
         
-        # Formatear volumen para mejor lectura
-        total_volume = self.signal_performance[token].get("total_volume", 0)
-        if total_volume > 1000000:
-            volume_display = f"${total_volume/1000000:.2f}M"
-        elif total_volume > 1000:
-            volume_display = f"${total_volume/1000:.2f}K"
-        else:
-            volume_display = f"${total_volume:.2f}"
+        # 2. Datos de mercado (holders, trending)
+        if self.market_metrics:
+            tasks.append(self._get_market_data(token, result))
         
-        traders = self.signal_performance[token].get("traders_count", "N/A")
+        # 3. Datos de actividad de ballenas
+        if self.whale_detector:
+            tasks.append(self._get_whale_activity(token, result))
         
-        # Enlaces a múltiples exploradores
-        solscan_link = f"https://solscan.io/token/{token}"
-        birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
-        dexscreener_link = f"https://dexscreener.com/solana/{token}"
+        # 4. Datos de análisis técnico
+        if hasattr(self, 'token_analyzer') and self.token_analyzer:
+            tasks.append(self._get_technical_analysis(token, result))
         
-        token_name_display = f"{self.signal_performance[token].get('token_name', '')} " if self.signal_performance[token].get('token_name') else ""
+        # Ejecutar todas las tareas en paralelo
+        if tasks:
+            await asyncio.gather(*tasks)
         
-        message = (
-            f"*🔍 Seguimiento {timeframe} #{signal_id}*\n\n"
-            f"Token: {token_name_display}`{token}`\n"
-            f"Cambio: *{percent_change:.2f}%* {emoji}\n"
-            f"Volatilidad: *{volatility:.2f}%*\n"
-            f"Tendencia: *{trend}*\n"
-            f"Volumen: `{volume_display}`\n"
-            f"Traders activos: `{traders}`\n\n"
-            f"🔗 *Exploradores:*\n"
-            f"• [Solscan]({solscan_link})\n"
-            f"• [Birdeye]({birdeye_link})\n"
-            f"• [DexScreener]({dexscreener_link})\n"
-        )
+        # Calcular cambios respecto a valores iniciales
+        if token in self.signal_performance:
+            # Cambio en liquidez
+            initial_liquidity = self.signal_performance[token].get("liquidity_initial", 0)
+            current_liquidity = result.get("liquidity", 0)
+            if initial_liquidity > 0 and current_liquidity > 0:
+                result["liquidity_change"] = ((current_liquidity - initial_liquidity) / initial_liquidity) * 100
+            
+            # Cambio en holders
+            initial_holders = self.signal_performance[token].get("holder_count_initial", 0)
+            current_holders = result.get("holder_count", 0)
+            if initial_holders > 0 and current_holders > 0:
+                result["holder_growth"] = ((current_holders - initial_holders) / initial_holders) * 100
         
-        send_telegram_message(message)
+        return result
     
-    def _save_performance_data(self, token, timeframe, percent_change):
+    async def _get_liquidity_data(self, token, result):
+        """Obtiene datos de liquidez desde DEX Monitor"""
+        try:
+            liquidity_data = await self.dex_monitor.get_combined_liquidity_data(token)
+            if liquidity_data:
+                result["liquidity"] = liquidity_data.get("total_liquidity_usd", 0)
+                result["volume"] = liquidity_data.get("volume_24h", 0)
+                result["slippage_1k"] = liquidity_data.get("slippage_1k", 0)
+                result["slippage_10k"] = liquidity_data.get("slippage_10k", 0)
+        except Exception as e:
+            logger.error(f"Error obteniendo datos de liquidez para {token}: {e}")
+    
+    async def _get_market_data(self, token, result):
+        """Obtiene datos de mercado desde Market Metrics"""
+        try:
+            holder_data = await self.market_metrics.get_holder_growth(token)
+            if holder_data:
+                result["holder_count"] = holder_data.get("holder_count", 0)
+                result["holder_growth_rate_1h"] = holder_data.get("growth_rate_1h", 0)
+            
+            trending_data = await self.market_metrics.check_trending_status(token)
+            if trending_data:
+                result["is_trending"] = trending_data.get("is_trending", False)
+                result["trending_platforms"] = trending_data.get("trending_platforms", [])
+        except Exception as e:
+            logger.error(f"Error obteniendo datos de mercado para {token}: {e}")
+    
+    async def _get_whale_activity(self, token, result):
+        """Obtiene datos de actividad de ballenas"""
+        try:
+            # Obtener transacciones recientes
+            recent_transactions = db.get_token_transactions(token, hours=1)
+            
+            whale_report = await self.whale_detector.detect_large_transactions(
+                token, recent_transactions, result.get("market_cap", 0)
+            )
+            
+            result["whale_activity"] = whale_report.get("has_whale_activity", False)
+            result["whale_transactions"] = whale_report.get("whale_transactions", [])
+            result["whale_impact_score"] = whale_report.get("impact_score", 0)
+        except Exception as e:
+            logger.error(f"Error obteniendo actividad de ballenas para {token}: {e}")
+    
+    async def _get_technical_analysis(self, token, result):
+        """Obtiene análisis técnico del token"""
+        try:
+            # Actualizar datos de precio si aún no lo hemos hecho
+            if "current_price" in result:
+                await self.token_analyzer.update_price_data(token, result["current_price"])
+            
+            # Analizar patrones de volumen
+            volume_patterns = await self.token_analyzer.analyze_volume_patterns(token)
+            if volume_patterns:
+                result["volume_trend"] = volume_patterns.get("volume_trend", "neutral")
+                result["volume_surge"] = volume_patterns.get("volume_surge", False)
+            
+            # Detectar patrones de precio
+            price_patterns = await self.token_analyzer.detect_price_patterns(token)
+            if price_patterns:
+                result["trend"] = price_patterns.get("trend", "neutral")
+                result["volatility"] = price_patterns.get("volatility", 0)
+                result["rsi"] = price_patterns.get("rsi", 50)
+                result["support_levels"] = price_patterns.get("support_levels", [])
+                result["resistance_levels"] = price_patterns.get("resistance_levels", [])
+        except Exception as e:
+            logger.error(f"Error obteniendo análisis técnico para {token}: {e}")
+    
+    def _save_performance_data(self, token, timeframe, percent_change, performance_data):
         """
         Guarda los datos de rendimiento en la base de datos.
         
@@ -202,16 +382,24 @@ class PerformanceTracker:
             token: Dirección del token
             timeframe: Intervalo de tiempo
             percent_change: Porcentaje de cambio
+            performance_data: Datos completos de rendimiento
         """
         try:
-            signal_data = self.signal_performance[token]
+            signal_data = self.signal_performance.get(token, {})
             db.save_signal_performance(
                 token=token,
                 signal_id=signal_data.get("signal_id"),
                 timeframe=timeframe,
                 percent_change=percent_change,
-                confidence=signal_data['confidence'],
-                traders_count=signal_data['traders_count']
+                confidence=signal_data.get('confidence', 0),
+                traders_count=signal_data.get('traders_count', 0),
+                extra_data={
+                    "liquidity": performance_data.get("liquidity", 0),
+                    "volume": performance_data.get("volume", 0),
+                    "whale_activity": performance_data.get("whale_activity", False),
+                    "holder_count": performance_data.get("holder_count", 0),
+                    "is_trending": performance_data.get("is_trending", False)
+                }
             )
         except Exception as e:
             logger.error(f"🚨 Error guardando datos para {token}: {e}")
@@ -237,111 +425,37 @@ class PerformanceTracker:
             except Exception as e:
                 logger.error(f"Error en token_data_service.get_token_price para {token}: {e}")
         
-        # Si falla, se intenta obtener precio de respaldo
-        fallback_price = self._get_token_price(token)
-        if fallback_price == 0:
-            fallback_price = self._interpolate_price(token)
-        return fallback_price
+        # Intento secundario a través de DEX Monitor
+        if self.dex_monitor:
+            try:
+                liquidity_data = await self.dex_monitor.get_combined_liquidity_data(token)
+                if liquidity_data and liquidity_data.get("price", 0) > 0:
+                    price = liquidity_data["price"]
+                    self.last_prices[token] = price
+                    return price
+            except Exception as e:
+                logger.warning(f"Error obteniendo precio desde DEX Monitor para {token}: {e}")
+        
+        # Si fallaron todos los intentos, retornamos el último precio conocido
+        return self.last_prices.get(token, 0)
     
     def _get_token_price(self, token):
         """
-        Método de respaldo para obtener el precio del token.
+        Método sincrónico para obtener el precio del token.
         Retorna el último precio conocido.
         """
         try:
-            return self.last_prices.get(token, 0)
+            # Si tenemos un precio reciente en caché, lo usamos
+            if token in self.last_prices:
+                return self.last_prices.get(token, 0)
+            
+            # Si no, intentamos obtenerlo de forma sincrónica si es posible
+            if self.token_data_service and hasattr(self.token_data_service, 'get_token_data'):
+                token_data = self.token_data_service.get_token_data(token)
+                if token_data and 'price' in token_data and token_data['price'] > 0:
+                    self.last_prices[token] = token_data['price']
+                    return token_data['price']
         except Exception as e:
             logger.error(f"🚨 Error obteniendo precio para {token}: {e}")
-            return self.last_prices.get(token, 0)
-    
-    def _interpolate_price(self, token):
-        """
-        Intenta interpolar el precio del token usando datos previos de performance.
-        Si existen al menos dos registros, se promedia el último par.
-        """
-        perf = self.signal_performance.get(token, {}).get("performances", {})
-        entries = list(perf.values())
-        if len(entries) >= 2:
-            entries.sort(key=lambda x: x["timestamp"])
-            p1 = entries[-2]["price"]
-            p2 = entries[-1]["price"]
-            interpolated = (p1 + p2) / 2.0
-            self.last_prices[token] = interpolated
-            return interpolated
-        return self.last_prices.get(token, 0)
-    
-    def _calculate_trend(self, token):
-        """
-        Calcula una tendencia más precisa analizando múltiples puntos de datos.
-        """
-        perf = self.signal_performance.get(token, {}).get("performances", {})
-        entries = list(perf.values())
         
-        if len(entries) < 2:
-            return "No determinado"
-            
-        entries.sort(key=lambda x: x["timestamp"])
-        
-        # Calcular cambio porcentual promedio entre puntos consecutivos
-        changes = []
-        for i in range(1, len(entries)):
-            prev_price = entries[i-1]["price"] 
-            curr_price = entries[i]["price"]
-            if prev_price > 0:
-                change = ((curr_price - prev_price) / prev_price) * 100
-                changes.append(change)
-        
-        if not changes:
-            return "Estable"
-        
-        avg_change = sum(changes) / len(changes)
-        
-        # Determinar tendencia basada en cambio promedio
-        if avg_change > 3.0:
-            return "Fuertemente Alcista 📈📈"
-        elif avg_change > 1.0:
-            return "Alcista 📈"
-        elif avg_change < -3.0:
-            return "Fuertemente Bajista 📉📉"
-        elif avg_change < -1.0:
-            return "Bajista 📉" 
-        else:
-            return "Lateral ↔️"
-
-    def _calculate_volatility(self, token):
-        """
-        Calcula la volatilidad real del token.
-        """
-        perf = self.signal_performance.get(token, {})
-        
-        # Verificar si hay datos suficientes
-        if not perf or 'performances' not in perf or not perf['performances']:
-            return 0.0
-        
-        entries = list(perf['performances'].values())
-        if len(entries) < 2:
-            return 0.0
-        
-        # Extraer precios
-        prices = [entry.get('price', 0) for entry in entries if entry.get('price', 0) > 0]
-        if not prices or len(prices) < 2:
-            return 0.0
-        
-        # Calcular volatilidad como desviación estándar de los cambios porcentuales
-        changes = []
-        for i in range(1, len(prices)):
-            if prices[i-1] > 0:
-                pct_change = ((prices[i] - prices[i-1]) / prices[i-1]) * 100
-                changes.append(pct_change)
-        
-        if not changes:
-            return 0.0
-        
-        try:
-            import numpy as np
-            return np.std(changes)
-        except ImportError:
-            # Fallback si numpy no está disponible
-            mean = sum(changes) / len(changes)
-            variance = sum((x - mean) ** 2 for x in changes) / len(changes)
-            return variance ** 0.5
+        return 0  # En caso de no poder obtener el precio
