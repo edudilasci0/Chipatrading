@@ -1,5 +1,7 @@
-# db.py - Archivo completo para el bot de trading en Solana
+# db.py - Módulo para interacción con la base de datos PostgreSQL
+
 import os
+import sys
 import time
 import psycopg2
 import psycopg2.pool
@@ -12,24 +14,27 @@ import threading
 import random
 import json
 
+# Configuración del logger para la base de datos
 logger = logging.getLogger("database")
 handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# Pool de conexiones
+# Pool de conexiones global y variables para caché de consultas
 pool = None
 pool_lock = threading.Lock()
 
-# Cache para consultas frecuentes
 query_cache = {}
 query_cache_timestamp = {}
 query_cache_hits = 0
 query_cache_misses = 0
 
 def init_db_pool(min_conn=1, max_conn=10):
+    """Inicializa el pool de conexiones a la base de datos."""
     global pool
     with pool_lock:
         if pool is None:
@@ -41,6 +46,7 @@ def init_db_pool(min_conn=1, max_conn=10):
 
 @contextmanager
 def get_connection():
+    """Obtiene una conexión del pool y la devuelve al finalizar."""
     global pool
     if pool is None:
         init_db_pool()
@@ -63,6 +69,10 @@ def get_connection():
             pool.putconn(conn)
 
 def retry_db_operation(max_attempts=3, delay=1, backoff_factor=2):
+    """
+    Decorador para reintentar operaciones en la base de datos en caso de error.
+    Implementa un backoff exponencial con jitter.
+    """
     def decorator(func):
         def wrapper(*args, **kwargs):
             global query_cache, query_cache_timestamp, query_cache_hits, query_cache_misses
@@ -89,10 +99,12 @@ def retry_db_operation(max_attempts=3, delay=1, backoff_factor=2):
 
 @retry_db_operation()
 def init_db():
+    """Inicializa la base de datos creando tablas y aplicando migraciones."""
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            # Tabla para versiones de schema/migraciones
+            
+            # Crear tabla para controlar versiones del esquema
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
@@ -100,6 +112,8 @@ def init_db():
                     description TEXT
                 )
             """)
+            
+            # Verificar la versión actual del esquema
             cur.execute("SELECT MAX(version) FROM schema_version")
             result = cur.fetchone()
             current_version = result[0] if result and result[0] else 0
@@ -145,7 +159,6 @@ def init_db():
                         percent_change NUMERIC,
                         confidence NUMERIC,
                         traders_count INTEGER,
-                        extra_data JSONB,
                         timestamp TIMESTAMP DEFAULT NOW(),
                         UNIQUE(token, timeframe)
                     )
@@ -215,7 +228,7 @@ def init_db():
                 current_version = 2
                 logger.info("Migración #2 aplicada correctamente")
             
-            # Migración #3: Nuevas tablas para análisis avanzado
+            # Migración #3: Tablas para análisis avanzado
             if current_version < 3:
                 logger.info("Aplicando migración #3: Tablas para análisis avanzado")
                 cur.execute("""
@@ -303,7 +316,7 @@ def init_db():
                 current_version = 3
                 logger.info("Migración #3 aplicada correctamente")
             
-            # Crear índices para mejorar el rendimiento
+            # Crear índices para optimizar consultas
             try:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
@@ -327,7 +340,7 @@ def init_db():
                 logger.error(f"⚠️ Error al crear índices: {e}")
                 conn.rollback()
             
-            # Insertar configuraciones iniciales si no existen
+            # Configuración inicial en bot_settings
             default_settings = [
                 ("min_transaction_usd", str(Config.get("MIN_TRANSACTION_USD", 200))),
                 ("min_traders_for_signal", str(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))),
@@ -347,6 +360,7 @@ def init_db():
                 ("liquidity_health_weight", str(Config.get("LIQUIDITY_HEALTH_WEIGHT", 0.15))),
                 ("technical_factors_weight", str(Config.get("TECHNICAL_FACTORS_WEIGHT", 0.15)))
             ]
+            
             for key, value in default_settings:
                 cur.execute("""
                     INSERT INTO bot_settings (key, value)
@@ -358,7 +372,7 @@ def init_db():
             logger.info("✅ Base de datos inicializada correctamente")
             return True
     except Exception as e:
-        logger.error(f"🚨 Error crítico al inicializar base de datos: {e}", exc_info=True)
+        logger.error(f"🚨 Error crítico al inicializar la base de datos: {e}", exc_info=True)
         return False
 
 def clear_query_cache():
@@ -405,6 +419,130 @@ def execute_cached_query(query, params=None, max_age=60, write_query=False):
         query_cache_timestamp[cache_key] = now
         return results
 
+# Funciones para guardar transacciones y actualizar scores
+
+@retry_db_operation()
+def save_transaction(tx_data):
+    query = """
+    INSERT INTO transactions (wallet, token, tx_type, amount_usd)
+    VALUES (%s, %s, %s, %s)
+    """
+    params = (tx_data["wallet"], tx_data["token"], tx_data["type"], tx_data["amount_usd"])
+    execute_cached_query(query, params, write_query=True)
+    # Limpiar caché relacionada con transacciones
+    for key in list(query_cache.keys()):
+        if "transactions" in key:
+            query_cache.pop(key, None)
+            query_cache_timestamp.pop(key, None)
+
+@retry_db_operation()
+def update_wallet_score(wallet, new_score):
+    query = """
+    INSERT INTO wallet_scores (wallet, score)
+    VALUES (%s, %s)
+    ON CONFLICT (wallet)
+    DO UPDATE SET score = EXCLUDED.score, updated_at = NOW()
+    """
+    execute_cached_query(query, (wallet, new_score), write_query=True)
+    for key in list(query_cache.keys()):
+        if "wallet_scores" in key and wallet in key:
+            query_cache.pop(key, None)
+            query_cache_timestamp.pop(key, None)
+
+@retry_db_operation()
+def get_wallet_score(wallet):
+    query = "SELECT score FROM wallet_scores WHERE wallet=%s"
+    results = execute_cached_query(query, (wallet,), max_age=300)
+    if results:
+        return float(results[0]['score'])
+    else:
+        return float(Config.get("DEFAULT_SCORE", 5.0))
+
+@retry_db_operation()
+def save_signal(token, trader_count, confidence, initial_price=None):
+    query = """
+    INSERT INTO signals (token, trader_count, confidence, initial_price)
+    VALUES (%s, %s, %s, %s)
+    RETURNING id
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(query, (token, trader_count, confidence, initial_price))
+        signal_id = cur.fetchone()[0]
+        conn.commit()
+    for key in list(query_cache.keys()):
+        if "signals" in key:
+            query_cache.pop(key, None)
+            query_cache_timestamp.pop(key, None)
+    return signal_id
+
+@retry_db_operation()
+def save_signal_features(signal_id, token, features):
+    query = """
+    INSERT INTO signal_features (signal_id, token, feature_json)
+    VALUES (%s, %s, %s)
+    """
+    features_json = psycopg2.extras.Json(features)
+    execute_cached_query(query, (signal_id, token, features_json), write_query=True)
+    logger.info(f"Signal features saved for token {token}, signal {signal_id}")
+
+@retry_db_operation()
+def save_wallet_profit(wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, buy_timestamp):
+    query = """
+    INSERT INTO wallet_profits 
+        (wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, buy_timestamp)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (wallet, token, buy_timestamp) DO NOTHING
+    """
+    params = (wallet, token, buy_price, sell_price, profit_percent, hold_time_hours, datetime.fromtimestamp(buy_timestamp))
+    execute_cached_query(query, params, write_query=True)
+
+# Funciones nuevas solicitadas
+
+@retry_db_operation()
+def count_signals_today():
+    """
+    Cuenta cuántas señales se han emitido hoy.
+    """
+    query = """
+    SELECT COUNT(*) as count FROM signals
+    WHERE created_at::date = CURRENT_DATE
+    """
+    results = execute_cached_query(query, max_age=60)
+    if results:
+        return results[0]['count']
+    else:
+        return 0
+
+@retry_db_operation()
+def count_signals_last_hour():
+    """
+    Cuenta las señales emitidas en la última hora.
+    """
+    query = """
+    SELECT COUNT(*) as count FROM signals
+    WHERE created_at > NOW() - INTERVAL '1 HOUR'
+    """
+    results = execute_cached_query(query, max_age=60)
+    if results:
+        return results[0]['count']
+    else:
+        return 0
+
+@retry_db_operation()
+def get_recent_untracked_signals(limit=10):
+    """
+    Obtiene señales recientes que no han sido marcadas como outcome_collected.
+    """
+    query = """
+    SELECT * FROM signals
+    WHERE outcome_collected = FALSE
+    ORDER BY created_at DESC
+    LIMIT %s
+    """
+    results = execute_cached_query(query, (limit,), max_age=60)
+    return results
+
 # Funciones adicionales para análisis avanzado
 
 @retry_db_operation()
@@ -415,10 +553,7 @@ def save_token_liquidity(token, liquidity_data):
     VALUES (%s, %s, %s, %s, %s, %s)
     """
     sources = liquidity_data.get("sources", [])
-    if isinstance(sources, list):
-        sources_array = sources
-    else:
-        sources_array = [sources] if sources else []
+    sources_array = sources if isinstance(sources, list) else ([sources] if sources else [])
     params = (
         token,
         liquidity_data.get("total_liquidity_usd", 0),
@@ -428,7 +563,7 @@ def save_token_liquidity(token, liquidity_data):
         sources_array
     )
     execute_cached_query(query, params, write_query=True)
-    logger.debug(f"Datos de liquidez guardados para token {token}")
+    logger.debug(f"Liquidity data saved for token {token}")
 
 @retry_db_operation()
 def save_whale_activity(token, transaction_data):
@@ -446,7 +581,7 @@ def save_whale_activity(token, transaction_data):
         transaction_data.get("impact_score", 0)
     )
     execute_cached_query(query, params, write_query=True)
-    logger.debug(f"Actividad de ballena registrada para token {token}")
+    logger.debug(f"Whale activity recorded for token {token}")
 
 @retry_db_operation()
 def save_holder_growth(token, holder_data):
@@ -462,7 +597,7 @@ def save_holder_growth(token, holder_data):
         holder_data.get("growth_rate_24h", 0)
     )
     execute_cached_query(query, params, write_query=True)
-    logger.debug(f"Datos de holders guardados para token {token}")
+    logger.debug(f"Holder growth data saved for token {token}")
 
 @retry_db_operation()
 def save_trader_profile(wallet, profile_data):
@@ -493,7 +628,7 @@ def save_trader_profile(wallet, profile_data):
         specialty
     )
     execute_cached_query(query, params, write_query=True)
-    logger.debug(f"Perfil de trader actualizado para {wallet}")
+    logger.debug(f"Trader profile updated for {wallet}")
 
 @retry_db_operation()
 def save_trader_pattern(token, wallets, coordination_score, pattern_type):
@@ -509,7 +644,7 @@ def save_trader_pattern(token, wallets, coordination_score, pattern_type):
         pattern_type
     )
     execute_cached_query(query, params, write_query=True)
-    logger.debug(f"Patrón de traders guardado para token {token}")
+    logger.debug(f"Trader pattern saved for token {token}")
 
 @retry_db_operation()
 def save_token_analysis(token, analysis_data):
@@ -527,398 +662,139 @@ def save_token_analysis(token, analysis_data):
         analysis_data.get("price_action_quality", 0)
     )
     execute_cached_query(query, params, write_query=True)
-    logger.debug(f"Análisis técnico guardado para token {token}")
+    logger.debug(f"Technical analysis saved for token {token}")
+
+@retry_db_operation()
+def save_trending_token(token, platforms, discovery_potential):
+    query = """
+    INSERT INTO trending_tokens 
+        (token, platforms, discovery_potential)
+    VALUES (%s, %s, %s)
+    """
+    params = (
+        token,
+        platforms,
+        discovery_potential
+    )
+    execute_cached_query(query, params, write_query=True)
+    logger.debug(f"Trending token info saved for token {token}")
+
+@retry_db_operation()
+def get_token_liquidity_history(token, hours=24):
+    query = """
+    SELECT 
+        total_liquidity_usd, volume_24h, slippage_1k, slippage_10k, 
+        dex_sources, created_at
+    FROM token_liquidity
+    WHERE token = %s AND created_at > NOW() - INTERVAL '%s HOUR'
+    ORDER BY created_at ASC
+    """
+    results = execute_cached_query(query, (token, hours), max_age=60)
+    return results
+
+@retry_db_operation()
+def get_whale_activity_for_token(token, hours=24):
+    query = """
+    SELECT 
+        wallet, amount_usd, tx_type, impact_score, created_at
+    FROM whale_activity
+    WHERE token = %s AND created_at > NOW() - INTERVAL '%s HOUR'
+    ORDER BY created_at DESC
+    """
+    results = execute_cached_query(query, (token, hours), max_age=60)
+    return results
+
+@retry_db_operation()
+def get_holder_growth_history(token, days=7):
+    query = """
+    SELECT 
+        holder_count, growth_rate_1h, growth_rate_24h, created_at
+    FROM holder_growth
+    WHERE token = %s AND created_at > NOW() - INTERVAL '%s DAY'
+    ORDER BY created_at ASC
+    """
+    results = execute_cached_query(query, (token, days), max_age=300)
+    return results
+
+@retry_db_operation()
+def get_trader_profile_by_wallet(wallet):
+    query = """
+    SELECT 
+        profile_data, quality_score, specialty, updated_at
+    FROM trader_profiles
+    WHERE wallet = %s
+    """
+    results = execute_cached_query(query, (wallet,), max_age=3600)
+    if results:
+        return results[0]
+    return None
+
+@retry_db_operation()
+def get_high_quality_traders(min_score=0.7, limit=100):
+    query = """
+    SELECT 
+        wallet, quality_score, specialty
+    FROM trader_profiles
+    WHERE quality_score >= %s
+    ORDER BY quality_score DESC
+    LIMIT %s
+    """
+    results = execute_cached_query(query, (min_score, limit), max_age=3600)
+    return results
+
+@retry_db_operation()
+def get_signal_performance_with_extras(signal_id):
+    query = """
+    SELECT 
+        timeframe, percent_change, confidence, traders_count, 
+        extra_data, timestamp
+    FROM signal_performance
+    WHERE signal_id = %s
+    ORDER BY timestamp ASC
+    """
+    results = execute_cached_query(query, (signal_id,), max_age=60)
+    return [
+        {
+            "timeframe": row['timeframe'],
+            "percent_change": row['percent_change'],
+            "confidence": row['confidence'],
+            "traders_count": row['traders_count'],
+            "timestamp": row['timestamp'].isoformat() if row['timestamp'] else None,
+            "extra_data": row.get('extra_data', {})
+        } for row in results
+    ]
+
+@retry_db_operation()
+def save_signal_performance(token, signal_id, timeframe, percent_change, confidence, traders_count, extra_data=None):
+    query = """
+    INSERT INTO signal_performance 
+        (token, signal_id, timeframe, percent_change, confidence, traders_count, extra_data)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (token, timeframe) 
+    DO UPDATE SET 
+        percent_change = EXCLUDED.percent_change,
+        confidence = EXCLUDED.confidence,
+        traders_count = EXCLUDED.traders_count,
+        extra_data = EXCLUDED.extra_data,
+        timestamp = NOW()
+    """
+    if extra_data:
+        extra_data_json = psycopg2.extras.Json(extra_data)
+    else:
+        extra_data_json = None
+    params = (token, signal_id, timeframe, percent_change, confidence, traders_count, extra_data_json)
+    execute_cached_query(query, params, write_query=True)
+    return True
 
 @retry_db_operation()
 def get_top_tokens_by_performance(timeframe="1h", limit=10):
     query = """
-    SELECT 
-        s.token,
-        s.signal_id,
-        sp.percent_change,
-        s.confidence,
-        sp.traders_count,
-        sp.extra_data,
-        s.created_at,
-        sp.timestamp
-    FROM signal_performance sp
-    JOIN signals s ON sp.signal_id = s.id
-    WHERE 
-        sp.timeframe = %s AND
-        sp.timestamp > NOW() - INTERVAL '24 HOUR'
-    ORDER BY sp.percent_change DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (timeframe, limit), max_age=60)
-    return results
-
-@retry_db_operation()
-def get_tokens_with_high_liquidity(min_liquidity=20000, limit=20):
-    query = """
-    SELECT 
-        token,
-        total_liquidity_usd,
-        volume_24h,
-        dex_sources,
-        created_at
-    FROM token_liquidity
-    WHERE 
-        total_liquidity_usd >= %s AND
-        created_at > NOW() - INTERVAL '1 HOUR'
-    ORDER BY created_at DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (min_liquidity, limit), max_age=300)
-    return results
-
-@retry_db_operation()
-def get_trending_tokens(limit=10):
-    query = """
-    SELECT 
-        token,
-        platforms,
-        discovery_potential,
-        created_at
-    FROM trending_tokens
-    WHERE created_at > NOW() - INTERVAL '6 HOUR'
-    ORDER BY discovery_potential DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (limit,), max_age=300)
-    return results
-
-@retry_db_operation()
-def get_tokens_with_whale_activity(hours=24, min_impact=0.5, limit=20):
-    query = """
-    SELECT 
-        token,
-        COUNT(*) as transaction_count,
-        SUM(amount_usd) as total_volume,
-        MAX(impact_score) as max_impact,
-        AVG(impact_score) as avg_impact,
-        MAX(created_at) as latest_activity
-    FROM whale_activity
-    WHERE 
-        created_at > NOW() - INTERVAL '%s HOUR' AND
-        impact_score >= %s
+    SELECT token, AVG(percent_change) as avg_percent_change, COUNT(*) as signal_count
+    FROM signal_performance
+    WHERE timeframe = %s
     GROUP BY token
-    ORDER BY max_impact DESC, total_volume DESC
+    ORDER BY avg_percent_change DESC
     LIMIT %s
     """
-    results = execute_cached_query(query, (hours, min_impact, limit), max_age=60)
+    results = execute_cached_query(query, (timeframe, limit), max_age=300)
     return results
-
-@retry_db_operation()
-def get_tokens_with_coordinated_activity(min_score=0.7, limit=10):
-    query = """
-    SELECT 
-        token,
-        AVG(coordination_score) as avg_coordination,
-        COUNT(*) as pattern_count,
-        MAX(detected_at) as latest_detection
-    FROM trader_patterns
-    WHERE 
-        detected_at > NOW() - INTERVAL '24 HOUR' AND
-        coordination_score >= %s
-    GROUP BY token
-    ORDER BY avg_coordination DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (min_score, limit), max_age=300)
-    return results
-
-@retry_db_operation()
-def get_tokens_with_growing_holders(min_growth_rate=5, limit=20):
-    query = """
-    SELECT 
-        token,
-        holder_count,
-        growth_rate_1h,
-        growth_rate_24h,
-        created_at
-    FROM holder_growth
-    WHERE 
-        created_at > NOW() - INTERVAL '6 HOUR' AND
-        growth_rate_1h >= %s
-    ORDER BY growth_rate_1h DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (min_growth_rate, limit), max_age=300)
-    return results
-
-@retry_db_operation()
-def get_tokens_with_strong_technical_patterns(min_quality=0.7, limit=20):
-    query = """
-    SELECT 
-        token,
-        volume_trend,
-        price_trend,
-        volatility,
-        rsi,
-        pattern_quality,
-        created_at
-    FROM token_analysis
-    WHERE 
-        created_at > NOW() - INTERVAL '12 HOUR' AND
-        pattern_quality >= %s
-    ORDER BY pattern_quality DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (min_quality, limit), max_age=300)
-    return results
-
-@retry_db_operation()
-def get_token_integrated_analysis(token):
-    result = {
-        "token": token,
-        "liquidity": {},
-        "holder_growth": {},
-        "whale_activity": [],
-        "technical": {},
-        "trending": {},
-        "signals": [],
-        "performance": {}
-    }
-    try:
-        liquidity_data = get_token_liquidity_history(token, hours=24)
-        if liquidity_data:
-            latest = liquidity_data[-1]
-            result["liquidity"] = {
-                "total_liquidity_usd": latest.get("total_liquidity_usd", 0),
-                "volume_24h": latest.get("volume_24h", 0),
-                "slippage_1k": latest.get("slippage_1k", 0),
-                "slippage_10k": latest.get("slippage_10k", 0),
-                "dex_sources": latest.get("dex_sources", []),
-                "timestamp": latest.get("created_at").isoformat() if latest.get("created_at") else None
-            }
-    except Exception as e:
-        logger.error(f"Error obteniendo liquidez para {token}: {e}")
-    try:
-        holder_data = get_holder_growth_history(token, days=3)
-        if holder_data:
-            latest = holder_data[-1]
-            result["holder_growth"] = {
-                "holder_count": latest.get("holder_count", 0),
-                "growth_rate_1h": latest.get("growth_rate_1h", 0),
-                "growth_rate_24h": latest.get("growth_rate_24h", 0),
-                "timestamp": latest.get("created_at").isoformat() if latest.get("created_at") else None
-            }
-    except Exception as e:
-        logger.error(f"Error obteniendo datos de holders para {token}: {e}")
-    try:
-        whale_activity = get_whale_activity_for_token(token, hours=24)
-        if whale_activity:
-            result["whale_activity"] = [
-                {
-                    "wallet": tx.get("wallet", ""),
-                    "amount_usd": tx.get("amount_usd", 0),
-                    "tx_type": tx.get("tx_type", ""),
-                    "impact_score": tx.get("impact_score", 0),
-                    "timestamp": tx.get("created_at").isoformat() if tx.get("created_at") else None
-                } for tx in whale_activity[:5]
-            ]
-    except Exception as e:
-        logger.error(f"Error obteniendo actividad de ballenas para {token}: {e}")
-    try:
-        query = """
-        SELECT 
-            volume_trend, price_trend, volatility, rsi, pattern_quality, created_at
-        FROM token_analysis
-        WHERE token = %s
-        ORDER BY created_at DESC
-        LIMIT 1
-        """
-        technical_results = execute_cached_query(query, (token,), max_age=300)
-        if technical_results:
-            tech = technical_results[0]
-            result["technical"] = {
-                "volume_trend": tech.get("volume_trend", "neutral"),
-                "price_trend": tech.get("price_trend", "neutral"),
-                "volatility": tech.get("volatility", 0),
-                "rsi": tech.get("rsi", 50),
-                "pattern_quality": tech.get("pattern_quality", 0),
-                "timestamp": tech.get("created_at").isoformat() if tech.get("created_at") else None
-            }
-    except Exception as e:
-        logger.error(f"Error obteniendo análisis técnico para {token}: {e}")
-    try:
-        query = """
-        SELECT 
-            platforms, discovery_potential, created_at
-        FROM trending_tokens
-        WHERE token = %s
-        ORDER BY created_at DESC
-        LIMIT 1
-        """
-        trending_results = execute_cached_query(query, (token,), max_age=300)
-        if trending_results:
-            trend = trending_results[0]
-            result["trending"] = {
-                "platforms": trend.get("platforms", []),
-                "discovery_potential": trend.get("discovery_potential", 0),
-                "timestamp": trend.get("created_at").isoformat() if trend.get("created_at") else None
-            }
-    except Exception as e:
-        logger.error(f"Error obteniendo datos de trending para {token}: {e}")
-    try:
-        query = """
-        SELECT 
-            id, trader_count, confidence, initial_price, created_at
-        FROM signals
-        WHERE token = %s AND created_at > NOW() - INTERVAL '7 DAY'
-        ORDER BY created_at DESC
-        LIMIT 5
-        """
-        signal_results = execute_cached_query(query, (token,), max_age=60)
-        if signal_results:
-            result["signals"] = [
-                {
-                    "signal_id": signal.get("id"),
-                    "trader_count": signal.get("trader_count", 0),
-                    "confidence": signal.get("confidence", 0),
-                    "initial_price": signal.get("initial_price", 0),
-                    "timestamp": signal.get("created_at").isoformat() if signal.get("created_at") else None
-                } for signal in signal_results
-            ]
-    except Exception as e:
-        logger.error(f"Error obteniendo señales para {token}: {e}")
-    try:
-        query = """
-        SELECT 
-            sp.timeframe, sp.percent_change, sp.timestamp
-        FROM signal_performance sp
-        JOIN signals s ON sp.signal_id = s.id
-        WHERE s.token = %s
-        ORDER BY sp.timestamp DESC
-        LIMIT 10
-        """
-        performance_results = execute_cached_query(query, (token,), max_age=60)
-        if performance_results:
-            by_timeframe = {}
-            for perf in performance_results:
-                tf = perf.get("timeframe")
-                if tf not in by_timeframe:
-                    by_timeframe[tf] = {
-                        "percent_change": perf.get("percent_change", 0),
-                        "timestamp": perf.get("timestamp").isoformat() if perf.get("timestamp") else None
-                    }
-            result["performance"] = by_timeframe
-    except Exception as e:
-        logger.error(f"Error obteniendo rendimiento para {token}: {e}")
-    return result
-
-@retry_db_operation()
-def get_market_trends():
-    result = {
-        "trending_tokens": [],
-        "high_liquidity_tokens": [],
-        "tokens_with_whale_activity": [],
-        "tokens_with_growing_holders": [],
-        "best_performing_tokens": [],
-        "market_insights": []
-    }
-    try:
-        trending = get_trending_tokens(limit=5)
-        result["trending_tokens"] = [
-            {
-                "token": t.get("token"),
-                "platforms": t.get("platforms", []),
-                "discovery_potential": t.get("discovery_potential", 0)
-            } for t in trending
-        ]
-    except Exception as e:
-        logger.error(f"Error obteniendo tokens trending: {e}")
-    try:
-        high_liquidity = get_tokens_with_high_liquidity(min_liquidity=50000, limit=5)
-        result["high_liquidity_tokens"] = [
-            {
-                "token": t.get("token"),
-                "total_liquidity_usd": t.get("total_liquidity_usd", 0),
-                "volume_24h": t.get("volume_24h", 0)
-            } for t in high_liquidity
-        ]
-    except Exception as e:
-        logger.error(f"Error obteniendo tokens con alta liquidez: {e}")
-    try:
-        whale_activity = get_tokens_with_whale_activity(hours=12, min_impact=0.7, limit=5)
-        result["tokens_with_whale_activity"] = [
-            {
-                "token": t.get("token"),
-                "transaction_count": t.get("transaction_count", 0),
-                "total_volume": t.get("total_volume", 0),
-                "max_impact": t.get("max_impact", 0)
-            } for t in whale_activity
-        ]
-    except Exception as e:
-        logger.error(f"Error obteniendo tokens con actividad de ballenas: {e}")
-    try:
-        growing_holders = get_tokens_with_growing_holders(min_growth_rate=10, limit=5)
-        result["tokens_with_growing_holders"] = [
-            {
-                "token": t.get("token"),
-                "holder_count": t.get("holder_count", 0),
-                "growth_rate_1h": t.get("growth_rate_1h", 0)
-            } for t in growing_holders
-        ]
-    except Exception as e:
-        logger.error(f"Error obteniendo tokens con crecimiento de holders: {e}")
-    try:
-        best_performing = get_top_tokens_by_performance(timeframe="1h", limit=5)
-        result["best_performing_tokens"] = [
-            {
-                "token": t.get("token"),
-                "percent_change": t.get("percent_change", 0),
-                "confidence": t.get("confidence", 0)
-            } for t in best_performing
-        ]
-    except Exception as e:
-        logger.error(f"Error obteniendo tokens con mejor rendimiento: {e}")
-    try:
-        query = """
-        SELECT COUNT(*) as count FROM trending_tokens WHERE created_at > NOW() - INTERVAL '24 HOUR'
-        """
-        trending_count = execute_cached_query(query, max_age=300)
-        
-        query = """
-        SELECT COUNT(*) as count FROM whale_activity WHERE created_at > NOW() - INTERVAL '24 HOUR'
-        """
-        whale_tx_count = execute_cached_query(query, max_age=300)
-        
-        query = """
-        SELECT AVG(percent_change) as avg_change FROM signal_performance 
-        WHERE timeframe = '1h' AND timestamp > NOW() - INTERVAL '24 HOUR'
-        """
-        avg_performance = execute_cached_query(query, max_age=300)
-        
-        market_activity = "normal"
-        if trending_count and trending_count[0]["count"] > 10:
-            market_activity = "alta"
-        elif trending_count and trending_count[0]["count"] < 3:
-            market_activity = "baja"
-        
-        avg_change = 0
-        if avg_performance and avg_performance[0]["avg_change"] is not None:
-            avg_change = avg_performance[0]["avg_change"]
-        
-        market_sentiment = "neutral"
-        if avg_change > 10:
-            market_sentiment = "muy positivo"
-        elif avg_change > 5:
-            market_sentiment = "positivo"
-        elif avg_change < -10:
-            market_sentiment = "muy negativo"
-        elif avg_change < -5:
-            market_sentiment = "negativo"
-        
-        insights = [
-            f"Actividad del mercado: {market_activity}",
-            f"Sentimiento del mercado: {market_sentiment}"
-        ]
-        
-        if whale_tx_count and whale_tx_count[0]["count"] > 50:
-            insights.append("Alta actividad de ballenas en las últimas 24h")
-        
-        result["market_insights"] = insights
-    except Exception as e:
-        logger.error(f"Error generando insights de mercado: {e}")
-    return result
