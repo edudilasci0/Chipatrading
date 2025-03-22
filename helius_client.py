@@ -1,3 +1,4 @@
+# helius_client.py
 import time
 import requests
 import logging
@@ -41,10 +42,12 @@ class HeliusClient:
                 "price": 0.000001,
                 "market_cap": 1000000,
                 "volume": 25000,
+                "liquidity": 10000,  # Añadido valor de liquidez
                 "volume_growth": {"growth_5m": 0.35, "growth_1h": 0.25},
                 "source": "default_pump",
                 "token_type": "meme",
-                "is_meme": True
+                "is_meme": True,
+                "holders": 50  # Añadido número de holders por defecto
             }
             self.cache[token] = {"data": data, "timestamp": now}
             return data
@@ -69,12 +72,14 @@ class HeliusClient:
                 "price": self._extract_value(data, ["price", "priceUsd"]),
                 "market_cap": self._extract_value(data, ["marketCap", "market_cap"]),
                 "volume": self._extract_value(data, ["volume24h", "volume", "volumeUsd"]),
+                "liquidity": self._extract_value(data, ["liquidity", "totalLiquidity"]),
                 "volume_growth": {
                     "growth_5m": self._normalize_percentage(self._extract_value(data, ["volumeChange5m", "volume_change_5m"])),
                     "growth_1h": self._normalize_percentage(self._extract_value(data, ["volumeChange1h", "volume_change_1h"]))
                 },
                 "name": self._extract_value(data, ["name", "tokenName"]),
                 "symbol": self._extract_value(data, ["symbol", "tokenSymbol"]),
+                "holders": self._extract_value(data, ["holders", "holderCount"]),
                 "source": "helius"
             }
             self.cache[token] = {"data": normalized_data, "timestamp": now}
@@ -97,6 +102,8 @@ class HeliusClient:
             "price": 0.00001,
             "market_cap": 1000000,
             "volume": 10000,
+            "liquidity": 5000,
+            "holders": 25,
             "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
             "source": "default"
         }
