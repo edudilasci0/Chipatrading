@@ -34,7 +34,8 @@ def send_telegram_message(message):
         delay *= 2
     return False
 
-def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="", token_name=None, market_cap=None, initial_price=None):
+def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="", token_name=None, 
+                         market_cap=None, initial_price=None, extended_analysis=None, signal_level=None):
     """
     Envía una señal con formato mejorado y más información útil
     """
@@ -65,6 +66,9 @@ def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="",
     # Clasificación del token basada en la confianza
     confidence_rating = "⭐⭐⭐" if confidence > 0.8 else "⭐⭐" if confidence > 0.5 else "⭐"
     
+    # Señal con nivel S/A/B/C si está disponible
+    signal_level_display = f"Nivel {signal_level} " if signal_level else ""
+    
     price_display = ""
     if initial_price and initial_price > 0:
         # Determinar formato para mejor visualización dependiendo del rango de precios
@@ -77,22 +81,111 @@ def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="",
         else:
             price_display = f"💲 Precio inicial: `${initial_price:.4f}`\n"
     
+    # Información adicional del análisis extendido
+    additional_info = ""
+    if extended_analysis:
+        whale_data = extended_analysis.get("whale", {})
+        market_data = extended_analysis.get("market", {})
+        
+        # Mostrar si está en trending
+        if market_data.get("trending_platforms", []):
+            trending_platforms = ", ".join(market_data.get("trending_platforms", []))
+            additional_info += f"🔥 *TRENDING* en {trending_platforms}\n"
+        
+        # Mostrar actividad de ballenas
+        if whale_data.get("has_whale_activity", False):
+            whale_count = whale_data.get("known_whales_count", 0)
+            additional_info += f"🐋 *Actividad de ballenas detectada* ({whale_count} whales)\n"
+        
+        # Mostrar crecimiento de holders
+        holder_growth = market_data.get("holder_growth_rate_1h", 0)
+        if holder_growth > 5:
+            additional_info += f"👥 *Holders creciendo* +{holder_growth:.1f}% en 1h\n"
+        
+        # Mostrar liquidez
+        if market_data.get("healthy_liquidity", False):
+            additional_info += f"💧 *Liquidez saludable*\n"
+        
+        # Mostrar calidad de patrones de precio
+        token_data = extended_analysis.get("token", {})
+        if token_data.get("price_action_quality", 0) > 0.7:
+            additional_info += f"📈 *Patrón técnico fuerte*\n"
+    
+    # Construir mensaje final
     msg = (
-        f"🚨 *SEÑAL DETECTADA*\n\n"
+        f"🚨 *SEÑAL DETECTADA* {signal_level_display}\n\n"
         f"Token: {token_name_display}`{token}`\n"
         f"Confianza: `{confidence:.2f}` {confidence_rating}\n"
         f"Velocidad TX: `{tx_velocity:.2f}` tx/min\n"
         f"{market_cap_display}"
         f"{price_display}"
         f"Traders: {traders_info}\n"
-        f"{token_type}\n\n"
+        f"{token_type}\n"
+        f"{additional_info}\n"
         f"🔗 *Exploradores:*\n"
         f"• [Solscan](https://solscan.io/token/{token})\n"
         f"• [Birdeye](https://birdeye.so/token/{token}?chain=solana)\n"
         f"• [DexScreener](https://dexscreener.com/solana/{token})\n"
+        f"• [NeoBullX](https://solana.neobullx.app/asset/{token})\n"
     )
     
     return send_telegram_message(msg)
+
+def send_performance_report(token, signal_id, timeframe, percent_change, volatility=None, trend=None, 
+                          volume_display=None, traders_count=None, whale_activity=None, liquidity_change=None):
+    """
+    Envía un reporte de rendimiento enriquecido para seguimiento de señales
+    """
+    # Selección de emoji según el desempeño
+    if percent_change > 50:
+        emoji = "🚀"  # Excelente
+    elif percent_change > 20:
+        emoji = "🔥"  # Muy bueno
+    elif percent_change > 0:
+        emoji = "✅"  # Positivo
+    elif percent_change > -20:
+        emoji = "⚠️"  # Moderado
+    else:
+        emoji = "❌"  # Muy negativo
+    
+    # Añadir volatilidad y tendencia
+    volatility_display = f"Volatilidad: *{volatility:.2f}%*\n" if volatility is not None else ""
+    trend_display = f"Tendencia: *{trend}*\n" if trend else ""
+    volume_info = f"Volumen: `{volume_display}`\n" if volume_display else ""
+    traders_info = f"Traders activos: `{traders_count}`\n" if traders_count else ""
+    
+    # Información adicional de actividad de whales y liquidez
+    additional_info = ""
+    if whale_activity:
+        additional_info += f"🐋 *Actividad de ballenas detectada*\n"
+    if liquidity_change and liquidity_change > 10:
+        additional_info += f"💧 *Liquidez aumentó* +{liquidity_change:.1f}%\n"
+    elif liquidity_change and liquidity_change < -10:
+        additional_info += f"⚠️ *Liquidez disminuyó* {liquidity_change:.1f}%\n"
+    
+    # Enlaces a exploradores
+    solscan_link = f"https://solscan.io/token/{token}"
+    birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
+    dexscreener_link = f"https://dexscreener.com/solana/{token}"
+    neobullx_link = f"https://solana.neobullx.app/asset/{token}"
+    
+    message = (
+        f"*🔍 Seguimiento {timeframe} #{signal_id}*\n\n"
+        f"Token: `{token}`\n"
+        f"Cambio: *{percent_change:.2f}%* {emoji}\n"
+        f"{volatility_display}"
+        f"{trend_display}"
+        f"{volume_info}"
+        f"{traders_info}"
+        f"{additional_info}\n"
+        f"🔗 *Exploradores:*\n"
+        f"• [Solscan]({solscan_link})\n"
+        f"• [Birdeye]({birdeye_link})\n"
+        f"• [DexScreener]({dexscreener_link})\n"
+        f"• [NeoBullX]({neobullx_link})\n"
+    )
+    
+    return send_telegram_message(message)
 
 async def process_telegram_commands(bot_token, chat_id, signal_logic):
     try:
@@ -123,13 +216,47 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
             update.message.reply_text("⛔️ Not authorized.")
             return
         active_tokens = signal_logic.get_active_candidates_count() if hasattr(signal_logic, "get_active_candidates_count") else 0
-        update.message.reply_text(f"*Bot Status:*\nActive: {'✅' if bot_status['active'] else '🛑'}\nTokens monitored: `{active_tokens}`", parse_mode=ParseMode.MARKDOWN)
+        signals_today = db.count_signals_today()
+        txs_today = db.count_transactions_today()
+        
+        update.message.reply_text(
+            f"*Bot Status:*\n"
+            f"Active: {'✅' if bot_status['active'] else '🛑'}\n"
+            f"Tokens monitored: `{active_tokens}`\n"
+            f"Signals today: `{signals_today}`\n"
+            f"Transactions processed: `{txs_today}`", 
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    def stats_command(update, context):
+        if str(update.effective_chat.id) != str(chat_id):
+            update.message.reply_text("⛔️ Not authorized.")
+            return
+        
+        try:
+            performance_stats = db.get_signals_performance_stats()
+            if not performance_stats:
+                update.message.reply_text("No hay estadísticas de rendimiento disponibles.")
+                return
+            
+            stats_text = "*Estadísticas de Rendimiento:*\n\n"
+            for stat in performance_stats:
+                stats_text += f"*{stat['timeframe']}*: "
+                stats_text += f"`{stat['avg_percent_change']}%` promedio, "
+                stats_text += f"`{stat['success_rate']}%` de éxito "
+                stats_text += f"({stat['total_signals']} señales)\n"
+            
+            update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Error en stats_command: {e}")
+            update.message.reply_text(f"Error al obtener estadísticas: {e}")
 
     updater = Updater(bot_token)
     dispatcher = updater.dispatcher
     dispatcher.add_handler(CommandHandler("start", start_command))
     dispatcher.add_handler(CommandHandler("stop", stop_command))
     dispatcher.add_handler(CommandHandler("status", status_command))
+    dispatcher.add_handler(CommandHandler("stats", stats_command))
     updater.start_polling()
     logger.info("✅ Telegram Bot started - Commands enabled")
     return bot_status["active"]
@@ -191,6 +318,14 @@ def fix_on_cielo_message():
                 logger.info(f"Normalized transaction: {normalized_tx['wallet']} | {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
                 signal_logic.process_transaction(normalized_tx)
                 scalper_monitor.process_transaction(normalized_tx)
+                
+                # También enviar a nuevos módulos si existen
+                if hasattr(signal_logic, 'trader_profiler'):
+                    signal_logic.trader_profiler.process_transaction(normalized_tx)
+                if hasattr(signal_logic, 'whale_detector'):
+                    asyncio.create_task(signal_logic.whale_detector.analyze_transaction_impact(
+                        normalized_tx["token"], normalized_tx, None))
+                
             elif msg_type not in ["wallet_subscribed", "pong"]:
                 logger.debug(f"Message type {msg_type} not processed")
         except Exception as e:
