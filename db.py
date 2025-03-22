@@ -411,7 +411,7 @@ def execute_cached_query(query, params=None, max_age=60, write_query=False):
         query_cache_timestamp[cache_key] = now
         return results
 
-# Funciones de inserción y consulta existentes
+# Funciones existentes para inserciones y consultas
 
 @retry_db_operation()
 def save_transaction(tx_data):
@@ -421,7 +421,7 @@ def save_transaction(tx_data):
     """
     params = (tx_data["wallet"], tx_data["token"], tx_data["type"], tx_data["amount_usd"])
     execute_cached_query(query, params, write_query=True)
-    # Invalida caché de consultas relacionadas a transacciones
+    # Invalida caché relacionada a transacciones
     for key in list(query_cache.keys()):
         if "transactions" in key:
             query_cache.pop(key, None)
@@ -478,7 +478,6 @@ def save_signal_features(signal_id, token, features):
     execute_cached_query(query, (signal_id, token, features_json), write_query=True)
     logger.info(f"Features saved for signal {signal_id} and token {token}")
 
-# Función para guardar datos de rendimiento de señales (ya existente)
 @retry_db_operation()
 def save_signal_performance(token, signal_id, timeframe, percent_change, confidence, traders_count, extra_data=None):
     query = """
@@ -501,7 +500,7 @@ def save_signal_performance(token, signal_id, timeframe, percent_change, confide
     execute_cached_query(query, params, write_query=True)
     return True
 
-# NUEVAS FUNCIONES REQUERIDAS
+# NUEVAS FUNCIONES
 
 @retry_db_operation()
 def count_transactions_today():
@@ -548,7 +547,8 @@ def count_signals_today():
 @retry_db_operation()
 def get_recent_untracked_signals(hours=24):
     """
-    Obtiene señales recientes que no han sido marcadas como procesadas (untracked) en las últimas 'hours' horas.
+    Obtiene señales recientes que no han sido marcadas como procesadas (untracked) 
+    en las últimas 'hours' horas.
     
     Args:
         hours (int): Número de horas a considerar.
@@ -556,6 +556,7 @@ def get_recent_untracked_signals(hours=24):
     Returns:
         list: Lista de señales recientes.
     """
+    # Nota: Para PostgreSQL, usamos %s en la consulta y pasamos el parámetro en una tupla.
     query = """
     SELECT * FROM signals
     WHERE outcome_collected = FALSE
@@ -565,7 +566,6 @@ def get_recent_untracked_signals(hours=24):
     results = execute_cached_query(query, (hours,), max_age=60)
     return results
 
-# Otras funciones de consulta adicionales (por ejemplo, para liquidez, actividad de ballenas, etc.)
 @retry_db_operation()
 def get_token_liquidity_history(token, hours=24):
     query = """
