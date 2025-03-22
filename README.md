@@ -1,7 +1,5 @@
 # Solana Alpha Bot - Bot de Trading Cuantitativo Avanzado
 
-![Banner](https://i.imgur.com/rCYJgcO.png)
-
 Un bot de trading cuantitativo sofisticado para Solana que detecta oportunidades de trading en tiempo real utilizando análisis de patrones de transacciones, actividad de ballenas, métricas de mercado y múltiples factores técnicos.
 
 ## 🌟 Características
