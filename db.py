@@ -1,4 +1,5 @@
-# db.py - Módulo de base de datos para el bot de trading en Solana
+#!/usr/bin/env python3
+# db.py - Módulo de acceso a la base de datos para el bot de trading en Solana
 
 import os
 import time
@@ -20,7 +21,7 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# Variables globales para el pool y cache de consultas
+# Variables globales para el pool y caché de consultas
 pool = None
 pool_lock = threading.Lock()
 
@@ -53,7 +54,7 @@ def get_connection():
         if conn:
             try:
                 pool.putconn(conn, close=True)
-            except:
+            except Exception:
                 pass
         init_db_pool()
         conn = pool.getconn()
@@ -92,6 +93,7 @@ def init_db():
     try:
         with get_connection() as conn:
             cur = conn.cursor()
+            # Crear tabla para versión del esquema
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
@@ -145,7 +147,6 @@ def init_db():
                         confidence NUMERIC,
                         traders_count INTEGER,
                         timestamp TIMESTAMP DEFAULT NOW(),
-                        extra_data JSONB,
                         UNIQUE(token, timeframe)
                     )
                 """)
@@ -214,7 +215,7 @@ def init_db():
                 current_version = 2
                 logger.info("Migración #2 aplicada correctamente")
             
-            # Migración #3: Análisis avanzado
+            # Migración #3: Nuevas tablas para análisis avanzado (si corresponde)
             if current_version < 3:
                 logger.info("Aplicando migración #3: Tablas para análisis avanzado")
                 cur.execute("""
@@ -302,6 +303,7 @@ def init_db():
                 current_version = 3
                 logger.info("Migración #3 aplicada correctamente")
             
+            # Crear índices para optimizar consultas
             try:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
@@ -325,6 +327,7 @@ def init_db():
                 logger.error(f"⚠️ Error al crear índices: {e}")
                 conn.rollback()
             
+            # Configuración inicial en bot_settings
             default_settings = [
                 ("min_transaction_usd", str(Config.get("MIN_TRANSACTION_USD", 200))),
                 ("min_traders_for_signal", str(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))),
@@ -403,76 +406,28 @@ def execute_cached_query(query, params=None, max_age=60, write_query=False):
         query_cache_timestamp[cache_key] = now
         return results
 
-def count_signals_today():
+@retry_db_operation()
+def save_transaction(tx_data):
     """
-    Cuenta la cantidad de señales emitidas hoy.
-    
-    Returns:
-        int: Número de señales emitidas hoy.
-    """
-    query = """
-    SELECT COUNT(*) as count
-    FROM signals
-    WHERE created_at >= CURRENT_DATE
-    """
-    results = execute_cached_query(query, max_age=60)
-    if results and len(results) > 0:
-        return int(results[0]["count"])
-    return 0
-
-def count_signals_last_hour():
-    """
-    Cuenta la cantidad de señales emitidas en la última hora.
-    
-    Returns:
-        int: Número de señales emitidas en la última hora.
-    """
-    query = """
-    SELECT COUNT(*) as count
-    FROM signals
-    WHERE created_at >= NOW() - INTERVAL '1 HOUR'
-    """
-    results = execute_cached_query(query, max_age=60)
-    if results and len(results) > 0:
-        return int(results[0]["count"])
-    return 0
-
-def count_transactions_today():
-    """
-    Cuenta la cantidad de transacciones registradas hoy.
-    
-    Returns:
-        int: Número de transacciones registradas hoy.
-    """
-    query = """
-    SELECT COUNT(*) as count
-    FROM transactions
-    WHERE created_at >= CURRENT_DATE
-    """
-    results = execute_cached_query(query, max_age=60)
-    if results and len(results) > 0:
-        return int(results[0]["count"])
-    return 0
-
-def get_recent_untracked_signals(hours=1):
-    """
-    Obtiene señales recientes que aún no han sido marcadas como rastreadas.
+    Guarda una transacción en la base de datos.
     
     Args:
-        hours (int): Número de horas hacia atrás para buscar señales.
-        
+        tx_data: Diccionario con datos de la transacción (wallet, token, type, amount_usd)
+    
     Returns:
-        list: Lista de señales no rastreadas.
+        bool: True si la operación fue exitosa
     """
-    query = f"""
-    SELECT id, token, trader_count, confidence, initial_price, created_at
-    FROM signals
-    WHERE created_at >= NOW() - INTERVAL '{hours} HOUR'
-      AND outcome_collected = FALSE
-    ORDER BY created_at DESC
+    query = """
+    INSERT INTO transactions (wallet, token, tx_type, amount_usd)
+    VALUES (%s, %s, %s, %s)
     """
-    results = execute_cached_query(query, max_age=60)
-    return results
+    params = (tx_data["wallet"], tx_data["token"], tx_data["type"], tx_data["amount_usd"])
+    try:
+        execute_cached_query(query, params, write_query=True)
+        return True
+    except Exception as e:
+        logger.error(f"Error guardando transacción: {e}")
+        return False
 
 @retry_db_operation()
 def get_token_transactions(token, hours=1):
@@ -480,19 +435,19 @@ def get_token_transactions(token, hours=1):
     Obtiene las transacciones recientes de un token específico.
     
     Args:
-        token (str): Dirección del token.
-        hours (int): Número de horas hacia atrás para buscar transacciones.
+        token: Dirección del token
+        hours: Número de horas hacia atrás para buscar transacciones
         
     Returns:
-        list: Lista de transacciones para el token.
+        list: Lista de transacciones para el token
     """
-    query = f"""
+    query = """
     SELECT wallet, token, tx_type, amount_usd, created_at
     FROM transactions
-    WHERE token = %s AND created_at > NOW() - INTERVAL '{hours} HOUR'
+    WHERE token = %s AND created_at > NOW() - INTERVAL '%s HOUR'
     ORDER BY created_at DESC
     """
-    results = execute_cached_query(query, (token,), max_age=60)
+    results = execute_cached_query(query, (token, hours), max_age=60)
     
     transactions = []
     for row in results:
