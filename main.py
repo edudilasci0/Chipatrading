@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # main.py - Punto de entrada principal para el bot de trading en Solana
 import asyncio
 import signal
@@ -128,7 +127,7 @@ async def process_pending_signals():
         
         if not recent_signals:
             logger.info("No hay señales pendientes para procesar")
-            return
+            return []  # Devolver lista vacía en lugar de None
         
         logger.info(f"Procesando {len(recent_signals)} señales pendientes...")
         
@@ -138,7 +137,7 @@ async def process_pending_signals():
         return recent_signals
     except Exception as e:
         logger.error(f"Error procesando señales pendientes: {e}")
-        return []
+        return []  # También devolver lista vacía en caso de error
 
 async def run_heartbeat(interval=300):
     """Envía señales de heartbeat periódicas"""
