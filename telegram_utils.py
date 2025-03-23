@@ -2,6 +2,7 @@
 import logging
 import requests
 import time
+import asyncio  # Añadido el import de asyncio
 from config import Config
 import db
 
@@ -111,7 +112,7 @@ def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="",
         if token_data.get("price_action_quality", 0) > 0.7:
             additional_info += f"📈 *Patrón técnico fuerte*\n"
     
-    # Construir mensaje final
+    # Construir mensaje final - Solo con el enlace a NeoBullX
     msg = (
         f"🚨 *SEÑAL DETECTADA* {signal_level_display}\n\n"
         f"Token: {token_name_display}`{token}`\n"
@@ -122,10 +123,7 @@ def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="",
         f"Traders: {traders_info}\n"
         f"{token_type}\n"
         f"{additional_info}\n"
-        f"🔗 *Exploradores:*\n"
-        f"• [Solscan](https://solscan.io/token/{token})\n"
-        f"• [Birdeye](https://birdeye.so/token/{token}?chain=solana)\n"
-        f"• [DexScreener](https://dexscreener.com/solana/{token})\n"
+        f"🔗 *Explorer:*\n"
         f"• [NeoBullX](https://solana.neobullx.app/asset/{token})\n"
     )
     
@@ -163,10 +161,7 @@ def send_performance_report(token, signal_id, timeframe, percent_change, volatil
     elif liquidity_change and liquidity_change < -10:
         additional_info += f"⚠️ *Liquidez disminuyó* {liquidity_change:.1f}%\n"
     
-    # Enlaces a exploradores
-    solscan_link = f"https://solscan.io/token/{token}"
-    birdeye_link = f"https://birdeye.so/token/{token}?chain=solana"
-    dexscreener_link = f"https://dexscreener.com/solana/{token}"
+    # Enlace solo a NeoBullX
     neobullx_link = f"https://solana.neobullx.app/asset/{token}"
     
     message = (
@@ -178,10 +173,7 @@ def send_performance_report(token, signal_id, timeframe, percent_change, volatil
         f"{volume_info}"
         f"{traders_info}"
         f"{additional_info}\n"
-        f"🔗 *Exploradores:*\n"
-        f"• [Solscan]({solscan_link})\n"
-        f"• [Birdeye]({birdeye_link})\n"
-        f"• [DexScreener]({dexscreener_link})\n"
+        f"🔗 *Explorer:*\n"
         f"• [NeoBullX]({neobullx_link})\n"
     )
     
@@ -323,8 +315,8 @@ def fix_on_cielo_message():
                 if hasattr(signal_logic, 'trader_profiler'):
                     signal_logic.trader_profiler.process_transaction(normalized_tx)
                 if hasattr(signal_logic, 'whale_detector'):
-                    asyncio.create_task(signal_logic.whale_detector.analyze_transaction_impact(
-                        normalized_tx["token"], normalized_tx, None))
+                    await signal_logic.whale_detector.analyze_transaction_impact(
+                        normalized_tx["token"], normalized_tx, None)
                 
             elif msg_type not in ["wallet_subscribed", "pong"]:
                 logger.debug(f"Message type {msg_type} not processed")
