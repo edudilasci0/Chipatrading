@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-db.py - Módulo de acceso a la base de datos para el bot de trading en Solana.
-Incluye conexión a PostgreSQL, cacheo de consultas, manejo de reconexiones y
-todas las funciones necesarias para insertar, consultar y actualizar datos.
-"""
-
 import os
 import time
 import psycopg2
@@ -27,10 +20,9 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# Variables globales para el pool y cache
+# Variables globales para el pool de conexiones y cache de consultas
 pool = None
 pool_lock = threading.Lock()
-
 query_cache = {}
 query_cache_timestamp = {}
 query_cache_hits = 0
@@ -102,12 +94,11 @@ def retry_db_operation(max_attempts=3, delay=1, backoff_factor=2):
 @retry_db_operation()
 def init_db():
     """
-    Inicializa la base de datos: crea tablas y aplica migraciones.
+    Inicializa la base de datos: crea tablas, aplica migraciones y crea índices.
     """
     try:
         with get_connection() as conn:
             cur = conn.cursor()
-            # Tabla de versión de esquema
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
@@ -230,7 +221,7 @@ def init_db():
                 current_version = 2
                 logger.info("Migración #2 aplicada correctamente")
             
-            # Migración #3: Análisis avanzado
+            # Migración #3: Tablas para análisis avanzado
             if current_version < 3:
                 logger.info("Aplicando migración #3: Tablas para análisis avanzado")
                 cur.execute("""
@@ -306,7 +297,7 @@ def init_db():
                 current_version = 3
                 logger.info("Migración #3 aplicada correctamente")
             
-            # Crear índices para optimizar consultas
+            # Crear índices
             try:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
@@ -317,7 +308,6 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wallet_profits_wallet ON wallet_profits(wallet)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_features_token ON signal_features(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_features_signal_id ON signal_features(signal_id)")
-                
                 if current_version >= 3:
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_token_liquidity_token ON token_liquidity(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_whale_activity_token ON whale_activity(token)")
@@ -727,7 +717,7 @@ def get_trader_name_from_wallet(wallet):
         "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj": "Euros",
         "AJ6MGExeK7FXmeKkKPmALjcdXVStXYokYNv9uVfDRtvo": "Tim",
         "73LnJ7G9ffBDjEBGgJDdgvLUhD5APLonKrNiHsKDCw5B": "Waddles",
-        "99i9uVA7Q56bY22ajKKUfTZTgTeP5yCtVGsrG9J4pDYQ": "Zrool"
+        "99i9uVA7Q56bY22ajKKUfTZTgTeP5yCtVGsrG9J4pDYQ": "Zrool",
     }
     if wallet in known_wallets:
         return known_wallets[wallet]
@@ -766,25 +756,56 @@ def get_tokens_with_high_liquidity(min_liquidity=20000, limit=10):
     results = execute_cached_query(query, (min_liquidity, limit), max_age=300)
     return results
 
+# ================= FUNCIONES NUEVAS PARA SCORING =================
+
 @retry_db_operation()
-def save_transaction(tx_data):
+def get_wallet_score(wallet):
     """
-    Guarda una transacción en la base de datos.
+    Obtiene el score actual de un wallet desde la base de datos.
+    Si no existe, devuelve el score por defecto.
     
     Args:
-        tx_data: Diccionario con datos de la transacción (wallet, token, type, amount_usd).
+        wallet: Dirección del wallet.
+        
+    Returns:
+        float: Score del wallet (0-10).
+    """
+    query = """
+    SELECT score FROM wallet_scores WHERE wallet = %s
+    """
+    results = execute_cached_query(query, (wallet,), max_age=300)
+    if results and results[0]["score"] is not None:
+        return float(results[0]["score"])
+    default_score = float(Config.get("DEFAULT_SCORE", 5.0))
+    return default_score
+
+@retry_db_operation()
+def update_wallet_score(wallet, score):
+    """
+    Actualiza el score de un wallet en la base de datos.
     
+    Args:
+        wallet: Dirección del wallet.
+        score: Nuevo score (0-10).
+        
     Returns:
         bool: True si la operación fue exitosa.
     """
     query = """
-    INSERT INTO transactions (wallet, token, tx_type, amount_usd)
-    VALUES (%s, %s, %s, %s)
+    INSERT INTO wallet_scores (wallet, score, updated_at)
+    VALUES (%s, %s, NOW())
+    ON CONFLICT (wallet)
+    DO UPDATE SET score = %s, updated_at = NOW()
     """
-    params = (tx_data["wallet"], tx_data["token"], tx_data["type"], tx_data["amount_usd"])
     try:
-        execute_cached_query(query, params, write_query=True)
+        execute_cached_query(query, (wallet, score, score), write_query=True)
         return True
     except Exception as e:
-        logger.error(f"Error guardando transacción: {e}")
+        logger.error(f"Error actualizando score del wallet: {e}")
         return False
+
+if __name__ == "__main__":
+    # Pruebas básicas (opcional)
+    print("Prueba de db.py")
+    print("Signals hoy:", count_signals_today())
+    print("Transacciones hoy:", count_transactions_today())
