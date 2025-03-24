@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+db.py - Módulo de acceso a la base de datos para el bot de trading en Solana.
+Incluye conexión a PostgreSQL, cacheo de consultas, manejo de reconexiones y
+funciones para insertar, consultar y actualizar datos.
+"""
+
 import os
 import time
 import psycopg2
@@ -99,6 +106,7 @@ def init_db():
     try:
         with get_connection() as conn:
             cur = conn.cursor()
+            # Crear tabla de versión de esquema
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
@@ -297,7 +305,7 @@ def init_db():
                 current_version = 3
                 logger.info("Migración #3 aplicada correctamente")
             
-            # Crear índices
+            # Crear índices para optimizar consultas
             try:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_token ON transactions(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet)")
@@ -404,7 +412,62 @@ def execute_cached_query(query, params=None, max_age=60, write_query=False):
         query_cache_timestamp[cache_key] = now
         return results
 
-# ================= FUNCIONES NUEVAS =================
+# ================= FUNCIONES NUEVAS PARA SCORING Y TRANSACCIONES =================
+
+@retry_db_operation()
+def save_transaction(tx_data):
+    """
+    Guarda una transacción en la base de datos.
+    
+    Args:
+        tx_data: Diccionario con datos de la transacción (wallet, token, type, amount_usd)
+    
+    Returns:
+        bool: True si la operación fue exitosa.
+    """
+    query = """
+    INSERT INTO transactions (wallet, token, tx_type, amount_usd)
+    VALUES (%s, %s, %s, %s)
+    """
+    params = (tx_data["wallet"], tx_data["token"], tx_data["type"], tx_data["amount_usd"])
+    try:
+        execute_cached_query(query, params, write_query=True)
+        return True
+    except Exception as e:
+        logger.error(f"Error guardando transacción: {e}")
+        return False
+
+@retry_db_operation()
+def get_token_transactions(token, hours=1):
+    """
+    Obtiene transacciones recientes para un token.
+    
+    Args:
+        token: Dirección del token.
+        hours: Número de horas a considerar (default: 1).
+        
+    Returns:
+        list: Transacciones recientes.
+    """
+    query = """
+    SELECT wallet, token, tx_type, amount_usd, created_at
+    FROM transactions
+    WHERE token = %s
+      AND created_at > NOW() - INTERVAL '%s HOURS'
+    ORDER BY created_at DESC
+    """
+    results = execute_cached_query(query, (token, hours), max_age=60)
+    transactions = []
+    for row in results:
+        tx = {
+            "wallet": row["wallet"],
+            "token": row["token"],
+            "type": row["tx_type"],
+            "amount_usd": float(row["amount_usd"]),
+            "timestamp": row["created_at"].timestamp() if hasattr(row["created_at"], "timestamp") else time.time()
+        }
+        transactions.append(tx)
+    return transactions
 
 @retry_db_operation()
 def get_recent_untracked_signals(hours=24):
@@ -644,7 +707,7 @@ def get_wallet_profit_stats(wallet, days=30):
             "avg_profit": results[0]["avg_profit"],
             "max_profit": results[0]["max_profit"],
             "win_rate": results[0]["win_rate"],
-            "avg_hold_time": results[0]["avg_hold_time"]
+            "avg_hold_time": results[0]["avg_hold_time"] 
         }
     return None
 
@@ -670,93 +733,7 @@ def get_wallet_recent_transactions(wallet, hours=24):
     results = execute_cached_query(query, (wallet, hours), max_age=60)
     return results
 
-@retry_db_operation()
-def get_token_transactions(token, hours=1):
-    """
-    Obtiene transacciones recientes para un token.
-    
-    Args:
-        token: Dirección del token.
-        hours: Número de horas a considerar (default: 1).
-        
-    Returns:
-        list: Transacciones recientes.
-    """
-    query = """
-    SELECT wallet, token, tx_type, amount_usd, created_at
-    FROM transactions
-    WHERE token = %s
-      AND created_at > NOW() - INTERVAL '%s HOURS'
-    ORDER BY created_at DESC
-    """
-    results = execute_cached_query(query, (token, hours), max_age=60)
-    transactions = []
-    for row in results:
-        tx = {
-            "wallet": row["wallet"],
-            "token": row["token"],
-            "type": row["tx_type"],
-            "amount_usd": float(row["amount_usd"]),
-            "timestamp": row["created_at"].timestamp() if hasattr(row["created_at"], "timestamp") else time.time()
-        }
-        transactions.append(tx)
-    return transactions
-
-@retry_db_operation()
-def get_trader_name_from_wallet(wallet):
-    """
-    Obtiene el nombre humano asociado a un wallet.
-    
-    Args:
-        wallet: Dirección del wallet.
-        
-    Returns:
-        str: Nombre del trader o la wallet si no se encuentra.
-    """
-    known_wallets = {
-        "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj": "Euros",
-        "AJ6MGExeK7FXmeKkKPmALjcdXVStXYokYNv9uVfDRtvo": "Tim",
-        "73LnJ7G9ffBDjEBGgJDdgvLUhD5APLonKrNiHsKDCw5B": "Waddles",
-        "99i9uVA7Q56bY22ajKKUfTZTgTeP5yCtVGsrG9J4pDYQ": "Zrool",
-    }
-    if wallet in known_wallets:
-        return known_wallets[wallet]
-    
-    query = """
-    SELECT name FROM traders WHERE wallet = %s LIMIT 1
-    """
-    try:
-        results = execute_cached_query(query, (wallet,), max_age=3600)
-        if results and "name" in results[0]:
-            return results[0]["name"]
-    except Exception:
-        pass
-    return wallet
-
-@retry_db_operation()
-def get_tokens_with_high_liquidity(min_liquidity=20000, limit=10):
-    """
-    Obtiene tokens con alta liquidez.
-    
-    Args:
-        min_liquidity: Liquidez mínima en USD.
-        limit: Número máximo de tokens a retornar.
-        
-    Returns:
-        list: Tokens con alta liquidez.
-    """
-    query = """
-    SELECT token, total_liquidity_usd
-    FROM token_liquidity
-    WHERE total_liquidity_usd >= %s
-      AND created_at > NOW() - INTERVAL '1 DAY'
-    ORDER BY total_liquidity_usd DESC
-    LIMIT %s
-    """
-    results = execute_cached_query(query, (min_liquidity, limit), max_age=300)
-    return results
-
-# ================= FUNCIONES NUEVAS PARA SCORING =================
+# ================= NUEVAS FUNCIONES PARA SCORING =================
 
 @retry_db_operation()
 def get_wallet_score(wallet):
