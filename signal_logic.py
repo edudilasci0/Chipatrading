@@ -1,3 +1,4 @@
+# signal_logic.py
 import time
 import asyncio
 import logging
@@ -276,7 +277,11 @@ class SignalLogic:
             
             candidates.sort(key=lambda x: x["confidence"], reverse=True)
             
-            logger.info(f"🔄 Candidatos calificados: {len(candidates)}. Ordenados por confianza: {[f'{c['token']}:{c['confidence']:.2f}' for c in candidates[:3]]}")
+            # Línea corregida para evitar el error de sintaxis en f-strings anidados
+            candidate_info = []
+            for c in candidates[:3]:
+                candidate_info.append(f"{c['token']}:{c['confidence']:.2f}")
+            logger.info(f"🔄 Candidatos calificados: {len(candidates)}. Ordenados por confianza: {candidate_info}")
             
             await self._generate_signals(candidates)
         except Exception as e:
