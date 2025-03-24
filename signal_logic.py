@@ -1,4 +1,3 @@
-# signal_logic.py
 import time
 import asyncio
 import logging
@@ -205,18 +204,30 @@ class SignalLogic:
             window = float(Config.get("SIGNAL_WINDOW_SECONDS", 540))
             cutoff = now - window
             candidates = []
+
+            logger.info(f"🔍 Inicio procesamiento de candidatos. Tokens en análisis: {len(self.token_candidates)}")
+            
             for token, data in list(self.token_candidates.items()):
                 recent_txs = [tx for tx in data["transactions"] if tx["timestamp"] > cutoff]
-                if not recent_txs or token in self.watched_tokens:
+                
+                if not recent_txs:
+                    logger.debug(f"Token {token} ignorado: Sin transacciones recientes en la ventana de {window}s")
                     continue
+                if token in self.watched_tokens:
+                    logger.debug(f"Token {token} ignorado: Ya está en seguimiento")
+                    continue
+                
                 tracked_wallets = set(self.wallet_tracker.get_wallets()) if self.wallet_tracker else set()
                 traders_with_buys = {}
                 for tx in recent_txs:
                     wallet = tx.get("wallet")
                     if wallet in tracked_wallets and tx.get("type") == "BUY":
                         traders_with_buys.setdefault(wallet, []).append(tx)
-                if len(traders_with_buys) < int(Config.get("MIN_TRADERS_FOR_SIGNAL", 2)):
+                
+                if len(traders_with_buys) < int(Config.get("MIN_TRADERS_FOR_SIGNAL", "2")):
+                    logger.info(f"Token {token} ignorado: Traders insuficientes ({len(traders_with_buys)}/{int(Config.get('MIN_TRADERS_FOR_SIGNAL', '2'))})")
                     continue
+                
                 trader_count = len(data["wallets"])
                 volume_usd = sum(tx["amount_usd"] for tx in recent_txs)
                 buy_txs = [tx for tx in recent_txs if tx.get("type") == "BUY"]
@@ -243,6 +254,9 @@ class SignalLogic:
                 elite_traders = sum(1 for score in wallet_scores if score > 9.0)
                 if elite_traders > 0:
                     confidence = min(0.95, confidence * 1.1)
+                
+                logger.info(f"✅ Token {token} calificado como candidato. Confianza: {confidence:.2f}, Traders: {trader_count}, Volumen: ${volume_usd:.2f}")
+                
                 candidate = {
                     "token": token,
                     "confidence": confidence,
@@ -259,7 +273,11 @@ class SignalLogic:
                     "known_traders": list(traders_with_buys.keys())
                 }
                 candidates.append(candidate)
+            
             candidates.sort(key=lambda x: x["confidence"], reverse=True)
+            
+            logger.info(f"🔄 Candidatos calificados: {len(candidates)}. Ordenados por confianza: {[f'{c['token']}:{c['confidence']:.2f}' for c in candidates[:3]]}")
+            
             await self._generate_signals(candidates)
         except Exception as e:
             logger.error(f"Error in _process_candidates: {e}", exc_info=True)
@@ -272,20 +290,31 @@ class SignalLogic:
             now = time.time()
             signal_throttling = int(Config.get("SIGNAL_THROTTLING", 10))
             recent_signals_count = db.count_signals_last_hour()
+            
             if recent_signals_count >= signal_throttling:
-                logger.info(f"Signal limit reached ({recent_signals_count}/{signal_throttling})")
+                logger.info(f"⚠️ Procesamiento de señales limitado: {recent_signals_count}/{signal_throttling} en la última hora")
                 return
+            
             if self.recent_signals and now - self.recent_signals[-1]["timestamp"] < 180:
+                logger.info(f"⏱️ Esperando tiempo mínimo entre señales (última: hace {now - self.recent_signals[-1]['timestamp']:.0f}s)")
                 return
+            
             min_confidence = float(Config.get("MIN_CONFIDENCE_THRESHOLD", 0.3))
             qualifying_candidates = [c for c in candidates if c["confidence"] >= min_confidence]
+            
+            logger.info(f"📊 Evaluando {len(qualifying_candidates)} candidatos con confianza >= {min_confidence}")
             if not qualifying_candidates:
+                logger.info(f"⚠️ No hay candidatos que cumplan el umbral mínimo de confianza ({min_confidence})")
                 return
+            
             best_candidate = qualifying_candidates[0]
             token = best_candidate["token"]
+            
             for sig in self.recent_signals:
                 if sig["token"] == token and now - sig["timestamp"] < 3600:
+                    logger.info(f"⏱️ Token {token} ignorado: Ya tuvo una señal hace {now - sig['timestamp']:.0f}s")
                     return
+            
             confidence = best_candidate["confidence"]
             trader_count = len(best_candidate.get("known_traders", []))
             tx_velocity = best_candidate["tx_velocity"]
