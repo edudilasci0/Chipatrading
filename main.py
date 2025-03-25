@@ -232,12 +232,18 @@ async def main():
         signal_logic.token_analyzer = token_analyzer
         signal_logic.trader_profiler = trader_profiler
         signal_logic.dex_monitor = dex_monitor
+        signal_logic.dexscreener_client = dexscreener_client  # Añadimos conexión directa a DexScreener
         
         # Añadir referencia cruzada al performance_tracker
         signal_logic.performance_tracker = performance_tracker
         
+        # Establecer umbrales críticos
+        Config.update_setting("mcap_threshold", "100000")  # $100K market cap mínimo
+        Config.update_setting("volume_threshold", "200000")  # $200K volumen mínimo
+        
         # Registro y estado
         logger.info("✅ Todos los componentes inicializados correctamente")
+        logger.info(f"📊 Umbrales establecidos: Market Cap mín. $100K, Volumen mín. $200K")
         
         # Recopilar componentes para mantenimiento y limpieza
         components = {
@@ -295,6 +301,7 @@ async def main():
             f"Versión: 1.0.0\n"
             f"Señales hoy: {db.count_signals_today()}\n"
             f"Transacciones hoy: {db.count_transactions_today()}\n\n"
+            f"Umbrales: Market Cap mín. $100K, Volumen mín. $200K\n\n"
             "Monitoreo de wallets activado."
         )
         telegram_utils.send_telegram_message(startup_message)
