@@ -638,4 +638,260 @@ class SignalLogic:
                 confidence=confidence,
                 tx_velocity=tx_velocity,
                 traders=best_candidate.get("known_traders", []),
-                token_type="🔴 TOKEN PUMP" if token.endswith("pump") else
+                token_type="🔴 TOKEN PUMP" if token.endswith("pump") else "",
+                token_name=token_name,
+                market_cap=market_cap,
+                initial_price=initial_price,
+                extended_analysis=best_candidate.get("extended_analysis", {}),
+                signal_level=signal_level
+            )
+            
+            logger.info(f"Signal generated for {token} with confidence {confidence:.2f} (Level {signal_level})")
+        except Exception as e:
+            logger.error(f"Error in _generate_signals: {e}", exc_info=True)
+    
+    def compute_confidence(self, wallet_scores, volume_1h, market_cap, recent_volume_growth=0,
+                           token_type=None, whale_activity=False, volume_acceleration=0, holder_growth=0):
+        """
+        Calcula la puntuación de confianza para una señal con múltiples factores
+        """
+        if not wallet_scores:
+            return 0.0
+        
+        # 1. Factor de calidad de traders (35%)
+        # Normalizar score de wallets a 0-1
+        normalized_scores = [min(score / 10, 1.0) for score in wallet_scores]
+        # Aplicar mayor peso a scores altos usando exponente
+        exp_scores = [score ** 1.5 for score in normalized_scores]
+        # Calcular promedio ponderado
+        trader_quality = sum(exp_scores) / len(exp_scores)
+        
+        # 2. Factor de actividad de ballenas (20%)
+        whale_factor = 1.0 if whale_activity else 0.0
+        
+        # 3. Factor de crecimiento de holders (15%)
+        # Normalizar crecimiento de holders (%)
+        holder_factor = min(max(holder_growth / 100.0, 0), 1)
+        
+        # 4. Factor de liquidez y market cap (15%)
+        if market_cap <= 0:
+            liquidity_factor = 0.5  # Valor neutral si no hay datos
+        else:
+            # Relación inversa con market cap - favorece tokens más pequeños
+            # pero con suficiente liquidez
+            max_mcap = 100_000_000  # $100M como umbral
+            liquidity_factor = max(0, min(1, 1 - (market_cap / max_mcap)))
+            
+            # Ajustar por slippage implícito (derivado del volumen)
+            if volume_1h > 0:
+                vol_mcap_ratio = volume_1h / max(market_cap, 1)
+                if vol_mcap_ratio > 0.1:  # Volumen > 10% del market cap
+                    liquidity_factor *= 0.8  # Penalizar por posible manipulación
+        
+        # 5. Factor técnico: volumen y patrones (15%)
+        volume_growth_normalized = min(max(recent_volume_growth, 0), 3) / 3  # Normalizar a 0-1
+        volume_accel_normalized = min(volume_acceleration / 10.0, 1)
+        technical_factor = (volume_growth_normalized * 0.7) + (volume_accel_normalized * 0.3)
+        
+        # Obtener pesos desde configuración
+        trader_weight = float(Config.get("TRADER_QUALITY_WEIGHT", 0.35))
+        whale_weight = float(Config.get("WHALE_ACTIVITY_WEIGHT", 0.20))
+        holder_weight = float(Config.get("HOLDER_GROWTH_WEIGHT", 0.15))
+        liquidity_weight = float(Config.get("LIQUIDITY_HEALTH_WEIGHT", 0.15))
+        technical_weight = float(Config.get("TECHNICAL_FACTORS_WEIGHT", 0.15))
+        
+        # Calcular score compuesto
+        composite_score = (
+            trader_quality * trader_weight +
+            whale_factor * whale_weight +
+            holder_factor * holder_weight +
+            liquidity_factor * liquidity_weight +
+            technical_factor * technical_weight
+        )
+        
+        # Aplicar bono por tipo de token si corresponde
+        token_multiplier = 1.0
+        if token_type and token_type.lower() in self.token_type_scores:
+            token_multiplier = self.token_type_scores[token_type.lower()]
+        composite_score *= token_multiplier
+        
+        # Normalizar con función sigmoidea para suavizar los extremos
+        def sigmoid_normalize(x, center=0.5, steepness=8):
+            return 1 / (1 + math.exp(-steepness * (x - center)))
+        
+        normalized_score = sigmoid_normalize(composite_score, center=0.5, steepness=8)
+        
+        # Restringir al rango 0.1-0.95
+        final_score = max(0.1, min(0.95, normalized_score))
+        
+        return round(final_score, 3)
+    
+    async def _extend_token_analysis(self, token, market_data=None):
+        """
+        Extiende el análisis del token integrando resultados de:
+         - WhaleDetector
+         - MarketMetricsAnalyzer
+         - TokenAnalyzer
+         - TraderProfiler
+        Retorna un diccionario con todos los indicadores relevantes.
+        """
+        analysis = {}
+        try:
+            # Obtener transacciones recientes para el token
+            recent_transactions = db.get_token_transactions(token, hours=1)
+            
+            # 1. Análisis de actividad de ballenas
+            whale_result = await self.whale_detector.detect_large_transactions(
+                token, recent_transactions, market_cap=market_data.get("market_cap", 0) if market_data else 0
+            )
+        except Exception as e:
+            logger.error(f"Error in whale analysis for {token}: {e}", exc_info=True)
+            whale_result = {}
+            
+        try:
+            # 2. Análisis de salud de mercado
+            market_result = await self.market_metrics.calculate_market_health(token)
+        except Exception as e:
+            logger.error(f"Error in market metrics for {token}: {e}", exc_info=True)
+            market_result = {}
+            
+        try:
+            # 3. Análisis de patrones de volumen
+            token_result = await self.token_analyzer.analyze_volume_patterns(
+                token, 
+                current_volume=market_data.get("volume", 0) if market_data else 0,
+                market_data=market_data
+            )
+            
+            # Añadir análisis de patrones de precio
+            price_patterns = await self.token_analyzer.detect_price_patterns(token, None, market_data)
+            if price_patterns:
+                token_result.update(price_patterns)
+        except Exception as e:
+            logger.error(f"Error in token analysis for {token}: {e}", exc_info=True)
+            token_result = {}
+            
+        try:
+            # 4. Perfiles de traders
+            active_traders = set()
+            for tx in recent_transactions:
+                active_traders.add(tx.get("wallet", ""))
+                
+            trader_result = {}
+            # Limitar el número de traders a analizar
+            for wallet in list(active_traders)[:5]:
+                try:
+                    profile = await self.trader_profiler.get_trader_profile(wallet)
+                    if profile:
+                        trader_result[wallet] = profile
+                except Exception as inner_e:
+                    logger.warning(f"Error getting profile for trader {wallet}: {inner_e}")
+        except Exception as e:
+            logger.error(f"Error in trader profiling for {token}: {e}", exc_info=True)
+            trader_result = {}
+        
+        # 5. Combinar todos los análisis
+        analysis["whale"] = whale_result
+        analysis["market"] = market_result
+        analysis["token"] = token_result
+        analysis["trader"] = trader_result
+        
+        return analysis
+    
+    async def get_token_market_data(self, token):
+        """
+        Obtiene datos de mercado para el token, utilizando diversas fuentes.
+        Prioriza obtener market cap y volumen precisos.
+        """
+        data = None
+        source = "none"
+        
+        # Tokens especiales con valores predeterminados
+        if token.endswith('pump') or token.endswith('ai') or token.endswith('erc') or token.endswith('inu'):
+            return {
+                "price": 0.00001,
+                "market_cap": 500000,
+                "volume": 20000,
+                "volume_growth": {"growth_5m": 0.5, "growth_1h": 0.2},
+                "estimated": True,
+                "source": "meme_default"
+            }
+            
+        # 1. Intentar con Helius primero
+        if self.helius_client:
+            try:
+                data = self.helius_client.get_token_data(token)
+                if data and data.get("market_cap", 0) > 0:
+                    source = "helius"
+                    logger.debug(f"Market data for {token} obtained from Helius")
+            except Exception as e:
+                logger.warning(f"Helius API error for {token}: {str(e)[:100]}")
+        
+        # 2. Si no hay datos válidos, intentar con GMGN
+        if not data or data.get("market_cap", 0) == 0:
+            if self.gmgn_client:
+                try:
+                    gmgn_data = self.gmgn_client.get_market_data(token)
+                    if gmgn_data and gmgn_data.get("market_cap", 0) > 0:
+                        data = gmgn_data
+                        source = "gmgn"
+                        logger.debug(f"Market data for {token} obtained from GMGN")
+                except Exception as e:
+                    logger.warning(f"GMGN API error for {token}: {str(e)[:100]}")
+        
+        # 3. Última opción - DexScreener
+        if not data or data.get("market_cap", 0) == 0 or data.get("volume", 0) == 0:
+            if hasattr(self, 'dex_monitor') and self.dex_monitor:
+                try:
+                    dex_data = await self.dex_monitor.get_combined_liquidity_data(token)
+                    if dex_data:
+                        # Si tenemos algún dato parcial, combinarlo
+                        if not data:
+                            data = {}
+                            
+                        if data.get("market_cap", 0) == 0 and dex_data.get("market_cap", 0) > 0:
+                            data["market_cap"] = dex_data.get("market_cap")
+                            
+                        if data.get("volume", 0) == 0 and dex_data.get("volume_24h", 0) > 0:
+                            data["volume"] = dex_data.get("volume_24h")
+                            
+                        if data.get("price", 0) == 0 and dex_data.get("price", 0) > 0:
+                            data["price"] = dex_data.get("price")
+                            
+                        source = f"{source}_dex" if source != "none" else "dex"
+                        logger.debug(f"Market data for {token} enhanced with DEX data")
+                except Exception as e:
+                    logger.warning(f"DEX data error for {token}: {str(e)[:100]}")
+                    
+        # 4. Si aún falta información crítica, usar valores por defecto
+        if not data:
+            data = {}
+            
+        if data.get("market_cap", 0) == 0:
+            data["market_cap"] = 1000000
+            logger.debug(f"Using default market cap for {token}")
+            
+        if data.get("volume", 0) == 0:
+            data["volume"] = 10000
+            logger.debug(f"Using default volume for {token}")
+            
+        if data.get("price", 0) == 0:
+            data["price"] = 0.00001
+            logger.debug(f"Using default price for {token}")
+            
+        if "volume_growth" not in data:
+            data["volume_growth"] = {"growth_5m": 0.1, "growth_1h": 0.05}
+            
+        if source == "none":
+            source = "default"
+            data["estimated"] = True
+            logger.info(f"Using default market data for {token} - APIs failed")
+            
+        data["source"] = source
+        return data
+
+    def get_active_candidates_count(self):
+        """
+        Retorna el número de candidatos activos.
+        """
+        return len(self.token_candidates)
