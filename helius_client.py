@@ -34,25 +34,8 @@ class HeliusClient:
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
             return self.cache[token]["data"]
         
-        # Para tokens tipo pump, verificar si tiene 'pump' en el nombre
-        if "pump" in token.lower():
-            logger.info(f"Token {token} parece ser un pump token, usando datos predeterminados")
-            # Usar datos predeterminados optimizados para tokens pump
-            data = {
-                "price": 0.000001,
-                "market_cap": 1000000,
-                "volume": 25000,
-                "liquidity": 10000,  # Añadido valor de liquidez
-                "volume_growth": {"growth_5m": 0.35, "growth_1h": 0.25},
-                "source": "default_pump",
-                "token_type": "meme",
-                "is_meme": True,
-                "holders": 50  # Añadido número de holders por defecto
-            }
-            self.cache[token] = {"data": data, "timestamp": now}
-            return data
-        
         data = None
+        
         # Intentar con API v1
         try:
             endpoint = f"tokens/{token}"
@@ -82,6 +65,15 @@ class HeliusClient:
                 "holders": self._extract_value(data, ["holders", "holderCount"]),
                 "source": "helius"
             }
+            
+            # Validar umbrales críticos
+            mcap_threshold = 100000  # $100K
+            volume_threshold = 200000  # $200K
+            
+            # Marcar si cumple umbrales
+            normalized_data["meets_mcap_threshold"] = normalized_data["market_cap"] >= mcap_threshold
+            normalized_data["meets_volume_threshold"] = normalized_data["volume"] >= volume_threshold
+            
             self.cache[token] = {"data": normalized_data, "timestamp": now}
             return normalized_data
         
@@ -90,8 +82,15 @@ class HeliusClient:
             try:
                 import asyncio
                 dex_data = asyncio.run(self.dexscreener_client.fetch_token_data(token))
-                if dex_data and dex_data.get("market_cap", 0) > 0:
+                if dex_data:
                     dex_data["source"] = "dexscreener"
+                    
+                    # Marcar si cumple umbrales
+                    mcap_threshold = 100000  # $100K
+                    volume_threshold = 200000  # $200K
+                    dex_data["meets_mcap_threshold"] = dex_data.get("market_cap", 0) >= mcap_threshold
+                    dex_data["meets_volume_threshold"] = dex_data.get("volume", 0) >= volume_threshold
+                    
                     self.cache[token] = {"data": dex_data, "timestamp": now}
                     return dex_data
             except Exception as e:
@@ -105,7 +104,9 @@ class HeliusClient:
             "liquidity": 5000,
             "holders": 25,
             "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
-            "source": "default"
+            "source": "default",
+            "meets_mcap_threshold": False,
+            "meets_volume_threshold": False
         }
         self.cache[token] = {"data": default_data, "timestamp": now}
         logger.info(f"Usando datos predeterminados para {token} - APIs fallaron")
