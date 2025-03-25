@@ -38,7 +38,8 @@ def send_telegram_message(message):
 def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="", token_name=None, 
                          market_cap=None, initial_price=None, extended_analysis=None, signal_level=None):
     """
-    Envía una señal con formato mejorado y más información útil
+    Envía una señal con formato mejorado y más información útil,
+    destacando market cap y volumen
     """
     # Obtener nombre del token si está disponible
     token_name_display = f"{token_name} " if token_name else ""
@@ -50,6 +51,16 @@ def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="",
             market_cap_display = f"💰 Market Cap: `${market_cap/1000000:.2f}M`\n"
         else:
             market_cap_display = f"💰 Market Cap: `${market_cap/1000:.2f}K`\n"
+    
+    # Formatear volumen si está disponible
+    volume_display = ""
+    if extended_analysis and "market" in extended_analysis:
+        volume = extended_analysis["market"].get("volume", 0)
+        if volume > 0:
+            if volume >= 1000000:
+                volume_display = f"📊 Volumen: `${volume/1000000:.2f}M`\n"
+            else:
+                volume_display = f"📊 Volumen: `${volume/1000:.2f}K`\n"
     
     # Formatear traders con nombres si están disponibles
     trader_names = []
@@ -116,9 +127,10 @@ def send_enhanced_signal(token, confidence, tx_velocity, traders, token_type="",
     msg = (
         f"🚨 *SEÑAL DETECTADA* {signal_level_display}\n\n"
         f"Token: {token_name_display}`{token}`\n"
+        f"{market_cap_display}"  # Destacando market cap
+        f"{volume_display}"     # Destacando volumen
         f"Confianza: `{confidence:.2f}` {confidence_rating}\n"
         f"Velocidad TX: `{tx_velocity:.2f}` tx/min\n"
-        f"{market_cap_display}"
         f"{price_display}"
         f"Traders: {traders_info}\n"
         f"{token_type}\n"
@@ -247,79 +259,4 @@ async def process_telegram_commands(bot_token, chat_id, signal_logic):
     dispatcher = updater.dispatcher
     dispatcher.add_handler(CommandHandler("start", start_command))
     dispatcher.add_handler(CommandHandler("stop", stop_command))
-    dispatcher.add_handler(CommandHandler("status", status_command))
-    dispatcher.add_handler(CommandHandler("stats", stats_command))
-    updater.start_polling()
-    logger.info("✅ Telegram Bot started - Commands enabled")
-    return bot_status["active"]
-
-def fix_telegram_commands():
-    return process_telegram_commands
-
-def fix_on_cielo_message():
-    async def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor):
-        try:
-            import json
-            import time
-            data = json.loads(message)
-            msg_type = data.get("type", "unknown")
-            if msg_type == "tx" and "data" in data:
-                tx_data = data["data"]
-                normalized_tx = {}
-                normalized_tx["wallet"] = tx_data.get("wallet")
-                if not normalized_tx["wallet"]:
-                    logger.debug("Transaction ignored: Missing wallet")
-                    return
-                if tx_data.get("tx_type") == "swap":
-                    token0_is_native = tx_data.get("token0_address") in ["native", "So11111111111111111111111111111111111111112"]
-                    token1_is_native = tx_data.get("token1_address") in ["native", "So11111111111111111111111111111111111111112"]
-                    if token1_is_native and not token0_is_native:
-                        normalized_tx["token"] = tx_data.get("token0_address")
-                        normalized_tx["type"] = "SELL"
-                        normalized_tx["token_name"] = tx_data.get("token0_name", "Unknown")
-                        normalized_tx["token_symbol"] = tx_data.get("token0_symbol", "???")
-                        normalized_tx["amount_usd"] = float(tx_data.get("token0_amount_usd", 0))
-                    elif token0_is_native and not token1_is_native:
-                        normalized_tx["token"] = tx_data.get("token1_address")
-                        normalized_tx["type"] = "BUY"
-                        normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
-                        normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
-                        normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
-                    else:
-                        normalized_tx["token"] = tx_data.get("token1_address")
-                        normalized_tx["type"] = "BUY"
-                        normalized_tx["token_name"] = tx_data.get("token1_name", "Unknown")
-                        normalized_tx["token_symbol"] = tx_data.get("token1_symbol", "???")
-                        normalized_tx["amount_usd"] = float(tx_data.get("token1_amount_usd", 0))
-                elif tx_data.get("tx_type") == "transfer":
-                    normalized_tx["token"] = tx_data.get("contract_address")
-                    normalized_tx["type"] = "TRANSFER"
-                    normalized_tx["token_name"] = tx_data.get("name", "Unknown")
-                    normalized_tx["token_symbol"] = tx_data.get("symbol", "???")
-                    normalized_tx["amount_usd"] = float(tx_data.get("amount_usd", 0))
-                else:
-                    logger.debug(f"Transaction type not processed: {tx_data.get('tx_type')}")
-                    return
-                normalized_tx["timestamp"] = tx_data.get("timestamp", int(time.time()))
-                min_tx_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
-                if normalized_tx["amount_usd"] < min_tx_usd:
-                    return
-                if not normalized_tx.get("token") or normalized_tx["token"] in ["native", "So11111111111111111111111111111111111111112"]:
-                    logger.debug("Transaction ignored: Token is native or missing")
-                    return
-                logger.info(f"Normalized transaction: {normalized_tx['wallet']} | {normalized_tx['token']} | {normalized_tx['type']} | ${normalized_tx['amount_usd']:.2f}")
-                signal_logic.process_transaction(normalized_tx)
-                scalper_monitor.process_transaction(normalized_tx)
-                
-                # También enviar a nuevos módulos si existen
-                if hasattr(signal_logic, 'trader_profiler'):
-                    signal_logic.trader_profiler.process_transaction(normalized_tx)
-                if hasattr(signal_logic, 'whale_detector'):
-                    await signal_logic.whale_detector.analyze_transaction_impact(
-                        normalized_tx["token"], normalized_tx, None)
-                
-            elif msg_type not in ["wallet_subscribed", "pong"]:
-                logger.debug(f"Message type {msg_type} not processed")
-        except Exception as e:
-            logger.error(f"Error in on_cielo_message: {e}", exc_info=True)
-    return on_cielo_message
+    dispatcher.add_handler(Co
