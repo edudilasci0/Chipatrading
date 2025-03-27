@@ -2,7 +2,9 @@
 import logging
 import requests
 import time
-import asyncio  # Añadido el import de asyncio
+import asyncio
+import json
+from typing import Dict, List, Callable, Any, Optional
 from config import Config
 import db
 
@@ -191,72 +193,411 @@ def send_performance_report(token, signal_id, timeframe, percent_change, volatil
     
     return send_telegram_message(message)
 
-async def process_telegram_commands(bot_token, chat_id, signal_logic):
-    try:
-        from telegram import ParseMode
-        from telegram.ext import Updater, CommandHandler
-    except ImportError:
-        logger.error("Install python-telegram-bot: pip install python-telegram-bot==13.15")
-        return True
-
-    bot_status = {"active": True, "verbosity": logging.INFO}
-
-    def start_command(update, context):
-        if str(update.effective_chat.id) != str(chat_id):
-            update.message.reply_text("⛔️ Not authorized.")
-            return
-        bot_status["active"] = True
-        update.message.reply_text("✅ Bot activated.")
-
-    def stop_command(update, context):
-        if str(update.effective_chat.id) != str(chat_id):
-            update.message.reply_text("⛔️ Not authorized.")
-            return
-        bot_status["active"] = False
-        update.message.reply_text("🛑 Bot deactivated.")
-
-    def status_command(update, context):
-        if str(update.effective_chat.id) != str(chat_id):
-            update.message.reply_text("⛔️ Not authorized.")
-            return
-        active_tokens = signal_logic.get_active_candidates_count() if hasattr(signal_logic, "get_active_candidates_count") else 0
-        signals_today = db.count_signals_today()
-        txs_today = db.count_transactions_today()
-        
-        update.message.reply_text(
-            f"*Bot Status:*\n"
-            f"Active: {'✅' if bot_status['active'] else '🛑'}\n"
-            f"Tokens monitored: `{active_tokens}`\n"
-            f"Signals today: `{signals_today}`\n"
-            f"Transactions processed: `{txs_today}`", 
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-    def stats_command(update, context):
-        if str(update.effective_chat.id) != str(chat_id):
-            update.message.reply_text("⛔️ Not authorized.")
-            return
-        
+def fix_telegram_commands():
+    async def process_telegram_commands(bot_token, chat_id, signal_logic, wallet_manager=None):
         try:
-            performance_stats = db.get_signals_performance_stats()
-            if not performance_stats:
-                update.message.reply_text("No hay estadísticas de rendimiento disponibles.")
+            from telegram import Update, ParseMode
+            from telegram.ext import Updater, CommandHandler, CallbackContext
+        except ImportError:
+            logger.error("Install python-telegram-bot: pip install python-telegram-bot==13.15")
+            return True
+
+        bot_status = {"active": True, "verbosity": logging.INFO}
+
+        def start_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            bot_status["active"] = True
+            update.message.reply_text("✅ Bot activated.")
+
+        def stop_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            bot_status["active"] = False
+            update.message.reply_text("🛑 Bot deactivated.")
+
+        def status_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            active_tokens = signal_logic.get_active_candidates_count() if hasattr(signal_logic, "get_active_candidates_count") else 0
+            signals_today = db.count_signals_today()
+            txs_today = db.count_transactions_today()
+            
+            update.message.reply_text(
+                f"*Bot Status:*\n"
+                f"Active: {'✅' if bot_status['active'] else '🛑'}\n"
+                f"Tokens monitored: `{active_tokens}`\n"
+                f"Signals today: `{signals_today}`\n"
+                f"Transactions processed: `{txs_today}`", 
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+        def stats_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
                 return
             
-            stats_text = "*Estadísticas de Rendimiento:*\n\n"
-            for stat in performance_stats:
-                stats_text += f"*{stat['timeframe']}*: "
-                stats_text += f"`{stat['avg_percent_change']}%` promedio, "
-                stats_text += f"`{stat['success_rate']}%` de éxito "
-                stats_text += f"({stat['total_signals']} señales)\n"
+            try:
+                performance_stats = db.get_signals_performance_stats()
+                if not performance_stats:
+                    update.message.reply_text("No hay estadísticas de rendimiento disponibles.")
+                    return
+                
+                stats_text = "*Estadísticas de Rendimiento:*\n\n"
+                for stat in performance_stats:
+                    stats_text += f"*{stat['timeframe']}*: "
+                    stats_text += f"`{stat['avg_percent_change']}%` promedio, "
+                    stats_text += f"`{stat['success_rate']}%` de éxito "
+                    stats_text += f"({stat['total_signals']} señales)\n"
+                
+                update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                logger.error(f"Error en stats_command: {e}")
+                update.message.reply_text(f"Error al obtener estadísticas: {e}")
+        
+        # Comandos para gestión de wallets
+        def add_wallet_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
             
-            update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            logger.error(f"Error en stats_command: {e}")
-            update.message.reply_text(f"Error al obtener estadísticas: {e}")
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            args = context.args
+            if len(args) < 1:
+                update.message.reply_text("Uso: /addwallet <address> [name] [category] [score]")
+                return
+            
+            address = args[0]
+            name = args[1] if len(args) > 1 else address[:8]
+            category = args[2] if len(args) > 2 else "Default"
+            
+            try:
+                score = float(args[3]) if len(args) > 3 else float(Config.DEFAULT_SCORE)
+            except ValueError:
+                update.message.reply_text("Score debe ser un número.")
+                return
+            
+            if wallet_manager.add_wallet(address, name, category, score):
+                update.message.reply_text(f"✅ Wallet añadida: {name} ({address[:6]}...{address[-4:]})")
+            else:
+                update.message.reply_text(f"❌ Error al añadir wallet.")
 
-    updater = Updater(bot_token)
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler("start", start_command))
-    dispatcher.add_handler(CommandHandler("stop", stop_command))
-    dispatcher.add_handler(Co
+        def remove_wallet_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            args = context.args
+            if not args:
+                update.message.reply_text("Uso: /removewallet <address>")
+                return
+            
+            address = args[0]
+            if wallet_manager.remove_wallet(address):
+                update.message.reply_text(f"✅ Wallet eliminada: {address[:6]}...{address[-4:]}")
+            else:
+                update.message.reply_text(f"❌ Error al eliminar wallet.")
+
+        def walletinfo_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            args = context.args
+            if not args:
+                update.message.reply_text("Uso: /walletinfo <address>")
+                return
+            
+            address = args[0]
+            wallet_info = wallet_manager.get_wallet_info(address)
+            
+            if wallet_info:
+                try:
+                    # Intentar obtener estadísticas de BD
+                    profit_stats = db.get_wallet_profit_stats(address)
+                    
+                    msg = (
+                        f"*📊 Información de Wallet*\n\n"
+                        f"Dirección: `{address}`\n"
+                        f"Nombre: {wallet_info.get('name', 'N/A')}\n"
+                        f"Categoría: {wallet_info.get('category', 'Default')}\n"
+                        f"Score: `{wallet_info.get('score', Config.DEFAULT_SCORE)}`\n"
+                    )
+                    
+                    if profit_stats:
+                        msg += (
+                            f"\n*Estadísticas de Trading:*\n"
+                            f"Trades: {profit_stats.get('trade_count', 0)}\n"
+                            f"Win Rate: {profit_stats.get('win_rate', 0):.1f}%\n"
+                            f"Profit Promedio: {profit_stats.get('avg_profit', 0):.1f}%\n"
+                            f"Tiempo de Retención: {profit_stats.get('avg_hold_time', 0):.1f}h\n"
+                        )
+                    
+                    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+                except Exception as e:
+                    logger.error(f"Error obteniendo datos de wallet: {e}")
+                    update.message.reply_text(f"Error: {e}")
+            else:
+                update.message.reply_text(f"❌ Wallet no encontrada: {address[:6]}...{address[-4:]}")
+
+        def listwallets_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            args = context.args
+            category = args[0] if args else None
+            
+            if category:
+                wallets = wallet_manager.get_wallets_by_category(category)
+                title = f"*Wallets en categoría '{category}'*"
+            else:
+                categories = wallet_manager.get_categories()
+                
+                # Mostrar resumen por categorías
+                msg = "*📊 Resumen de Wallets por Categoría*\n\n"
+                for cat in categories:
+                    cat_wallets = wallet_manager.get_wallets_by_category(cat)
+                    msg += f"*{cat}*: {len(cat_wallets)} wallets\n"
+                
+                msg += "\nUsa /listwallets <categoria> para ver wallets específicas."
+                update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+                return
+            
+            if wallets:
+                # Limitar a máximo 20 wallets para evitar mensajes muy largos
+                display_wallets = wallets[:20]
+                msg = f"{title}\n\n"
+                
+                for wallet in display_wallets:
+                    info = wallet_manager.get_wallet_info(wallet)
+                    name = info.get("name", wallet[:8]) if info else wallet[:8]
+                    score = info.get("score", "-") if info else "-"
+                    msg += f"• {name}: `{wallet[:6]}...{wallet[-4:]}` (Score: {score})\n"
+                
+                if len(wallets) > 20:
+                    msg += f"\n... y {len(wallets) - 20} más."
+                
+                update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            else:
+                update.message.reply_text(f"No hay wallets en la categoría '{category}'.")
+
+        def importwallets_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            # Verificar si hay un archivo adjunto
+            if not update.message.document:
+                update.message.reply_text("Por favor, adjunta un archivo JSON o CSV.")
+                return
+            
+            try:
+                from telegram.ext import Dispatcher
+                # Descargar el archivo
+                file = context.bot.get_file(update.message.document.file_id)
+                file_path = f"/tmp/{update.message.document.file_name}"
+                file.download(file_path)
+                
+                # Determinar formato basado en extensión
+                format = "json" if file_path.lower().endswith(".json") else "csv"
+                
+                # Importar wallets
+                count = wallet_manager.import_wallets(file_path, format)
+                
+                if count > 0:
+                    update.message.reply_text(f"✅ Importadas {count} wallets correctamente.")
+                else:
+                    update.message.reply_text("❌ No se pudieron importar wallets.")
+                    
+            except Exception as e:
+                logger.error(f"Error importando wallets: {e}")
+                update.message.reply_text(f"Error: {e}")
+
+        def exportwallets_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            args = context.args
+            format = args[0].lower() if args else "json"
+            
+            if format not in ["json", "csv"]:
+                update.message.reply_text("Formato no válido. Usa 'json' o 'csv'.")
+                return
+            
+            try:
+                # Exportar a archivo temporal
+                file_path = f"/tmp/wallets_export_{int(time.time())}.{format}"
+                path = wallet_manager.export_wallets(format, file_path)
+                
+                if path:
+                    # Enviar archivo
+                    with open(path, "rb") as file:
+                        context.bot.send_document(
+                            chat_id=update.effective_chat.id,
+                            document=file,
+                            filename=f"wallets_export.{format}",
+                            caption=f"Exportación de wallets en formato {format.upper()}"
+                        )
+                else:
+                    update.message.reply_text("❌ Error al exportar wallets.")
+                    
+            except Exception as e:
+                logger.error(f"Error exportando wallets: {e}")
+                update.message.reply_text(f"Error: {e}")
+
+        def categories_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            categories = wallet_manager.get_categories()
+            
+            if categories:
+                stats = wallet_manager.get_wallet_stats()
+                
+                msg = "*📊 Categorías de Wallets*\n\n"
+                for category in sorted(categories):
+                    count = stats["wallets_per_category"].get(category, 0)
+                    msg += f"• *{category}*: {count} wallets\n"
+                
+                update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            else:
+                update.message.reply_text("No hay categorías definidas.")
+
+        def addcategory_command(update, context):
+            if str(update.effective_chat.id) != str(chat_id):
+                update.message.reply_text("⛔️ Not authorized.")
+                return
+            
+            if not wallet_manager:
+                update.message.reply_text("Wallet manager no disponible.")
+                return
+            
+            args = context.args
+            if not args:
+                update.message.reply_text("Uso: /addcategory <nombre>")
+                return
+            
+            category = args[0]
+            if wallet_manager.add_category(category):
+                update.message.reply_text(f"✅ Categoría añadida: {category}")
+            else:
+                update.message.reply_text(f"❌ Error al añadir categoría.")
+
+        try:
+            updater = Updater(bot_token)
+            dispatcher = updater.dispatcher
+            
+            # Comandos básicos
+            dispatcher.add_handler(CommandHandler("start", start_command))
+            dispatcher.add_handler(CommandHandler("stop", stop_command))
+            dispatcher.add_handler(CommandHandler("status", status_command))
+            dispatcher.add_handler(CommandHandler("stats", stats_command))
+            
+            # Comandos de gestión de wallets
+            if wallet_manager:
+                dispatcher.add_handler(CommandHandler("addwallet", add_wallet_command))
+                dispatcher.add_handler(CommandHandler("removewallet", remove_wallet_command))
+                dispatcher.add_handler(CommandHandler("walletinfo", walletinfo_command))
+                dispatcher.add_handler(CommandHandler("listwallets", listwallets_command))
+                dispatcher.add_handler(CommandHandler("importwallets", importwallets_command))
+                dispatcher.add_handler(CommandHandler("exportwallets", exportwallets_command))
+                dispatcher.add_handler(CommandHandler("categories", categories_command))
+                dispatcher.add_handler(CommandHandler("addcategory", addcategory_command))
+            
+            updater.start_polling()
+            logger.info(f"🤖 Bot de Telegram iniciado. ID del chat: {chat_id}")
+            
+            while True:
+                await asyncio.sleep(60)
+                
+        except Exception as e:
+            logger.error(f"Error en Telegram bot: {e}")
+            return False
+        
+    return process_telegram_commands
+
+def fix_on_cielo_message():
+    def on_cielo_message(message, wallet_tracker, scoring_system, signal_logic, scalper_monitor=None):
+        try:
+            data = json.loads(message)
+            
+            # Solo manejar mensajes de transacción
+            if "type" not in data or data["type"] != "transaction":
+                return
+            
+            # Verificar que tenga los campos necesarios
+            if "data" not in data:
+                return
+            
+            tx_data = data["data"]
+            
+            # Ignorar transacciones sin información de token o valor
+            if "token" not in tx_data or "amountUsd" not in tx_data:
+                logger.debug("Transacción sin datos de token o monto ignorada")
+                return
+            
+            # Normalizar datos para procesamiento
+            normalized_tx = {
+                "wallet": tx_data.get("wallet", ""),
+                "token": tx_data.get("token", ""),
+                "type": tx_data.get("txType", "").upper(),
+                "amount_usd": float(tx_data.get("amountUsd", 0)),
+                "timestamp": time.time()
+            }
+            
+            # Verificar umbrales mínimos
+            min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+            if normalized_tx["amount_usd"] < min_usd:
+                return
+            
+            # Procesar la transacción a través de la lógica de señales
+            if signal_logic:
+                signal_logic.process_transaction(normalized_tx)
+            
+            # Actualizar sistema de scoring
+            if scoring_system:
+                scoring_system.update_score_on_trade(normalized_tx["wallet"], normalized_tx)
+            
+            # Procesar para monitoreo de scalpers
+            if scalper_monitor:
+                scalper_monitor.process_transaction(normalized_tx)
+            
+        except json.JSONDecodeError:
+            logger.warning("Error decodificando mensaje JSON de Cielo")
+        except Exception as e:
+            logger.error(f"Error procesando mensaje de Cielo: {e}")
+    
+    return on_cielo_message
