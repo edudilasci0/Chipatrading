@@ -14,8 +14,10 @@ import db
 # Servicios y APIs
 from cielo_api import CieloAPI
 from helius_client import HeliusClient
-from gmgn_client import GMGNClient
+# Se elimina la siguiente línea:
+# from gmgn_client import GMGNClient
 from dexscreener_client import DexScreenerClient
+from rugcheck import RugCheckAPI
 
 # Componentes principales
 from wallet_tracker import WalletTracker
@@ -23,7 +25,6 @@ from scoring import ScoringSystem
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
 from scalper_monitor import ScalperActivityMonitor
-from rugcheck import RugCheckAPI
 
 # Componentes avanzados
 from dex_monitor import DexMonitor
@@ -147,7 +148,8 @@ async def main():
         
         # Servicios externos
         helius_client = HeliusClient(Config.HELIUS_API_KEY)
-        gmgn_client = GMGNClient()
+        # Se elimina la inicialización de GMGN:
+        # gmgn_client = GMGNClient()
         dexscreener_client = DexScreenerClient()
         rugcheck_api = RugCheckAPI()
         helius_client.dexscreener_client = dexscreener_client
@@ -172,10 +174,11 @@ async def main():
         )
         performance_tracker.token_analyzer = token_analyzer
         
+        # Inicialización de SignalLogic sin gmgn_client
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
-            gmgn_client=gmgn_client,
+            # Se elimina gmgn_client aquí
             rugcheck_api=rugcheck_api,
             ml_predictor=signal_predictor,
             wallet_tracker=wallet_tracker
@@ -188,7 +191,6 @@ async def main():
         signal_logic.dexscreener_client = dexscreener_client
         signal_logic.performance_tracker = performance_tracker
         
-        # Establecer umbrales críticos
         Config.update_setting("mcap_threshold", "100000")
         Config.update_setting("volume_threshold", "200000")
         
@@ -198,7 +200,8 @@ async def main():
         components = {
             "helius_client": helius_client,
             "dexscreener_client": dexscreener_client,
-            "gmgn_client": gmgn_client,
+            # Se elimina "gmgn_client" de los componentes:
+            # "gmgn_client": gmgn_client,
             "dex_monitor": dex_monitor,
             "whale_detector": whale_detector,
             "market_metrics": market_metrics,
@@ -219,7 +222,7 @@ async def main():
             if token:
                 performance_tracker.add_signal(token, signal)
         
-        # Iniciar bot de Telegram, pasando wallet_manager también
+        # Iniciar bot de Telegram y pasar wallet_manager
         telegram_process_commands = fix_telegram_commands()
         wallet_manager = WalletManager()
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
@@ -238,7 +241,7 @@ async def main():
         
         on_cielo_message = fix_on_cielo_message()
         
-        # --- Configuración y gestión de TransactionManager ---
+        # Configuración y gestión de TransactionManager
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
@@ -262,7 +265,7 @@ async def main():
                     await asyncio.sleep(5)
                     await transaction_manager.start()
         monitor_task = asyncio.create_task(monitor_transaction_manager())
-        # --- Fin gestión TransactionManager ---
+        # Fin de TransactionManager
         
         startup_message = (
             "🚀 *Bot Iniciado Correctamente*\n\n"
