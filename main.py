@@ -14,10 +14,10 @@ import db
 # Servicios y APIs
 from cielo_api import CieloAPI
 from helius_client import HeliusClient
-# Se elimina la siguiente línea:
-# from gmgn_client import GMGNClient
+# Se elimina: from gmgn_client import GMGNClient
 from dexscreener_client import DexScreenerClient
-from rugcheck import RugCheckAPI
+# Se elimina la importación de RugCheckAPI:
+# from rugcheck import RugCheckAPI
 
 # Componentes principales
 from wallet_tracker import WalletTracker
@@ -25,6 +25,7 @@ from scoring import ScoringSystem
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
 from scalper_monitor import ScalperActivityMonitor
+from signal_predictor import SignalPredictor
 
 # Componentes avanzados
 from dex_monitor import DexMonitor
@@ -32,7 +33,6 @@ from market_metrics import MarketMetricsAnalyzer
 from token_analyzer import TokenAnalyzer
 from trader_profiler import TraderProfiler
 from whale_detector import WhaleDetector
-from signal_predictor import SignalPredictor
 
 # Utilidades
 from telegram_utils import fix_telegram_commands, fix_on_cielo_message
@@ -84,7 +84,7 @@ async def cleanup_resources(components):
 async def periodic_maintenance(components):
     """Realiza mantenimiento periódico de caché y limpieza de datos"""
     try:
-        cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))
+        cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))  # 1 hora por defecto
         while not shutdown_flag:
             await asyncio.sleep(cleanup_interval)
             if shutdown_flag:
@@ -151,7 +151,8 @@ async def main():
         # Se elimina la inicialización de GMGN:
         # gmgn_client = GMGNClient()
         dexscreener_client = DexScreenerClient()
-        rugcheck_api = RugCheckAPI()
+        # Se elimina RugCheckAPI:
+        # rugcheck_api = RugCheckAPI()
         helius_client.dexscreener_client = dexscreener_client
         
         # Componentes principales
@@ -174,12 +175,11 @@ async def main():
         )
         performance_tracker.token_analyzer = token_analyzer
         
-        # Inicialización de SignalLogic sin gmgn_client
+        # Inicialización de SignalLogic sin gmgn_client y sin RugCheckAPI (rugcheck_api=None)
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
-            # Se elimina gmgn_client aquí
-            rugcheck_api=rugcheck_api,
+            rugcheck_api=None,  # Se elimina la dependencia de RugCheckAPI
             ml_predictor=signal_predictor,
             wallet_tracker=wallet_tracker
         )
@@ -201,7 +201,6 @@ async def main():
             "helius_client": helius_client,
             "dexscreener_client": dexscreener_client,
             # Se elimina "gmgn_client" de los componentes:
-            # "gmgn_client": gmgn_client,
             "dex_monitor": dex_monitor,
             "whale_detector": whale_detector,
             "market_metrics": market_metrics,
