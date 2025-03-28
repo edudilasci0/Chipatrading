@@ -13,12 +13,15 @@ from telegram_utils import send_enhanced_signal
 logger = logging.getLogger("signal_logic")
 
 class SignalLogic:
-    def __init__(self, scoring_system=None, helius_client=None, gmgn_client=None,
+    def __init__(self, scoring_system=None, helius_client=None,
                  rugcheck_api=None, ml_predictor=None, pattern_detector=None,
                  wallet_tracker=None):
+        """
+        Inicializa la clase con los parámetros actuales e instancia los nuevos módulos.
+        """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
-        self.gmgn_client = gmgn_client
+        # Se elimina gmgn_client
         self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
@@ -363,16 +366,7 @@ class SignalLogic:
                     logger.debug(f"Market data for {token} obtained from Helius")
             except Exception as e:
                 logger.warning(f"Helius API error for {token}: {str(e)[:100]}")
-        if not data or data.get("market_cap", 0) == 0:
-            if self.gmgn_client:
-                try:
-                    gmgn_data = self.gmgn_client.get_market_data(token)
-                    if gmgn_data and gmgn_data.get("market_cap", 0) > 0:
-                        data = gmgn_data
-                        source = "gmgn"
-                        logger.debug(f"Market data for {token} obtained from GMGN")
-                except Exception as e:
-                    logger.warning(f"GMGN API error for {token}: {str(e)[:100]}")
+        # Se elimina el bloque de GMGN completamente
         if not data or data.get("market_cap", 0) == 0 or data.get("volume", 0) == 0:
             if hasattr(self, 'dex_monitor') and self.dex_monitor:
                 try:
@@ -406,7 +400,7 @@ class SignalLogic:
         if source == "none":
             source = "default"
             data["estimated"] = True
-            logger.info(f"Using default market data for {token} - APIs failed")
+            logger.debug(f"Using default market data for {token} - APIs failed")
         data["source"] = source
         return data
 
