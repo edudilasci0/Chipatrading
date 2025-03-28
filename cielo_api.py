@@ -49,19 +49,13 @@ class CieloAPI:
         try:
             if self.ws is not None and not self.ws.closed:
                 await self.disconnect()
-            
             self.is_running = True
             headers = {"X-API-KEY": self.api_key}
             self.ws = await websockets.connect(self.ws_url, extra_headers=headers, ping_interval=30)
             logger.info("WebSocket conectado a Cielo")
-            
-            # Iniciar suscripción a wallets
             await self.subscribe_to_wallets(self.ws, wallets)
-            
-            # Iniciar tareas de ping y recepción
             self.ping_task = asyncio.create_task(self._ping_periodically(self.ws))
             asyncio.create_task(self._listen_messages(self.ws))
-            
             return True
         except Exception as e:
             logger.error(f"Error en connect: {e}")
@@ -71,14 +65,12 @@ class CieloAPI:
     async def disconnect(self):
         """Cierra conexión ordenadamente"""
         self.is_running = False
-        
         if self.ping_task:
             self.ping_task.cancel()
             try:
                 await self.ping_task
             except asyncio.CancelledError:
                 pass
-        
         if self.ws:
             try:
                 await self.ws.close()
@@ -114,8 +106,6 @@ class CieloAPI:
             try:
                 message = await ws.recv()
                 self.last_message_time = time.time()
-                
-                # Usar callback si está configurado
                 if self.message_callback:
                     await self.message_callback(message)
             except websockets.ConnectionClosed:
