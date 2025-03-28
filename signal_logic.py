@@ -21,8 +21,8 @@ class SignalLogic:
         """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
-        # Se elimina gmgn_client
-        self.rugcheck_api = rugcheck_api
+        # Se elimina gmgn_client y se utiliza rugcheck_api=None para eliminar RugCheck
+        self.rugcheck_api = rugcheck_api  # Puede ser None
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
         self.wallet_tracker = wallet_tracker
@@ -366,7 +366,7 @@ class SignalLogic:
                     logger.debug(f"Market data for {token} obtained from Helius")
             except Exception as e:
                 logger.warning(f"Helius API error for {token}: {str(e)[:100]}")
-        # Se elimina el bloque de GMGN completamente
+        # Se elimina el bloque de GMGN
         if not data or data.get("market_cap", 0) == 0 or data.get("volume", 0) == 0:
             if hasattr(self, 'dex_monitor') and self.dex_monitor:
                 try:
