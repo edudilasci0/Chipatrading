@@ -21,8 +21,8 @@ class SignalLogic:
         """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
-        # Se elimina gmgn_client y se utiliza rugcheck_api=None para eliminar RugCheck
-        self.rugcheck_api = rugcheck_api  # Puede ser None
+        # Se elimina gmgn_client; rugcheck_api se pasa, pero puede ser None.
+        self.rugcheck_api = rugcheck_api
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
         self.wallet_tracker = wallet_tracker
@@ -51,6 +51,10 @@ class SignalLogic:
         }
     
     def process_transaction(self, tx_data):
+        """
+        Procesa una transacción entrante y actualiza las estadísticas del token.
+        Ahora se procesan todas las transacciones sin filtrar exclusivamente por traders elite.
+        """
         try:
             if not tx_data or "token" not in tx_data:
                 return
@@ -69,7 +73,6 @@ class SignalLogic:
                 return
                 
             wallet_score = self.scoring_system.get_score(wallet) if self.scoring_system else 5.0
-            is_elite_trader = wallet_score >= 8.0
             
             self._update_token_stats(token, wallet, tx_data, wallet_score)
             
@@ -83,9 +86,8 @@ class SignalLogic:
             except Exception as e:
                 logger.error(f"Error guardando transacción en BD: {e}")
             
-            if is_elite_trader and tx_type == "BUY":
-                logger.info(f"Trader elite {wallet} (score: {wallet_score:.1f}) detectado comprando {token}")
-                asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
+            # Se procesa la transacción para ver si se debe generar señal
+            asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
                 
         except Exception as e:
             logger.error(f"Error procesando transacción en SignalLogic: {e}", exc_info=True)
@@ -124,6 +126,28 @@ class SignalLogic:
         candidate["transactions"].append(tx_data_enhanced)
         candidate["last_update"] = timestamp
             
+    def _calculate_transaction_confidence(self, transactions):
+        """
+        Calcula un factor de confianza basado en los montos individuales de las transacciones.
+        Prioriza transacciones mayores: $1K, $2K, $3K, $5K, $10K+.
+        """
+        if not transactions:
+            return 0.0
+        total = sum(tx.get("amount_usd", 0) for tx in transactions)
+        avg = total / len(transactions)
+        if avg >= 10000:
+            return 1.0
+        elif avg >= 5000:
+            return 0.9
+        elif avg >= 3000:
+            return 0.8
+        elif avg >= 2000:
+            return 0.7
+        elif avg >= 1000:
+            return 0.6
+        else:
+            return 0.5
+    
     async def _verify_and_signal(self, token, wallet, tx_data, wallet_score):
         try:
             if token in self.watched_tokens:
@@ -132,8 +156,8 @@ class SignalLogic:
             market_data = await self.get_token_market_data(token)
             market_cap = market_data.get("market_cap", 0)
             volume = market_data.get("volume", 0)
-            mcap_threshold = 100000  # $100K market cap
-            volume_threshold = 200000  # $200K volumen
+            mcap_threshold = 100000  # $100K
+            volume_threshold = 200000  # $200K
             meets_mcap = market_cap >= mcap_threshold
             meets_volume = volume >= volume_threshold
             if meets_mcap and meets_volume:
@@ -212,13 +236,21 @@ class SignalLogic:
                 "wallets": {wallet},
                 "high_quality_traders": {wallet} if wallet_score >= 8.0 else set(),
                 "buy_count": 1,
-                "volume_usd": market_data.get("volume", 0)
+                "volume_usd": market_data.get("volume", 0),
+                "transactions": []
             })
             initial_price = market_data.get("price", 0)
             market_cap = market_data.get("market_cap", 0)
             token_name = market_data.get("name", "")
-            high_quality_count = len(candidate.get("high_quality_traders", {wallet}))
-            confidence = min(0.95, 0.7 + (high_quality_count * 0.05))
+            num_wallets = len(candidate.get("wallets", []))
+            # Calcula un factor basado en los montos individuales
+            tx_amount_factor = self._calculate_transaction_confidence(candidate.get("transactions", []))
+            base_confidence = 0.5 + (num_wallets * 0.02)
+            # Factor de calidad de traders (secundario)
+            high_quality_factor = 0.05 * len(candidate.get("high_quality_traders", []))
+            # Bono por actividad de whales
+            whale_bonus = 0.05 if candidate.get("whale_activity", False) else 0.0
+            confidence = min(0.95, base_confidence + tx_amount_factor + high_quality_factor + whale_bonus)
             if confidence >= 0.9:
                 signal_level = "S"
             elif confidence >= 0.8:
@@ -227,7 +259,7 @@ class SignalLogic:
                 signal_level = "B"
             else:
                 signal_level = "C"
-            trader_count = len(candidate.get("wallets", {wallet}))
+            trader_count = num_wallets
             signal_id = db.save_signal(token, trader_count, confidence, initial_price)
             features = {
                 "token": token,
@@ -403,7 +435,7 @@ class SignalLogic:
             logger.debug(f"Using default market data for {token} - APIs failed")
         data["source"] = source
         return data
-
+    
     def get_active_candidates_count(self):
         return len(self.token_candidates)
     
