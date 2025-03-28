@@ -37,6 +37,10 @@ from signal_predictor import SignalPredictor
 from telegram_utils import fix_telegram_commands, fix_on_cielo_message
 import telegram_utils
 
+# Nuevos componentes de gestión
+from wallet_manager import WalletManager
+from transaction_manager import TransactionManager
+
 # Configuración de logging
 logger = logging.getLogger(__name__)
 
@@ -89,14 +93,12 @@ async def periodic_maintenance(components):
         cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))  # 1 hora por defecto
         
         while not shutdown_flag:
-            # Esperar antes de la primera ejecución
             await asyncio.sleep(cleanup_interval)
             
             if shutdown_flag:
                 break
                 
             logger.info("🧹 Iniciando mantenimiento periódico...")
-            
             start_time = time.time()
             
             # Limpiar datos antiguos en cada componente
@@ -122,28 +124,22 @@ async def periodic_maintenance(components):
 async def process_pending_signals():
     """Procesa señales pendientes al iniciar"""
     try:
-        # Obtener señales recientes sin seguimiento completo
         recent_signals = db.get_recent_untracked_signals(hours=24)
         
         if not recent_signals:
             logger.info("No hay señales pendientes para procesar")
-            return []  # Devolver lista vacía en lugar de None
+            return []
         
         logger.info(f"Procesando {len(recent_signals)} señales pendientes...")
-        
-        # Sería ideal tener la instancia de PerformanceTracker aquí, pero
-        # como esto es una función separada, se manejará desde el main
-        
         return recent_signals
     except Exception as e:
         logger.error(f"Error procesando señales pendientes: {e}")
-        return []  # También devolver lista vacía en caso de error
+        return []
 
 async def run_heartbeat(interval=300):
     """Envía señales de heartbeat periódicas"""
     while not shutdown_flag:
         try:
-            # Recopilar estadísticas
             stats = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "uptime": int(time.time() - start_time),
@@ -153,34 +149,25 @@ async def run_heartbeat(interval=300):
             }
             
             logger.info(f"❤️ Heartbeat | Señales hoy: {stats['signal_count']} | Transacciones: {stats['transaction_count']}")
-            
-            # Opcional: guardar estadísticas en BD
-            
             await asyncio.sleep(interval)
         except Exception as e:
             logger.error(f"Error en heartbeat: {e}")
-            await asyncio.sleep(60)  # Intervalo más corto en caso de error
+            await asyncio.sleep(60)
 
 async def main():
     global shutdown_flag, start_time
     
     try:
-        # Registrar tiempo de inicio
         start_time = time.time()
-        
-        # Configurar manejadores de señales
         setup_signal_handlers()
         
-        # Inicializar base de datos
         db_ready = db.init_db()
         if not db_ready:
             logger.critical("No se pudo inicializar la base de datos. Abortando.")
             return 1
         
-        # Verificar configuración requerida
         Config.check_required_config()
         
-        # Inicializar componentes
         logger.info("🔄 Inicializando componentes...")
         
         # Servicios externos
@@ -189,10 +176,9 @@ async def main():
         dexscreener_client = DexScreenerClient()
         rugcheck_api = RugCheckAPI()
         
-        # Conectar cliente DexScreener a Helius como fallback
         helius_client.dexscreener_client = dexscreener_client
         
-        # Inicializar componentes principales
+        # Componentes principales
         wallet_tracker = WalletTracker()
         scoring_system = ScoringSystem()
         signal_predictor = SignalPredictor()
@@ -204,7 +190,6 @@ async def main():
         token_analyzer = TokenAnalyzer(token_data_service=helius_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
         
-        # Monitores y detectores
         scalper_monitor = ScalperActivityMonitor()
         performance_tracker = PerformanceTracker(
             token_data_service=helius_client,
@@ -212,11 +197,8 @@ async def main():
             market_metrics=market_metrics,
             whale_detector=whale_detector
         )
-        
-        # Añadir token_analyzer al performance_tracker para análisis técnico
         performance_tracker.token_analyzer = token_analyzer
         
-        # Inicializar la lógica central de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
@@ -225,27 +207,20 @@ async def main():
             ml_predictor=signal_predictor,
             wallet_tracker=wallet_tracker
         )
-        
-        # Conectar componentes avanzados a la lógica de señales
         signal_logic.whale_detector = whale_detector
         signal_logic.market_metrics = market_metrics
         signal_logic.token_analyzer = token_analyzer
         signal_logic.trader_profiler = trader_profiler
         signal_logic.dex_monitor = dex_monitor
-        signal_logic.dexscreener_client = dexscreener_client  # Añadimos conexión directa a DexScreener
-        
-        # Añadir referencia cruzada al performance_tracker
+        signal_logic.dexscreener_client = dexscreener_client
         signal_logic.performance_tracker = performance_tracker
         
-        # Establecer umbrales críticos
-        Config.update_setting("mcap_threshold", "100000")  # $100K market cap mínimo
-        Config.update_setting("volume_threshold", "200000")  # $200K volumen mínimo
+        Config.update_setting("mcap_threshold", "100000")
+        Config.update_setting("volume_threshold", "200000")
         
-        # Registro y estado
         logger.info("✅ Todos los componentes inicializados correctamente")
-        logger.info(f"📊 Umbrales establecidos: Market Cap mín. $100K, Volumen mín. $200K")
+        logger.info("📊 Umbrales establecidos: Market Cap mín. $100K, Volumen mín. $200K")
         
-        # Recopilar componentes para mantenimiento y limpieza
         components = {
             "helius_client": helius_client,
             "dexscreener_client": dexscreener_client,
@@ -261,22 +236,16 @@ async def main():
             "scalper_monitor": scalper_monitor
         }
         
-        # Iniciar tarea de mantenimiento periódico
         maintenance_task = asyncio.create_task(periodic_maintenance(components))
-        
-        # Iniciar heartbeat
         heartbeat_task = asyncio.create_task(run_heartbeat())
         
-        # Procesar señales pendientes
         pending_signals = await process_pending_signals()
         for signal in pending_signals:
             token = signal.get("token")
             if token:
                 performance_tracker.add_signal(token, signal)
         
-        # Iniciar bot de Telegram
         telegram_process_commands = fix_telegram_commands()
-        
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             telegram_task = asyncio.create_task(
                 telegram_process_commands(
@@ -290,23 +259,50 @@ async def main():
             logger.warning("⚠️ Bot de Telegram no configurado")
             telegram_task = None
         
-        # Preparar manejador de mensajes de Cielo
         on_cielo_message = fix_on_cielo_message()
         
-        # Enviar mensaje de inicio
-        logger.info("🚀 Bot iniciado correctamente, conectando a Cielo...")
+        # --- Optimización de la gestión de transacciones ---
+        # Crear wallet_manager y transaction_manager
+        wallet_manager = WalletManager()
+        transaction_manager = TransactionManager(
+            signal_logic=signal_logic,
+            wallet_tracker=wallet_tracker,
+            scoring_system=scoring_system,
+            scalper_monitor=scalper_monitor,
+            wallet_manager=wallet_manager
+        )
+        # Configurar adaptadores
+        cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
+        transaction_manager.cielo_adapter = cielo_api
+        transaction_manager.helius_adapter = helius_client
+        
+        # Iniciar el transaction_manager
+        await transaction_manager.start()
+        
+        # Tarea para monitorear el estado de conexión del transaction_manager y reiniciarlo si es necesario
+        async def monitor_transaction_manager():
+            while not shutdown_flag:
+                await asyncio.sleep(30)
+                stats = transaction_manager.get_stats()
+                if not stats["active_source"] or stats["active_source"] == "none":
+                    logger.warning("Fuente de datos inactiva, reiniciando transaction_manager")
+                    await transaction_manager.stop()
+                    await asyncio.sleep(5)
+                    await transaction_manager.start()
+        monitor_task = asyncio.create_task(monitor_transaction_manager())
+        # --- Fin de optimización de transacciones ---
+        
         startup_message = (
             "🚀 *Bot Iniciado Correctamente*\n\n"
             f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Versión: 1.0.0\n"
+            "Versión: 1.0.0\n"
             f"Señales hoy: {db.count_signals_today()}\n"
             f"Transacciones hoy: {db.count_transactions_today()}\n\n"
-            f"Umbrales: Market Cap mín. $100K, Volumen mín. $200K\n\n"
+            "Umbrales: Market Cap mín. $100K, Volumen mín. $200K\n\n"
             "Monitoreo de wallets activado."
         )
         telegram_utils.send_telegram_message(startup_message)
         
-        # Obtener lista de wallets a seguir
         wallets_to_track = wallet_tracker.get_wallets()
         if not wallets_to_track:
             logger.error("❌ No hay wallets para seguir. Revisa traders_data.json")
@@ -314,37 +310,19 @@ async def main():
         
         logger.info(f"📋 Siguiendo {len(wallets_to_track)} wallets")
         
-        # Iniciar cliente WebSocket y mantener conexión
-        cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
+        # El transaction_manager ahora se encarga de la conexión y el procesamiento
+        # Así que ya no se utiliza el bucle directo de cielo_api.run_forever_wallets
         
-        # Conectar a Cielo en un bucle para manejar reconexiones
+        # Mantener el ciclo principal activo mientras el bot esté corriendo
         while not shutdown_flag:
-            try:
-                await cielo_api.run_forever_wallets(
-                    wallets=wallets_to_track,
-                    on_message_callback=lambda message: on_cielo_message(
-                        message,
-                        wallet_tracker,
-                        scoring_system,
-                        signal_logic,
-                        scalper_monitor
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Error en conexión WebSocket: {e}")
-                if not shutdown_flag:
-                    # Esperar antes de reconectar para evitar spam de reconexiones
-                    logger.info("🔄 Esperando para reconectar...")
-                    await asyncio.sleep(15)
+            await asyncio.sleep(5)
         
-        # Esperar por tareas si es necesario
         if telegram_task:
             telegram_task.cancel()
-        
+        monitor_task.cancel()
         maintenance_task.cancel()
         heartbeat_task.cancel()
-        
-        # Limpiar recursos
+        await transaction_manager.stop()
         await cleanup_resources(components)
         
         logger.info("✅ Bot detenido correctamente")
