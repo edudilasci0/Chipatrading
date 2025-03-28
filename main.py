@@ -53,7 +53,6 @@ def setup_signal_handlers():
         global shutdown_flag
         logger.info(f"Señal de terminación recibida ({signum}). Deteniendo procesos...")
         shutdown_flag = True
-    
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
     logger.info("✅ Manejadores de señales configurados")
@@ -61,8 +60,6 @@ def setup_signal_handlers():
 async def cleanup_resources(components):
     """Limpia recursos antes de cerrar el bot"""
     logger.info("🧹 Limpiando recursos...")
-    
-    # Cerrar conexiones HTTP/WebSocket
     for name, component in components.items():
         if hasattr(component, 'close_session'):
             try:
@@ -70,16 +67,12 @@ async def cleanup_resources(components):
                 logger.info(f"Conexión cerrada para {name}")
             except Exception as e:
                 logger.error(f"Error cerrando {name}: {e}")
-        
-        # Detener tareas en segundo plano
         if hasattr(component, 'stop_cleanup') and callable(component.stop_cleanup):
             try:
                 component.stop_cleanup()
                 logger.info(f"Tareas de limpieza detenidas para {name}")
             except Exception as e:
                 logger.error(f"Error deteniendo tareas de {name}: {e}")
-    
-    # Cerrar pool de base de datos
     try:
         if hasattr(db, 'pool') and db.pool:
             db.pool.closeall()
@@ -90,34 +83,23 @@ async def cleanup_resources(components):
 async def periodic_maintenance(components):
     """Realiza mantenimiento periódico de caché y limpieza de datos"""
     try:
-        cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))  # 1 hora por defecto
-        
+        cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))
         while not shutdown_flag:
             await asyncio.sleep(cleanup_interval)
-            
             if shutdown_flag:
                 break
-                
             logger.info("🧹 Iniciando mantenimiento periódico...")
             start_time = time.time()
-            
-            # Limpiar datos antiguos en cada componente
             for name, component in components.items():
                 if hasattr(component, 'cleanup_old_data') and callable(component.cleanup_old_data):
                     try:
                         component.cleanup_old_data()
                     except Exception as e:
                         logger.error(f"Error en limpieza de {name}: {e}")
-            
-            # Limpiar caché de consultas
             db.clear_query_cache()
-            
-            # Recargar configuración dinámica
             Config.load_dynamic_config()
-            
             duration = time.time() - start_time
             logger.info(f"✅ Mantenimiento completado en {duration:.2f}s")
-            
     except Exception as e:
         logger.error(f"Error en tarea de mantenimiento: {e}")
 
@@ -125,11 +107,9 @@ async def process_pending_signals():
     """Procesa señales pendientes al iniciar"""
     try:
         recent_signals = db.get_recent_untracked_signals(hours=24)
-        
         if not recent_signals:
             logger.info("No hay señales pendientes para procesar")
             return []
-        
         logger.info(f"Procesando {len(recent_signals)} señales pendientes...")
         return recent_signals
     except Exception as e:
@@ -147,7 +127,6 @@ async def run_heartbeat(interval=300):
                 "signal_count": db.count_signals_today(),
                 "transaction_count": db.count_transactions_today()
             }
-            
             logger.info(f"❤️ Heartbeat | Señales hoy: {stats['signal_count']} | Transacciones: {stats['transaction_count']}")
             await asyncio.sleep(interval)
         except Exception as e:
@@ -156,18 +135,14 @@ async def run_heartbeat(interval=300):
 
 async def main():
     global shutdown_flag, start_time
-    
     try:
         start_time = time.time()
         setup_signal_handlers()
-        
         db_ready = db.init_db()
         if not db_ready:
             logger.critical("No se pudo inicializar la base de datos. Abortando.")
             return 1
-        
         Config.check_required_config()
-        
         logger.info("🔄 Inicializando componentes...")
         
         # Servicios externos
@@ -175,7 +150,6 @@ async def main():
         gmgn_client = GMGNClient()
         dexscreener_client = DexScreenerClient()
         rugcheck_api = RugCheckAPI()
-        
         helius_client.dexscreener_client = dexscreener_client
         
         # Componentes principales
@@ -189,7 +163,6 @@ async def main():
         market_metrics = MarketMetricsAnalyzer(helius_client=helius_client, dexscreener_client=dexscreener_client)
         token_analyzer = TokenAnalyzer(token_data_service=helius_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
-        
         scalper_monitor = ScalperActivityMonitor()
         performance_tracker = PerformanceTracker(
             token_data_service=helius_client,
@@ -215,6 +188,7 @@ async def main():
         signal_logic.dexscreener_client = dexscreener_client
         signal_logic.performance_tracker = performance_tracker
         
+        # Establecer umbrales críticos
         Config.update_setting("mcap_threshold", "100000")
         Config.update_setting("volume_threshold", "200000")
         
@@ -245,13 +219,16 @@ async def main():
             if token:
                 performance_tracker.add_signal(token, signal)
         
+        # Iniciar bot de Telegram, pasando wallet_manager también
         telegram_process_commands = fix_telegram_commands()
+        wallet_manager = WalletManager()
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             telegram_task = asyncio.create_task(
                 telegram_process_commands(
                     Config.TELEGRAM_BOT_TOKEN,
                     Config.TELEGRAM_CHAT_ID,
-                    signal_logic
+                    signal_logic,
+                    wallet_manager  # Se pasa wallet_manager para la gestión de wallets
                 )
             )
             logger.info("✅ Bot de Telegram inicializado")
@@ -261,9 +238,7 @@ async def main():
         
         on_cielo_message = fix_on_cielo_message()
         
-        # --- Optimización de la gestión de transacciones ---
-        # Crear wallet_manager y transaction_manager
-        wallet_manager = WalletManager()
+        # --- Configuración y gestión de TransactionManager ---
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
@@ -271,15 +246,12 @@ async def main():
             scalper_monitor=scalper_monitor,
             wallet_manager=wallet_manager
         )
-        # Configurar adaptadores
         cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
         transaction_manager.cielo_adapter = cielo_api
         transaction_manager.helius_adapter = helius_client
         
-        # Iniciar el transaction_manager
         await transaction_manager.start()
         
-        # Tarea para monitorear el estado de conexión del transaction_manager y reiniciarlo si es necesario
         async def monitor_transaction_manager():
             while not shutdown_flag:
                 await asyncio.sleep(30)
@@ -290,7 +262,7 @@ async def main():
                     await asyncio.sleep(5)
                     await transaction_manager.start()
         monitor_task = asyncio.create_task(monitor_transaction_manager())
-        # --- Fin de optimización de transacciones ---
+        # --- Fin gestión TransactionManager ---
         
         startup_message = (
             "🚀 *Bot Iniciado Correctamente*\n\n"
@@ -307,13 +279,8 @@ async def main():
         if not wallets_to_track:
             logger.error("❌ No hay wallets para seguir. Revisa traders_data.json")
             return 1
-        
         logger.info(f"📋 Siguiendo {len(wallets_to_track)} wallets")
         
-        # El transaction_manager ahora se encarga de la conexión y el procesamiento
-        # Así que ya no se utiliza el bucle directo de cielo_api.run_forever_wallets
-        
-        # Mantener el ciclo principal activo mientras el bot esté corriendo
         while not shutdown_flag:
             await asyncio.sleep(5)
         
