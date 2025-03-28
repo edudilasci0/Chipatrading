@@ -14,7 +14,7 @@ import db
 # Servicios y APIs
 from cielo_api import CieloAPI
 from helius_client import HeliusClient
-# Se elimina: from gmgn_client import GMGNClient
+# Se elimina: from scalper_monitor import ScalperActivityMonitor
 from dexscreener_client import DexScreenerClient
 # Se elimina la importación de RugCheckAPI:
 # from rugcheck import RugCheckAPI
@@ -24,7 +24,6 @@ from wallet_tracker import WalletTracker
 from scoring import ScoringSystem
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
-from scalper_monitor import ScalperActivityMonitor
 from signal_predictor import SignalPredictor
 
 # Componentes avanzados
@@ -84,7 +83,7 @@ async def cleanup_resources(components):
 async def periodic_maintenance(components):
     """Realiza mantenimiento periódico de caché y limpieza de datos"""
     try:
-        cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))  # 1 hora por defecto
+        cleanup_interval = int(Config.get("CACHE_CLEANUP_INTERVAL", 3600))
         while not shutdown_flag:
             await asyncio.sleep(cleanup_interval)
             if shutdown_flag:
@@ -166,7 +165,8 @@ async def main():
         market_metrics = MarketMetricsAnalyzer(helius_client=helius_client, dexscreener_client=dexscreener_client)
         token_analyzer = TokenAnalyzer(token_data_service=helius_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
-        scalper_monitor = ScalperActivityMonitor()
+        # Se elimina scalper_monitor:
+        # scalper_monitor = ScalperActivityMonitor()
         performance_tracker = PerformanceTracker(
             token_data_service=helius_client,
             dex_monitor=dex_monitor,
@@ -175,11 +175,11 @@ async def main():
         )
         performance_tracker.token_analyzer = token_analyzer
         
-        # Inicialización de SignalLogic sin gmgn_client y sin RugCheckAPI (rugcheck_api=None)
+        # Inicialización de SignalLogic sin gmgn_client y RugCheckAPI
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
-            rugcheck_api=None,  # Se elimina la dependencia de RugCheckAPI
+            rugcheck_api=None,
             ml_predictor=signal_predictor,
             wallet_tracker=wallet_tracker
         )
@@ -200,7 +200,7 @@ async def main():
         components = {
             "helius_client": helius_client,
             "dexscreener_client": dexscreener_client,
-            # Se elimina "gmgn_client" de los componentes:
+            # Se elimina "gmgn_client"
             "dex_monitor": dex_monitor,
             "whale_detector": whale_detector,
             "market_metrics": market_metrics,
@@ -208,8 +208,8 @@ async def main():
             "trader_profiler": trader_profiler,
             "scoring_system": scoring_system,
             "signal_logic": signal_logic,
-            "performance_tracker": performance_tracker,
-            "scalper_monitor": scalper_monitor
+            "performance_tracker": performance_tracker
+            # Se elimina "scalper_monitor"
         }
         
         maintenance_task = asyncio.create_task(periodic_maintenance(components))
@@ -221,7 +221,7 @@ async def main():
             if token:
                 performance_tracker.add_signal(token, signal)
         
-        # Iniciar bot de Telegram y pasar wallet_manager
+        # Iniciar bot de Telegram, pasando WalletManager
         telegram_process_commands = fix_telegram_commands()
         wallet_manager = WalletManager()
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
@@ -230,7 +230,7 @@ async def main():
                     Config.TELEGRAM_BOT_TOKEN,
                     Config.TELEGRAM_CHAT_ID,
                     signal_logic,
-                    wallet_manager  # Se pasa wallet_manager para la gestión de wallets
+                    wallet_manager
                 )
             )
             logger.info("✅ Bot de Telegram inicializado")
@@ -240,12 +240,11 @@ async def main():
         
         on_cielo_message = fix_on_cielo_message()
         
-        # Configuración y gestión de TransactionManager
+        # Configuración y gestión de TransactionManager (se elimina scalper_monitor)
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
             scoring_system=scoring_system,
-            scalper_monitor=scalper_monitor,
             wallet_manager=wallet_manager
         )
         cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
@@ -264,7 +263,7 @@ async def main():
                     await asyncio.sleep(5)
                     await transaction_manager.start()
         monitor_task = asyncio.create_task(monitor_transaction_manager())
-        # Fin de TransactionManager
+        # Fin TransactionManager
         
         startup_message = (
             "🚀 *Bot Iniciado Correctamente*\n\n"
