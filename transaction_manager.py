@@ -57,9 +57,10 @@ class TransactionManager:
         self.health_check_task = None
         self.helius_polling_task = None
         
+        # Cache para evitar duplicados
         self.processed_tx_cache = {}
         self.cache_cleanup_time = 0
-        self.cache_ttl = 3600
+        self.cache_ttl = 3600  # 1 hora
         self.processed_tx_lock = threading.Lock()
         
         logger.info("TransactionManager inicializado")
@@ -102,7 +103,8 @@ class TransactionManager:
                     logger.info("Iniciada conexión a Cielo")
                 else:
                     self.tasks.append(asyncio.create_task(
-                        self.cielo_adapter.run_forever_wallets(wallets=wallets_to_track, on_message_callback=self.handle_cielo_message)
+                        self.cielo_adapter.run_forever_wallets(wallets=wallets_to_track,
+                                                                on_message_callback=self.handle_cielo_message)
                     ))
                     logger.info("Iniciada conexión a Cielo (modo legacy)")
                 self.active_source = DataSource.CIELO
@@ -301,21 +303,217 @@ class TransactionManager:
             return False
         logger.info(f"Conmutación exitosa a {target_source.value}")
         return True
-    
-    def _get_wallets_to_track(self):
-        if self.wallet_manager:
-            return self.wallet_manager.get_wallets()
-        if self.wallet_tracker:
-            return self.wallet_tracker.get_wallets()
-        logger.warning("No hay gestor de wallets configurado")
-        return []
-    
-    def _get_sample_wallet(self):
-        wallets = self._get_wallets_to_track()
-        if wallets:
-            return wallets[0]
-        return None
-    
+
+    async def handle_cielo_message(self, message):
+        """
+        Procesa mensajes recibidos desde el adaptador de Cielo.
+        
+        Args:
+            message: Mensaje en formato string (generalmente JSON)
+        """
+        try:
+            self.source_health[DataSource.CIELO]["last_message"] = time.time()
+            if isinstance(message, str):
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    logger.warning(f"Mensaje inválido de Cielo: {message[:100]}")
+                    return
+            else:
+                data = message
+            if "type" not in data or data["type"] != "transaction":
+                return
+            if "data" not in data:
+                return
+            tx_data = data["data"]
+            if "token" not in tx_data or "amountUsd" not in tx_data:
+                logger.debug("Transacción sin datos de token o monto ignorada")
+                return
+            normalized_tx = {
+                "wallet": tx_data.get("wallet", ""),
+                "token": tx_data.get("token", ""),
+                "type": tx_data.get("txType", "").upper(),
+                "amount_usd": float(tx_data.get("amountUsd", 0)),
+                "timestamp": time.time(),
+                "source": "cielo"
+            }
+            await self.process_transaction(normalized_tx)
+        except Exception as e:
+            logger.error(f"Error en handle_cielo_message: {e}")
+
+    async def handle_helius_transaction(self, tx_data):
+        """
+        Procesa transacciones recibidas desde el adaptador de Helius.
+        
+        Args:
+            tx_data: Datos de la transacción ya estructurados.
+        """
+        try:
+            self.source_health[DataSource.HELIUS]["last_message"] = time.time()
+            if not isinstance(tx_data, dict) or "wallet" not in tx_data or "token" not in tx_data:
+                logger.debug("Datos de transacción Helius incompletos")
+                return
+            if "type" not in tx_data or "amount_usd" not in tx_data:
+                logger.debug("Transacción de Helius sin tipo o monto")
+                return
+            if "source" not in tx_data:
+                tx_data["source"] = "helius"
+            await self.process_transaction(tx_data)
+        except Exception as e:
+            logger.error(f"Error en handle_helius_transaction: {e}")
+
+    async def process_transaction(self, tx_data):
+        """
+        Procesa una transacción normalizada y la distribuye a los componentes apropiados.
+        
+        Args:
+            tx_data: Datos normalizados de la transacción.
+        """
+        try:
+            min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+            if tx_data.get("amount_usd", 0) < min_usd:
+                return
+            if self.is_duplicate_transaction(tx_data):
+                return
+            try:
+                db.save_transaction(tx_data)
+            except Exception as e:
+                logger.error(f"Error guardando transacción en BD: {e}")
+            if self.scoring_system:
+                self.scoring_system.update_score_on_trade(tx_data["wallet"], tx_data)
+            if self.wallet_manager:
+                self.wallet_manager.register_transaction(
+                    tx_data["wallet"],
+                    tx_data["token"],
+                    tx_data["type"],
+                    tx_data["amount_usd"]
+                )
+            if self.signal_logic:
+                self.signal_logic.process_transaction(tx_data)
+            logger.debug(f"Transacción procesada: {tx_data['wallet']} - {tx_data['token']} - ${tx_data['amount_usd']:.2f}")
+        except Exception as e:
+            logger.error(f"Error en process_transaction: {e}")
+
+    def is_duplicate_transaction(self, tx_data):
+        """
+        Verifica si una transacción es duplicada basándose en un identificador único.
+        
+        Args:
+            tx_data: Datos de la transacción.
+            
+        Returns:
+            bool: True si la transacción ya fue procesada recientemente.
+        """
+        try:
+            tx_id = f"{tx_data['wallet']}:{tx_data['token']}:{tx_data['type']}:{tx_data['amount_usd']}"
+            now = time.time()
+            if now - self.cache_cleanup_time > 3600:
+                with self.processed_tx_lock:
+                    self.processed_tx_cache = {k: v for k, v in self.processed_tx_cache.items() if now - v < self.cache_ttl}
+                    self.cache_cleanup_time = now
+            with self.processed_tx_lock:
+                if tx_id in self.processed_tx_cache:
+                    if now - self.processed_tx_cache[tx_id] < 300:
+                        return True
+                self.processed_tx_cache[tx_id] = now
+            return False
+        except Exception as e:
+            logger.error(f"Error verificando duplicado: {e}")
+            return False
+
+    async def _run_helius_polling(self, wallets):
+        """
+        Implementa polling periódico a Helius cuando no está disponible el método nativo.
+        
+        Args:
+            wallets: Lista de direcciones de wallets a monitorear.
+        """
+        while self.running and self.active_source == DataSource.HELIUS:
+            try:
+                logger.debug(f"Iniciando polling interno de Helius para {len(wallets)} wallets")
+                sample_size = min(20, len(wallets))
+                sample_wallets = wallets[:sample_size]
+                for wallet in sample_wallets:
+                    await self._poll_wallet_transactions(wallet)
+                await asyncio.sleep(self.helius_polling_interval)
+            except asyncio.CancelledError:
+                logger.info("Polling interno de Helius cancelado")
+                break
+            except Exception as e:
+                logger.error(f"Error en polling interno de Helius: {e}")
+                await asyncio.sleep(self.helius_polling_interval * 2)
+
+    async def _poll_wallet_transactions(self, wallet):
+        """
+        Consulta transacciones recientes para una wallet mediante Helius.
+        
+        Args:
+            wallet: Dirección de la wallet.
+        """
+        try:
+            last_tx_time = 0
+            with self.processed_tx_lock:
+                if wallet in self.processed_tx_cache:
+                    last_tx_time = self.processed_tx_cache[wallet]
+            if hasattr(self.helius_adapter, 'get_wallet_transactions'):
+                transactions = await self.helius_adapter.get_wallet_transactions(wallet, limit=5)
+            else:
+                transactions = await self._get_wallet_recent_transactions(wallet, limit=5)
+            if not transactions:
+                return
+            for tx in transactions:
+                tx_time = tx.get("timestamp", 0)
+                if tx_time > last_tx_time:
+                    if "wallet" not in tx:
+                        tx["wallet"] = wallet
+                    if "source" not in tx:
+                        tx["source"] = "helius_polling"
+                    await self.process_transaction(tx)
+                    with self.processed_tx_lock:
+                        self.processed_tx_cache[wallet] = max(last_tx_time, tx_time)
+        except Exception as e:
+            logger.error(f"Error consultando transacciones para {wallet}: {e}")
+
+    async def _get_wallet_recent_transactions(self, wallet, limit=5):
+        """
+        Obtiene transacciones recientes de una wallet desde Helius.
+        Método de fallback en caso de que el adaptador no disponga de get_wallet_transactions.
+        
+        Args:
+            wallet: Dirección de la wallet.
+            limit: Número máximo de transacciones a obtener.
+            
+        Returns:
+            list: Lista de transacciones normalizadas.
+        """
+        if not self.helius_adapter:
+            return []
+        try:
+            # Intentar obtener datos desde la base de datos como fallback
+            db_txs = db.get_wallet_recent_transactions(wallet, hours=1)
+            if db_txs and len(db_txs) > 0:
+                return db_txs
+            if hasattr(self.helius_adapter, 'get_wallet_transactions'):
+                raw_txs = await self.helius_adapter.get_wallet_transactions(wallet, limit)
+            else:
+                logger.warning("Método get_wallet_transactions no disponible en Helius adapter")
+                return []
+            normalized_txs = []
+            for tx in raw_txs:
+                normalized_tx = {
+                    "wallet": wallet,
+                    "token": tx.get("token", ""),
+                    "type": tx.get("type", "UNKNOWN").upper(),
+                    "amount_usd": float(tx.get("amount_usd", 0)),
+                    "timestamp": tx.get("timestamp", time.time()),
+                    "source": "helius_api"
+                }
+                normalized_txs.append(normalized_tx)
+            return normalized_txs
+        except Exception as e:
+            logger.error(f"Error obteniendo transacciones de {wallet} desde Helius: {e}")
+            return []
+
     def get_stats(self) -> Dict[str, Any]:
         return {
             "active_source": self.active_source.value,
