@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
 # db.py - Módulo de acceso a la base de datos para el bot de trading en Solana
-
 import os
 import time
 import psycopg2
@@ -21,6 +19,7 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+# Pool de conexiones y variables para la caché de consultas
 pool = None
 pool_lock = threading.Lock()
 
@@ -569,6 +568,74 @@ def update_signal_status(signal_id, status, reason=None):
         return False
 
 @retry_db_operation()
+def get_recent_untracked_signals(hours=24):
+    """
+    Obtiene señales recientes que aún no han sido rastreadas por el performance tracker.
+    
+    Args:
+        hours: Número de horas atrás para buscar señales.
+        
+    Returns:
+        list: Lista de señales pendientes para procesamiento.
+    """
+    try:
+        query = """
+        SELECT s.id as signal_id, s.token, s.confidence, s.initial_price, 
+               s.trader_count as traders_count, s.market_cap, s.volume as total_volume,
+               s.created_at
+        FROM signals s
+        LEFT JOIN signal_performance sp ON s.id = sp.signal_id
+        WHERE s.created_at > NOW() - INTERVAL '%s HOURS'
+          AND sp.id IS NULL
+        ORDER BY s.created_at DESC
+        """
+        results = execute_cached_query(query, (hours,), max_age=60)
+        for result in results:
+            if "created_at" in result and result["created_at"]:
+                result["timestamp"] = result["created_at"].timestamp()
+        logger.info(f"Encontradas {len(results)} señales pendientes para seguimiento")
+        return results
+    except Exception as e:
+        logger.error(f"Error obteniendo señales pendientes: {e}")
+        return []
+
+@retry_db_operation()
+def count_signals_today():
+    """
+    Cuenta el número de señales generadas hoy.
+    
+    Returns:
+        int: Número de señales generadas hoy.
+    """
+    query = """
+    SELECT COUNT(*) as count
+    FROM signals
+    WHERE created_at >= CURRENT_DATE
+    """
+    result = execute_cached_query(query)
+    if result and result[0]["count"] is not None:
+        return result[0]["count"]
+    return 0
+
+@retry_db_operation()
+def count_transactions_today():
+    """
+    Cuenta el número de transacciones procesadas hoy.
+    
+    Returns:
+        int: Número de transacciones procesadas hoy.
+    """
+    query = """
+    SELECT COUNT(*) as count
+    FROM transactions
+    WHERE created_at >= CURRENT_DATE
+    """
+    result = execute_cached_query(query)
+    if result and result[0]["count"] is not None:
+        return result[0]["count"]
+    return 0
+
+@retry_db_operation()
 def get_wallet_recent_transactions(wallet, hours=24):
     query = """
     SELECT wallet, token, tx_type, amount_usd, created_at
@@ -580,4 +647,13 @@ def get_wallet_recent_transactions(wallet, hours=24):
     results = execute_cached_query(query, (wallet, hours), max_age=60)
     return results
 
-# Otras funciones existentes se mantienen...
+def get_cache_stats():
+    global query_cache_hits, query_cache_misses
+    total = query_cache_hits + query_cache_misses
+    hit_ratio = query_cache_hits / total if total > 0 else 0
+    return {
+        "cache_size": len(query_cache),
+        "cache_hits": query_cache_hits,
+        "cache_misses": query_cache_misses,
+        "hit_ratio": hit_ratio
+    }
