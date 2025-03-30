@@ -15,9 +15,11 @@ from dexscreener_client import DexScreenerClient
 
 # Componentes principales
 from wallet_tracker import WalletTracker
+from wallet_manager import WalletManager
 from scoring import ScoringSystem
 from signal_logic import SignalLogic
 from performance_tracker import PerformanceTracker
+from transaction_manager import TransactionManager
 
 # Componentes avanzados
 from dex_monitor import DexMonitor
@@ -28,7 +30,7 @@ from whale_detector import WhaleDetector
 from signal_predictor import SignalPredictor
 
 # Utilidades
-from telegram_utils import fix_telegram_commands, fix_on_cielo_message, send_telegram_message
+from telegram_utils import fix_telegram_commands, send_telegram_message
 
 logger = logging.getLogger(__name__)
 shutdown_flag = False
@@ -126,21 +128,26 @@ async def main():
         Config.check_required_config()
         logger.info("🔄 Inicializando componentes...")
         
+        # Inicializar APIs y servicios
         helius_client = HeliusClient(Config.HELIUS_API_KEY)
         dexscreener_client = DexScreenerClient()
         cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
         helius_client.dexscreener_client = dexscreener_client
         
+        # Inicializar componentes principales
+        wallet_manager = WalletManager()
         wallet_tracker = WalletTracker()
         scoring_system = ScoringSystem()
         signal_predictor = SignalPredictor()
         
+        # Inicializar componentes avanzados
         dex_monitor = DexMonitor()
         whale_detector = WhaleDetector(helius_client=helius_client)
         market_metrics = MarketMetricsAnalyzer(helius_client=helius_client, dexscreener_client=dexscreener_client)
         token_analyzer = TokenAnalyzer(token_data_service=helius_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
         
+        # Inicializar tracker de rendimiento
         performance_tracker = PerformanceTracker(
             token_data_service=helius_client,
             dex_monitor=dex_monitor,
@@ -149,6 +156,7 @@ async def main():
         )
         performance_tracker.token_analyzer = token_analyzer
         
+        # Inicializar lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             helius_client=helius_client,
@@ -163,6 +171,19 @@ async def main():
         signal_logic.dex_monitor = dex_monitor
         signal_logic.performance_tracker = performance_tracker
         
+        # Inicializar Transaction Manager
+        transaction_manager = TransactionManager(
+            signal_logic=signal_logic,
+            wallet_tracker=wallet_tracker,
+            scoring_system=scoring_system,
+            wallet_manager=wallet_manager
+        )
+        
+        # Configurar adaptadores para el Transaction Manager
+        transaction_manager.cielo_adapter = cielo_api
+        transaction_manager.helius_adapter = helius_client
+        
+        # Actualizar configuraciones
         Config.update_setting("mcap_threshold", "100000")
         Config.update_setting("volume_threshold", "200000")
         
@@ -179,7 +200,8 @@ async def main():
             "trader_profiler": trader_profiler,
             "scoring_system": scoring_system,
             "signal_logic": signal_logic,
-            "performance_tracker": performance_tracker
+            "performance_tracker": performance_tracker,
+            "transaction_manager": transaction_manager
         }
         
         maintenance_task = asyncio.create_task(periodic_maintenance(components))
@@ -191,6 +213,7 @@ async def main():
             if token:
                 performance_tracker.add_signal(token, signal)
         
+        # Iniciar bot de Telegram
         telegram_process_commands = fix_telegram_commands()
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             telegram_task = asyncio.create_task(
@@ -198,7 +221,7 @@ async def main():
                     Config.TELEGRAM_BOT_TOKEN,
                     Config.TELEGRAM_CHAT_ID,
                     signal_logic,
-                    wallet_tracker
+                    wallet_manager
                 )
             )
             logger.info("✅ Bot de Telegram inicializado")
@@ -206,33 +229,17 @@ async def main():
             logger.warning("⚠️ Bot de Telegram no configurado")
             telegram_task = None
         
-        on_cielo_message = fix_on_cielo_message()
-        wallets_to_track = wallet_tracker.get_wallets()
-        if not wallets_to_track:
-            logger.error("❌ No hay wallets para seguir. Revisa traders_data.json")
-            return 1
+        await performance_tracker.start()
+        await transaction_manager.start()
         
-        logger.info(f"📋 Siguiendo {len(wallets_to_track)} wallets")
         while not shutdown_flag:
-            try:
-                await cielo_api.run_forever_wallets(
-                    wallets=wallets_to_track,
-                    on_message_callback=lambda message: on_cielo_message(
-                        message,
-                        wallet_tracker,
-                        scoring_system,
-                        signal_logic
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Error en conexión WebSocket: {e}")
-                if not shutdown_flag:
-                    logger.info("🔄 Esperando para reconectar...")
-                    await asyncio.sleep(15)
+            await asyncio.sleep(1)
+        
         if telegram_task:
             telegram_task.cancel()
         maintenance_task.cancel()
         heartbeat_task.cancel()
+        
         await cleanup_resources(components)
         logger.info("✅ Bot detenido correctamente")
         return 0
