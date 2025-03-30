@@ -2,7 +2,7 @@ import time
 import requests
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Callable, Optional
 from config import Config
 
 logger = logging.getLogger("helius_client")
@@ -14,7 +14,6 @@ class HeliusClient:
         self.cache_duration = int(Config.get("HELIUS_CACHE_DURATION", 300))
         self.dexscreener_client = None
         
-        # Configuración para emular WebSocket con polling
         self.polling_active = False
         self.polling_wallets = []
         self.transaction_callback = None
@@ -23,7 +22,6 @@ class HeliusClient:
         self.polling_interval = int(Config.get("HELIUS_POLLING_INTERVAL", 15))
         self.poll_session = None
         
-        # Estado de salud y métricas
         self.health_status = True
         self.error_count = 0
         self.last_success_time = time.time()
@@ -39,7 +37,7 @@ class HeliusClient:
         else:
             params["api-key"] = self.api_key
         try:
-            logger.debug(f"Solicitando Helius {version}: {url} con params: {params}")
+            logger.debug(f"Solicitando Helius {version}: {url}")
             self.api_requests_counter += 1
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
@@ -54,50 +52,39 @@ class HeliusClient:
                 self.health_status = False
             logger.error(f"Error en HeliusClient._request ({version}): {e}")
             return None
-
+    
     async def _request_async(self, endpoint, params, version="v1"):
         url = f"https://api.helius.xyz/{version}/{endpoint}"
         if version == "v1":
             params["apiKey"] = self.api_key
         else:
             params["api-key"] = self.api_key
-        import aiohttp
-        retry_count = 0
-        max_retries = 3
-        delay = 1
-        while retry_count < max_retries:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            self.last_success_time = time.time()
-                            self.error_count = 0
-                            self.health_status = True
-                            return data
-                        elif response.status == 404:
-                            logger.error(f"Error 404 en {url} con params {params}. Retrying...")
-                            retry_count += 1
-                            await asyncio.sleep(delay)
-                            delay *= 2
-                        else:
-                            self.api_error_counter += 1
-                            self.error_count += 1
-                            if self.error_count > 3:
-                                self.health_status = False
-                            logger.error(f"Error en request_async: status {response.status} en {url}")
-                            return None
-            except Exception as e:
-                self.api_error_counter += 1
-                self.error_count += 1
-                if self.error_count > 3:
-                    self.health_status = False
-                logger.error(f"Exception en HeliusClient._request_async: {e}")
-                retry_count += 1
-                await asyncio.sleep(delay)
-                delay *= 2
-        return None
-
+        try:
+            import aiohttp
+            self.api_requests_counter += 1
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self.last_success_time = time.time()
+                        self.error_count = 0
+                        self.health_status = True
+                        return data
+                    else:
+                        self.api_error_counter += 1
+                        self.error_count += 1
+                        if self.error_count > 3:
+                            self.health_status = False
+                        logger.error(f"Error en request_async: status {response.status}")
+                        return None
+        except Exception as e:
+            self.api_error_counter += 1
+            self.error_count += 1
+            if self.error_count > 3:
+                self.health_status = False
+            logger.error(f"Error en HeliusClient._request_async: {e}")
+            return None
+    
     def get_token_data(self, token):
         now = time.time()
         if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
@@ -136,7 +123,6 @@ class HeliusClient:
             volume_threshold = 200000
             normalized_data["meets_mcap_threshold"] = normalized_data["market_cap"] >= mcap_threshold
             normalized_data["meets_volume_threshold"] = normalized_data["volume"] >= volume_threshold
-            
             self.cache[token] = {"data": normalized_data, "timestamp": now}
             return normalized_data
         
@@ -227,7 +213,6 @@ class HeliusClient:
             volume_threshold = 200000
             normalized_data["meets_mcap_threshold"] = normalized_data["market_cap"] >= mcap_threshold
             normalized_data["meets_volume_threshold"] = normalized_data["volume"] >= volume_threshold
-            
             self.cache[token] = {"data": normalized_data, "timestamp": now}
             return normalized_data
         
@@ -346,8 +331,10 @@ class HeliusClient:
     async def _get_wallet_transactions(self, wallet, limit=10):
         try:
             url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
-            params = {"api-key": self.api_key, "limit": limit}
-            import aiohttp
+            params = {
+                "api-key": self.api_key,
+                "limit": limit
+            }
             if self.poll_session and not self.poll_session.closed:
                 session = self.poll_session
             else:
@@ -445,18 +432,34 @@ class HeliusClient:
             return fee * 200
         return 1000
     
-    def set_transaction_callback(self, callback):
-        self.transaction_callback = callback
-        logger.info("Callback de transacciones configurado")
-    
-    async def check_availability(self):
+    def get_price_change(self, token, timeframe="1h"):
+        token_data = self.get_token_data(token)
+        if not token_data:
+            return 0
         try:
-            data = await self._request_async("stats", {}, version="v1")
-            if data:
-                return True
+            if timeframe == "1h":
+                return token_data.get("price_change_1h", 0)
+            elif timeframe == "24h":
+                return token_data.get("price_change_24h", 0)
+            else:
+                return 0
         except Exception as e:
-            logger.warning(f"API de Helius no disponible: {e}")
-        return False
+            logger.error(f"Error en get_price_change para {token}: {e}")
+            return 0
+    
+    def cleanup_old_data(self):
+        try:
+            now = time.time()
+            async def async_cleanup():
+                async with self.processed_tx_lock:
+                    keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
+                    for key in keys_to_remove:
+                        del self.processed_tx_cache[key]
+                    self.cache_cleanup_time = now
+                    logger.info(f"Limpiados {len(keys_to_remove)} elementos del caché de transacciones")
+            asyncio.create_task(async_cleanup())
+        except Exception as e:
+            logger.error(f"Error limpiando datos antiguos: {e}")
     
     def get_health_metrics(self):
         return {
