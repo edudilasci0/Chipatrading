@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import asyncio
 import signal
 import sys
@@ -10,7 +11,6 @@ import db
 
 # Servicios y APIs
 from cielo_api import CieloAPI
-from helius_client import HeliusClient
 from dexscreener_client import DexScreenerClient
 
 # Componentes principales
@@ -26,7 +26,6 @@ from dex_monitor import DexMonitor
 from market_metrics import MarketMetricsAnalyzer
 from token_analyzer import TokenAnalyzer
 from trader_profiler import TraderProfiler
-from whale_detector import WhaleDetector
 from signal_predictor import SignalPredictor
 
 # Utilidades
@@ -129,10 +128,8 @@ async def main():
         logger.info("🔄 Inicializando componentes...")
         
         # Inicializar APIs y servicios
-        helius_client = HeliusClient(Config.HELIUS_API_KEY)
         dexscreener_client = DexScreenerClient()
         cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
-        helius_client.dexscreener_client = dexscreener_client
         
         # Inicializar componentes principales
         wallet_manager = WalletManager()
@@ -142,36 +139,32 @@ async def main():
         
         # Inicializar componentes avanzados
         dex_monitor = DexMonitor()
-        whale_detector = WhaleDetector(helius_client=helius_client)
-        market_metrics = MarketMetricsAnalyzer(helius_client=helius_client, dexscreener_client=dexscreener_client)
-        token_analyzer = TokenAnalyzer(token_data_service=helius_client)
+        market_metrics = MarketMetricsAnalyzer(dexscreener_client=dexscreener_client)
+        token_analyzer = TokenAnalyzer(dexscreener_client=dexscreener_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
         
         # Inicializar tracker de rendimiento
         performance_tracker = PerformanceTracker(
-            token_data_service=helius_client,
+            dexscreener_client=dexscreener_client,
             dex_monitor=dex_monitor,
-            market_metrics=market_metrics,
-            whale_detector=whale_detector
+            market_metrics=market_metrics
         )
         performance_tracker.token_analyzer = token_analyzer
         
         # Inicializar lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
-            helius_client=helius_client,
             rugcheck_api=None,
             ml_predictor=signal_predictor,
             wallet_tracker=wallet_tracker
         )
-        signal_logic.whale_detector = whale_detector
         signal_logic.market_metrics = market_metrics
         signal_logic.token_analyzer = token_analyzer
         signal_logic.trader_profiler = trader_profiler
         signal_logic.dex_monitor = dex_monitor
         signal_logic.performance_tracker = performance_tracker
         
-        # Inicializar Transaction Manager
+        # Inicializar Transaction Manager (solo Cielo como fuente de transacciones)
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
@@ -181,7 +174,7 @@ async def main():
         
         # Configurar adaptadores para el Transaction Manager
         transaction_manager.cielo_adapter = cielo_api
-        transaction_manager.helius_adapter = helius_client
+        transaction_manager.helius_adapter = None  # Se elimina Helius
         
         # Actualizar configuraciones
         Config.update_setting("mcap_threshold", "100000")
@@ -191,17 +184,16 @@ async def main():
         logger.info("📊 Umbrales establecidos: Market Cap mín. $100K, Volumen mín. $200K")
         
         components = {
-            "helius_client": helius_client,
             "dexscreener_client": dexscreener_client,
             "dex_monitor": dex_monitor,
-            "whale_detector": whale_detector,
             "market_metrics": market_metrics,
             "token_analyzer": token_analyzer,
             "trader_profiler": trader_profiler,
             "scoring_system": scoring_system,
             "signal_logic": signal_logic,
             "performance_tracker": performance_tracker,
-            "transaction_manager": transaction_manager
+            "transaction_manager": transaction_manager,
+            "wallet_manager": wallet_manager
         }
         
         maintenance_task = asyncio.create_task(periodic_maintenance(components))
@@ -213,7 +205,6 @@ async def main():
             if token:
                 performance_tracker.add_signal(token, signal)
         
-        # Iniciar bot de Telegram
         telegram_process_commands = fix_telegram_commands()
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             telegram_task = asyncio.create_task(
@@ -239,7 +230,6 @@ async def main():
             telegram_task.cancel()
         maintenance_task.cancel()
         heartbeat_task.cancel()
-        
         await cleanup_resources(components)
         logger.info("✅ Bot detenido correctamente")
         return 0
