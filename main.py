@@ -137,13 +137,13 @@ async def main():
         scoring_system = ScoringSystem()
         signal_predictor = SignalPredictor()
         
-        # Inicializar componentes avanzados
+        # Componentes avanzados
         dex_monitor = DexMonitor()
         market_metrics = MarketMetricsAnalyzer(dexscreener_client=dexscreener_client)
         token_analyzer = TokenAnalyzer(dexscreener_client=dexscreener_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
         
-        # Inicializar tracker de rendimiento
+        # Inicializar tracker de rendimiento (sin whale_detector)
         performance_tracker = PerformanceTracker(
             dexscreener_client=dexscreener_client,
             dex_monitor=dex_monitor,
@@ -151,7 +151,7 @@ async def main():
         )
         performance_tracker.token_analyzer = token_analyzer
         
-        # Inicializar lógica de señales
+        # Inicializar lógica de señales (sin whale_detector)
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
             rugcheck_api=None,
@@ -164,17 +164,15 @@ async def main():
         signal_logic.dex_monitor = dex_monitor
         signal_logic.performance_tracker = performance_tracker
         
-        # Inicializar Transaction Manager (solo Cielo como fuente de transacciones)
+        # Inicializar Transaction Manager (solo con Cielo)
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
             scoring_system=scoring_system,
             wallet_manager=wallet_manager
         )
-        
-        # Configurar adaptadores para el Transaction Manager
         transaction_manager.cielo_adapter = cielo_api
-        transaction_manager.helius_adapter = None  # Se elimina Helius
+        transaction_manager.helius_adapter = None  # Eliminar Helius
         
         # Actualizar configuraciones
         Config.update_setting("mcap_threshold", "100000")
@@ -183,6 +181,7 @@ async def main():
         logger.info("✅ Todos los componentes inicializados correctamente")
         logger.info("📊 Umbrales establecidos: Market Cap mín. $100K, Volumen mín. $200K")
         
+        # Lista de componentes para mantenimiento
         components = {
             "dexscreener_client": dexscreener_client,
             "dex_monitor": dex_monitor,
