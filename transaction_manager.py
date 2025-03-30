@@ -7,6 +7,7 @@ import db
 
 logger = logging.getLogger("transaction_manager")
 
+# Definición de las fuentes de datos
 class DataSource:
     CIELO = "cielo"
     HELIUS = "helius"
@@ -40,7 +41,7 @@ class TransactionManager:
 
         self.processed_tx_cache = {}
         self.cache_cleanup_time = 0
-        self.cache_ttl = 3600
+        self.cache_ttl = 3600  # 1 hora
         self.processed_tx_lock = asyncio.Lock()
 
         logger.info("TransactionManager inicializado")
@@ -85,10 +86,11 @@ class TransactionManager:
                     ))
                     logger.info("Iniciada conexión a Cielo")
                 else:
+                    callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
                     self.tasks.append(asyncio.create_task(
                         self.cielo_adapter.run_forever_wallets(
                             wallets=wallets_to_track,
-                            on_message_callback=self.handle_cielo_message
+                            on_message_callback=callback
                         )
                     ))
                     logger.info("Iniciada conexión a Cielo (modo legacy)")
@@ -107,6 +109,7 @@ class TransactionManager:
         try:
             self.source_health[DataSource.CIELO]["last_message"] = time.time()
             self.source_health[DataSource.CIELO]["healthy"] = True
+
             if isinstance(message, str):
                 try:
                     data = json.loads(message)
@@ -115,14 +118,20 @@ class TransactionManager:
                     return
             else:
                 data = message
+
             if not isinstance(data, dict) or data.get("type") != "transaction":
                 return
+
             if "data" not in data:
                 return
+
             tx_data = data["data"]
-            if "token" not in tx_data or "amountUsd" not in tx_data:
-                logger.debug("Transacción sin datos de token o monto ignorada")
+
+            # Filtrar transacciones de SOL
+            if tx_data.get("token") == "So11111111111111111111111111111111111111112":
+                logger.debug("Transacción de SOL recibida y descartada")
                 return
+
             normalized_tx = {
                 "wallet": tx_data.get("wallet", ""),
                 "token": tx_data.get("token", ""),
@@ -141,6 +150,11 @@ class TransactionManager:
             self.source_health[DataSource.HELIUS]["healthy"] = True
             if not transaction or "token" not in transaction:
                 return
+
+            if transaction.get("token") == "So11111111111111111111111111111111111111112":
+                logger.debug("Transacción de SOL de Helius recibida y descartada")
+                return
+
             if "source" not in transaction:
                 transaction["source"] = "helius"
             await self.process_transaction(transaction)
@@ -152,12 +166,20 @@ class TransactionManager:
             min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
             if tx_data.get("amount_usd", 0) < min_usd:
                 return
-            if self.is_duplicate_transaction(tx_data):
+
+            # Filtrar transacciones de SOL
+            if tx_data.get("token") == "So11111111111111111111111111111111111111112":
+                logger.debug("Transacción de SOL filtrada en process_transaction")
                 return
+
+            if await self.is_duplicate_transaction(tx_data):
+                return
+
             try:
                 db.save_transaction(tx_data)
             except Exception as e:
                 logger.error(f"Error guardando transacción en BD: {e}")
+
             if self.signal_logic:
                 self.signal_logic.process_transaction(tx_data)
             if self.scoring_system:
@@ -172,26 +194,27 @@ class TransactionManager:
         except Exception as e:
             logger.error(f"Error en process_transaction: {e}", exc_info=True)
 
-    def is_duplicate_transaction(self, tx_data):
+    async def is_duplicate_transaction(self, tx_data):
         now = time.time()
         if now - self.cache_cleanup_time > 300:
-            async def cleanup():
-                async with self.processed_tx_lock:
-                    keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
-                    for key in keys_to_remove:
-                        del self.processed_tx_cache[key]
-                    self.cache_cleanup_time = now
-            asyncio.create_task(cleanup())
+            async with self.processed_tx_lock:
+                keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
+                for key in keys_to_remove:
+                    del self.processed_tx_cache[key]
+                self.cache_cleanup_time = now
+
         wallet = tx_data.get("wallet", "")
         token = tx_data.get("token", "")
         amount = str(tx_data.get("amount_usd", 0))
         tx_type = tx_data.get("type", "")
         cache_key = f"{wallet}:{token}:{amount}:{tx_type}"
-        if cache_key in self.processed_tx_cache:
-            return True
-        else:
-            self.processed_tx_cache[cache_key] = now
-            return False
+
+        async with self.processed_tx_lock:
+            if cache_key in self.processed_tx_cache:
+                return True
+            else:
+                self.processed_tx_cache[cache_key] = now
+                return False
 
     def _get_wallets_to_track(self):
         wallets_to_track = []
@@ -305,7 +328,7 @@ class TransactionManager:
             elif current_source == DataSource.HELIUS and self.helius_adapter:
                 try:
                     if hasattr(self.helius_adapter, 'stop_polling'):
-                        await self.helius_adapter.stop_polling()
+                        self.helius_adapter.stop_polling()
                     logger.info("Polling de Helius detenido")
                 except Exception as e:
                     logger.error(f"Error deteniendo polling de Helius: {e}")
@@ -325,10 +348,11 @@ class TransactionManager:
                     ))
                     logger.info("Iniciada conexión a Cielo")
                 else:
+                    callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
                     self.tasks.append(asyncio.create_task(
                         self.cielo_adapter.run_forever_wallets(
                             wallets=wallets_to_track,
-                            on_message_callback=self.handle_cielo_message
+                            on_message_callback=callback
                         )
                     ))
                     logger.info("Iniciada conexión a Cielo (modo legacy)")
@@ -381,13 +405,15 @@ class TransactionManager:
                     chunk = wallets[i:i+chunk_size]
                     for wallet in chunk:
                         try:
-                            transactions = await self.helius_adapter.get_wallet_transactions(wallet)
-                            for tx in transactions:
-                                if self.is_duplicate_transaction(tx):
-                                    continue
-                                await self.handle_helius_transaction(tx)
+                            transactions = await self._get_wallet_transactions(wallet)
+                            if transactions:
+                                for tx in transactions:
+                                    normalized_tx = self._normalize_helius_transaction(wallet, tx)
+                                    if normalized_tx:
+                                        await self.handle_helius_transaction(normalized_tx)
                         except Exception as e:
                             logger.debug(f"Error obteniendo transacciones para {wallet}: {e}")
+                    await asyncio.sleep(0.5)
                 elapsed = time.time() - start_time
                 wait_time = max(0.1, self.helius_polling_interval - elapsed)
                 await asyncio.sleep(wait_time)
@@ -398,8 +424,79 @@ class TransactionManager:
             self.source_health[DataSource.HELIUS]["healthy"] = False
             self.source_health[DataSource.HELIUS]["failures"] += 1
 
+    async def _get_wallet_transactions(self, wallet):
+        try:
+            # Se delega a la propia implementación de Helius, si existe
+            if hasattr(self.helius_adapter, '_get_wallet_transactions'):
+                return await self.helius_adapter._get_wallet_transactions(wallet)
+            else:
+                return []
+        except Exception as e:
+            logger.error(f"Error obteniendo transacciones para {wallet}: {e}")
+            return []
+
+    def _normalize_helius_transaction(self, wallet, tx_data):
+        try:
+            if not tx_data:
+                return None
+
+            token = None
+            if "tokenTransfers" in tx_data and tx_data["tokenTransfers"]:
+                for transfer in tx_data["tokenTransfers"]:
+                    if "mint" in transfer:
+                        token = transfer["mint"]
+                        break
+
+            if not token:
+                return None
+
+            tx_type = "UNKNOWN"
+            if "description" in tx_data:
+                if "buy" in tx_data["description"].lower():
+                    tx_type = "BUY"
+                elif "sell" in tx_data["description"].lower():
+                    tx_type = "SELL"
+                elif "swap" in tx_data["description"].lower():
+                    tx_type = "SWAP"
+
+            amount_usd = 0
+            if "nativeTransfers" in tx_data and tx_data["nativeTransfers"]:
+                for transfer in tx_data["nativeTransfers"]:
+                    if "amount" in transfer:
+                        sol_amount = float(transfer["amount"]) / 1000000000
+                        amount_usd = sol_amount * 100
+            if amount_usd <= 0:
+                amount_usd = 500
+
+            normalized_tx = {
+                "wallet": wallet,
+                "token": token,
+                "type": tx_type,
+                "amount_usd": amount_usd,
+                "timestamp": time.time(),
+                "source": "helius_polling"
+            }
+            return normalized_tx
+        except Exception as e:
+            logger.error(f"Error normalizando transacción de Helius: {e}")
+            return None
+
     def _get_sample_wallet(self):
         wallets = self._get_wallets_to_track()
         if wallets:
             return wallets[0]
         return None
+
+    def cleanup_old_data(self):
+        try:
+            now = time.time()
+            async def async_cleanup():
+                async with self.processed_tx_lock:
+                    keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
+                    for key in keys_to_remove:
+                        del self.processed_tx_cache[key]
+                    self.cache_cleanup_time = now
+                    logger.info(f"Limpiados {len(keys_to_remove)} elementos del caché de transacciones")
+            asyncio.create_task(async_cleanup())
+        except Exception as e:
+            logger.error(f"Error limpiando datos antiguos: {e}")
