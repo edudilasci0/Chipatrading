@@ -95,11 +95,11 @@ class CieloAPI:
             try:
                 message = await ws.recv()
                 self.last_message_time = time.time()
-                callback = self.message_callback
-                if callback is None:
+                if self.message_callback is None:
                     logger.error("No se ha configurado ningún callback para procesar mensajes de Cielo.")
                     continue
-                await callback(message)
+                # Aseguramos que el callback es awaitable
+                await self.message_callback(message)
             except websockets.ConnectionClosed:
                 logger.warning("Conexión a Cielo cerrada")
                 break
@@ -119,7 +119,7 @@ class CieloAPI:
                     print("📡 WebSocket conectado a Cielo (modo multi-wallet)")
                     self.connection_failures = 0
                     await self.subscribe_to_wallets(ws, wallets, filter_params)
-                    ping_task = asyncio.create_task(self._ping_periodically(ws))
+                    self.ping_task = asyncio.create_task(self._ping_periodically(ws))
                     try:
                         async for message in ws:
                             callback = on_message_callback if on_message_callback is not None else self.message_callback
@@ -128,9 +128,9 @@ class CieloAPI:
                                 continue
                             await callback(message)
                     finally:
-                        ping_task.cancel()
+                        self.ping_task.cancel()
                         try:
-                            await ping_task
+                            await self.ping_task
                         except asyncio.CancelledError:
                             pass
             except (websockets.ConnectionClosed, OSError) as e:
