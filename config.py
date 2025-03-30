@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
 config.py – Configuración centralizada para el bot de trading en Solana
-
-Esta versión define una clase Config que encapsula todas las variables de configuración
-y funciones necesarias para el funcionamiento del bot. De esta forma, el resto del
-código puede importar Config mediante "from config import Config".
 """
 
 import os
@@ -32,7 +28,7 @@ class Config:
     HELIUS_CACHE_DURATION = os.environ.get("HELIUS_CACHE_DURATION", "300")
     DEXSCREENER_CACHE_DURATION = os.environ.get("DEXSCREENER_CACHE_DURATION", "300")
     
-    # Configuración de salud de fuentes (para Cielo y DexScreener)
+    # Configuración de salud de fuentes
     SOURCE_HEALTH_CHECK_INTERVAL = os.environ.get("SOURCE_HEALTH_CHECK_INTERVAL", "60")
     MAX_SOURCE_FAILURES = os.environ.get("MAX_SOURCE_FAILURES", "3")
     SOURCE_TIMEOUT = os.environ.get("SOURCE_TIMEOUT", "300")
@@ -46,34 +42,16 @@ class Config:
 
     @staticmethod
     def load_dynamic_config():
-        """
-        Carga configuración dinámica desde la base de datos o archivo de configuración.
-        Este método se puede extender para recargar parámetros sin reiniciar el servicio.
-        """
         logging.getLogger("config").info("Dynamic configuration reloaded.")
 
     @staticmethod
     def update_setting(key: str, value: str) -> bool:
-        """
-        Actualiza la configuración en memoria. Esta función se puede integrar con
-        la base de datos para persistir cambios.
-        
-        Args:
-            key: Nombre del setting
-            value: Nuevo valor a asignar
-        
-        Returns:
-            bool: True si se actualizó correctamente, False en caso contrario.
-        """
         setattr(Config, key, value)
         logging.getLogger("config").info(f"Updated setting {key} = {value} (in memory)")
         return True
 
     @staticmethod
     def check_required_config():
-        """
-        Verifica que las variables de entorno críticas estén definidas.
-        """
         missing = []
         if not Config.TELEGRAM_BOT_TOKEN:
             missing.append("TELEGRAM_BOT_TOKEN")
@@ -88,14 +66,10 @@ class Config:
 
     @staticmethod
     def setup_logging():
-        """
-        Configura el logging para el sistema.
-        """
         logging.basicConfig(
             level=Config.LOG_LEVEL,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
-        # Se pueden configurar niveles específicos para módulos
         logging.getLogger("telegram_utils").setLevel(Config.LOG_LEVEL)
         logging.getLogger("transaction_manager").setLevel(Config.LOG_LEVEL)
         logging.getLogger("signal_logic").setLevel(Config.LOG_LEVEL)
