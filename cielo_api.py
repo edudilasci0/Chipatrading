@@ -106,8 +106,11 @@ class CieloAPI:
             try:
                 message = await ws.recv()
                 self.last_message_time = time.time()
-                if self.message_callback:
-                    await self.message_callback(message)
+                callback = self.message_callback
+                if callback is None:
+                    logger.error("No hay callback configurado para procesar mensajes.")
+                    continue
+                await callback(message)
             except websockets.ConnectionClosed:
                 logger.warning("Conexión a Cielo cerrada")
                 break
@@ -130,11 +133,12 @@ class CieloAPI:
                     ping_task = asyncio.create_task(self._ping_periodically(ws))
                     try:
                         async for message in ws:
-                            try:
-                                await on_message_callback(message)
-                            except Exception as e:
-                                logger.error(f"Error procesando mensaje: {e}", exc_info=True)
+                            # Si el callback pasado es None, usamos el configurado internamente
+                            callback = on_message_callback if on_message_callback is not None else self.message_callback
+                            if callback is None:
+                                logger.error("No se ha configurado ningún callback para procesar mensajes de Cielo.")
                                 continue
+                            await callback(message)
                     finally:
                         ping_task.cancel()
                         try:
