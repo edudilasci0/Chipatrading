@@ -130,6 +130,7 @@ def init_db():
                 conn.rollback()
                 logger.error(f"Error creando tabla schema_version: {e}")
                 return False
+
             try:
                 cur.execute("SELECT MAX(version) FROM schema_version")
                 result = cur.fetchone()
@@ -139,6 +140,7 @@ def init_db():
                 conn.rollback()
                 logger.error(f"Error verificando versión del schema: {e}")
                 return False
+
             if current_version < 1:
                 try:
                     logger.info("Aplicando migración #1: Tablas iniciales")
@@ -208,6 +210,7 @@ def init_db():
                     conn.rollback()
                     logger.error(f"Error en migración #1: {e}")
                     return False
+
             if current_version < 2:
                 try:
                     logger.info("Aplicando migración #2: Mejoras y nuevas tablas")
@@ -256,6 +259,7 @@ def init_db():
                     conn.rollback()
                     logger.error(f"Error en migración #2: {e}")
                     return False
+
             if current_version < 3:
                 try:
                     logger.info("Aplicando migración #3: Tablas para análisis avanzado")
@@ -411,7 +415,7 @@ def init_db():
                     ("min_volume_usd", str(Config.get("MIN_VOLUME_USD", 2000))),
                     ("signal_throttling", str(Config.get("SIGNAL_THROTTLING", 10))),
                     ("adapt_confidence_threshold", "true"),
-                    ("high_quality_trader_score", "7.0"),
+                    ("high_quality_trader_score", str(Config.get("HIGH_QUALITY_TRADER_SCORE", "7.0"))),
                     ("whale_transaction_threshold", str(Config.get("WHALE_TRANSACTION_THRESHOLD", 10000))),
                     ("liquidity_healthy_threshold", str(Config.get("LIQUIDITY_HEALTHY_THRESHOLD", 20000))),
                     ("slippage_warning_threshold", str(Config.get("SLIPPAGE_WARNING_THRESHOLD", 10))),
@@ -495,7 +499,6 @@ def update_setting(key, value):
     """
     try:
         execute_cached_query(query, (key, value, value), write_query=True)
-        # Invalidar la caché de configuración
         cache_key = f"SELECT * FROM bot_settings WHERE key = '{key}'"
         if cache_key in query_cache:
             del query_cache[cache_key]
@@ -577,4 +580,4 @@ def get_wallet_recent_transactions(wallet, hours=24):
     results = execute_cached_query(query, (wallet, hours), max_age=60)
     return results
 
-# ... Resto de funciones existentes (get_token_transactions, get_recent_untracked_signals, count_signals_today, etc.) se mantienen igual.
+# Otras funciones existentes se mantienen...
