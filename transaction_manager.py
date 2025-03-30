@@ -64,7 +64,7 @@ class TransactionManager:
         self.processed_tx_lock = threading.Lock()
         
         logger.info("TransactionManager inicializado")
-
+    
     async def start(self):
         if self.running:
             logger.warning("TransactionManager ya está en ejecución")
@@ -103,8 +103,7 @@ class TransactionManager:
                     logger.info("Iniciada conexión a Cielo")
                 else:
                     self.tasks.append(asyncio.create_task(
-                        self.cielo_adapter.run_forever_wallets(wallets=wallets_to_track,
-                                                                on_message_callback=self.handle_cielo_message)
+                        self.cielo_adapter.run_forever_wallets(wallets=wallets_to_track, on_message_callback=self.handle_cielo_message)
                     ))
                     logger.info("Iniciada conexión a Cielo (modo legacy)")
                 self.active_source = DataSource.CIELO
@@ -396,13 +395,13 @@ class TransactionManager:
 
     def is_duplicate_transaction(self, tx_data):
         """
-        Verifica si una transacción es duplicada basándose en un identificador único.
+        Verifica si una transacción ya ha sido procesada recientemente.
         
         Args:
             tx_data: Datos de la transacción.
             
         Returns:
-            bool: True si la transacción ya fue procesada recientemente.
+            bool: True si la transacción es duplicada.
         """
         try:
             tx_id = f"{tx_data['wallet']}:{tx_data['token']}:{tx_data['type']}:{tx_data['amount_usd']}"
@@ -489,7 +488,6 @@ class TransactionManager:
         if not self.helius_adapter:
             return []
         try:
-            # Intentar obtener datos desde la base de datos como fallback
             db_txs = db.get_wallet_recent_transactions(wallet, hours=1)
             if db_txs and len(db_txs) > 0:
                 return db_txs
@@ -513,6 +511,47 @@ class TransactionManager:
         except Exception as e:
             logger.error(f"Error obteniendo transacciones de {wallet} desde Helius: {e}")
             return []
+
+    def _get_wallets_to_track(self):
+        """
+        Obtiene la lista de wallets a monitorear, priorizando el nuevo WalletManager
+        sobre el WalletTracker legacy.
+        
+        Returns:
+            list: Lista de direcciones de wallets para monitorear.
+        """
+        wallets_to_track = []
+        if self.wallet_manager and hasattr(self.wallet_manager, 'get_wallets'):
+            wallets_to_track = self.wallet_manager.get_wallets()
+            if wallets_to_track:
+                logger.info(f"Obtenidas {len(wallets_to_track)} wallets desde WalletManager")
+                return wallets_to_track
+        if self.wallet_tracker and hasattr(self.wallet_tracker, 'get_wallets'):
+            wallets_to_track = self.wallet_tracker.get_wallets()
+            if wallets_to_track:
+                logger.info(f"Obtenidas {len(wallets_to_track)} wallets desde WalletTracker")
+                return wallets_to_track
+        try:
+            import json
+            with open('traders_data.json', 'r') as f:
+                data = json.load(f)
+                wallets_to_track = [entry["Wallet"] for entry in data if "Wallet" in entry]
+                logger.info(f"Obtenidas {len(wallets_to_track)} wallets directamente desde traders_data.json")
+        except Exception as e:
+            logger.error(f"Error leyendo wallets desde traders_data.json: {e}")
+        return wallets_to_track
+
+    def _get_sample_wallet(self):
+        """
+        Obtiene una wallet de muestra para hacer pruebas con las APIs.
+        
+        Returns:
+            str: Dirección de wallet o None si no hay ninguna.
+        """
+        wallets = self._get_wallets_to_track()
+        if wallets and len(wallets) > 0:
+            return wallets[0]
+        return None
 
     def get_stats(self) -> Dict[str, Any]:
         return {
