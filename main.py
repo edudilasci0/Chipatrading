@@ -26,7 +26,7 @@ from dex_monitor import DexMonitor
 from market_metrics import MarketMetricsAnalyzer
 from token_analyzer import TokenAnalyzer
 from trader_profiler import TraderProfiler
-from signal_predictor import SignalPredictor
+# Eliminamos la importación de signal_predictor
 
 # Utilidades
 from telegram_utils import fix_telegram_commands, send_telegram_message
@@ -128,6 +128,7 @@ async def main():
         logger.info("🔄 Inicializando componentes...")
         
         # Inicializar APIs y servicios
+        # Se elimina HeliusClient, ya que se utilizará solo DexScreener y Cielo
         dexscreener_client = DexScreenerClient()
         cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
         
@@ -135,15 +136,15 @@ async def main():
         wallet_manager = WalletManager()
         wallet_tracker = WalletTracker()
         scoring_system = ScoringSystem()
-        signal_predictor = SignalPredictor()
+        # Se elimina la referencia a signal_predictor
         
-        # Componentes avanzados
+        # Inicializar componentes avanzados
         dex_monitor = DexMonitor()
         market_metrics = MarketMetricsAnalyzer(dexscreener_client=dexscreener_client)
         token_analyzer = TokenAnalyzer(dexscreener_client=dexscreener_client)
         trader_profiler = TraderProfiler(scoring_system=scoring_system)
         
-        # Inicializar tracker de rendimiento (sin whale_detector)
+        # Inicializar tracker de rendimiento
         performance_tracker = PerformanceTracker(
             dexscreener_client=dexscreener_client,
             dex_monitor=dex_monitor,
@@ -151,11 +152,13 @@ async def main():
         )
         performance_tracker.token_analyzer = token_analyzer
         
-        # Inicializar lógica de señales (sin whale_detector)
+        # Inicializar lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
+            # Se elimina helius_client y rugcheck_api para esta migración
+            helius_client=None,
             rugcheck_api=None,
-            ml_predictor=signal_predictor,
+            ml_predictor=None,
             wallet_tracker=wallet_tracker
         )
         signal_logic.market_metrics = market_metrics
@@ -164,15 +167,17 @@ async def main():
         signal_logic.dex_monitor = dex_monitor
         signal_logic.performance_tracker = performance_tracker
         
-        # Inicializar Transaction Manager (solo con Cielo)
+        # Inicializar Transaction Manager (solo se usará Cielo)
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
             scoring_system=scoring_system,
             wallet_manager=wallet_manager
         )
+        
+        # Configurar adaptadores para el Transaction Manager
         transaction_manager.cielo_adapter = cielo_api
-        transaction_manager.helius_adapter = None  # Eliminar Helius
+        transaction_manager.helius_adapter = None  # Se elimina Helius
         
         # Actualizar configuraciones
         Config.update_setting("mcap_threshold", "100000")
@@ -229,6 +234,7 @@ async def main():
             telegram_task.cancel()
         maintenance_task.cancel()
         heartbeat_task.cancel()
+        
         await cleanup_resources(components)
         logger.info("✅ Bot detenido correctamente")
         return 0
