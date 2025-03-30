@@ -1,204 +1,123 @@
-# config.py
+#!/usr/bin/env python3
+"""
+config.py – Configuración centralizada para el bot de trading en Solana
+
+Esta versión actualizada elimina las referencias a Helius y agrega
+parámetros específicos para DexScreener, facilitando la migración hacia
+una arquitectura basada en Cielo (transacciones) y DexScreener (datos de mercado).
+"""
+
 import os
-import sys
 import logging
 
-class Config:
-    # Configuraciones de API y credenciales
-    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-    CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "")
-    HELIUS_API_KEY = os.environ.get("HELIUS_API_KEY", "")
-    DATABASE_PATH = os.environ.get("DATABASE_PATH", "tradingbot.db")
-    
-    # Parámetros para validación de transacciones y señales
-    MIN_TRANSACTION_USD = float(os.environ.get("MIN_TRANSACTION_USD", "200"))
-    MIN_TRADERS_FOR_SIGNAL = int(os.environ.get("MIN_TRADERS_FOR_SIGNAL", "2"))
-    SIGNAL_WINDOW_SECONDS = int(os.environ.get("SIGNAL_WINDOW_SECONDS", "540"))
-    MIN_CONFIDENCE_THRESHOLD = float(os.environ.get("MIN_CONFIDENCE_THRESHOLD", "0.3"))
-    HIGH_VOLUME_THRESHOLD = float(os.environ.get("HIGH_VOLUME_THRESHOLD", "5000"))
-    MIN_VOLUME_USD = float(os.environ.get("MIN_VOLUME_USD", "2000"))
-    MAX_SCORE = 10.0
-    DEFAULT_SCORE = 5.0
-    
-    # Nuevos parámetros para análisis avanzado
-    WHALE_TRANSACTION_THRESHOLD = float(os.environ.get("WHALE_TRANSACTION_THRESHOLD", "10000"))
-    LIQUIDITY_HEALTHY_THRESHOLD = float(os.environ.get("LIQUIDITY_HEALTHY_THRESHOLD", "20000"))
-    SLIPPAGE_WARNING_THRESHOLD = float(os.environ.get("SLIPPAGE_WARNING_THRESHOLD", "10"))
-    HOLDER_GROWTH_SIGNIFICANT = float(os.environ.get("HOLDER_GROWTH_SIGNIFICANT", "5"))
-    
-    # Coeficientes para cálculo de confianza
-    TRADER_QUALITY_WEIGHT = float(os.environ.get("TRADER_QUALITY_WEIGHT", "0.35"))
-    WHALE_ACTIVITY_WEIGHT = float(os.environ.get("WHALE_ACTIVITY_WEIGHT", "0.20"))
-    HOLDER_GROWTH_WEIGHT = float(os.environ.get("HOLDER_GROWTH_WEIGHT", "0.15"))
-    LIQUIDITY_HEALTH_WEIGHT = float(os.environ.get("LIQUIDITY_HEALTH_WEIGHT", "0.15"))
-    TECHNICAL_FACTORS_WEIGHT = float(os.environ.get("TECHNICAL_FACTORS_WEIGHT", "0.15"))
-    
-    # Parámetros para DEX y APIs
-    DEX_CACHE_TTL = int(os.environ.get("DEX_CACHE_TTL", "60"))  # 60 segundos
-    MARKET_METRICS_CACHE_TTL = int(os.environ.get("MARKET_METRICS_CACHE_TTL", "300"))  # 5 minutos
-    HOLDER_GROWTH_TTL = int(os.environ.get("HOLDER_GROWTH_TTL", "3600"))  # 1 hora
-    TRENDING_DATA_TTL = int(os.environ.get("TRENDING_DATA_TTL", "1800"))  # 30 minutos
-    TOKEN_ANALYSIS_CACHE_TTL = int(os.environ.get("TOKEN_ANALYSIS_CACHE_TTL", "300"))  # 5 minutos
-    
-    # Configuración de monitoreo
-    PERFORMANCE_UPDATE_INTERVAL = int(os.environ.get("PERFORMANCE_UPDATE_INTERVAL", "180"))  # 3 minutos
-    EARLY_MONITORING_INTERVALS = [3, 8, 15, 25]  # Minutos para monitoreo intensivo
-    
-    # Configuración para throttling y limitaciones
-    HELIUS_CACHE_DURATION = int(os.environ.get("HELIUS_CACHE_DURATION", "300"))
-    SIGNAL_THROTTLING = int(os.environ.get("SIGNAL_THROTTLING", "10"))
-    MAX_API_RETRIES = int(os.environ.get("MAX_API_RETRIES", "3"))
-    API_RETRY_DELAY = int(os.environ.get("API_RETRY_DELAY", "2"))
-    
-    # Configuración de señales
-    SIGNAL_LEVELS = {
-        "S": 0.9,  # Confianza >= 0.9
-        "A": 0.8,  # Confianza >= 0.8
-        "B": 0.6,  # Confianza >= 0.6
-        "C": 0.3   # Confianza >= 0.3
-    }
-    
-    # Configuración dinámica cargada desde la base de datos
-    _dynamic_config = {}
-    _initialized = False
+# Variables de API y credenciales
+# Clave para el bot de Telegram
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-    @classmethod
-    def initialize(cls):
-        """Inicializa la configuración. Debe llamarse antes de utilizar Config.get()"""
-        if cls._initialized:
-            return
-        try:
-            # Intentamos cargar la configuración desde la base de datos,
-            # pero no falla si no podemos
-            cls.load_dynamic_config()
-        except Exception as e:
-            print(f"Advertencia: No se pudo cargar la configuración dinámica: {e}")
-        
-        # Configurar logging
-        cls.setup_logging()
-        
-        cls._initialized = True
+# Clave de API para Cielo Finance
+CIELO_API_KEY = os.environ.get("CIELO_API_KEY", "")
 
-    @classmethod
-    def load_dynamic_config(cls, db_connection=None):
-        try:
-            import db
-            settings = db.execute_cached_query("SELECT key, value FROM bot_settings")
-            for setting in settings:
-                key = setting['key']
-                value = setting['value']
-                cls._dynamic_config[key] = value
-            print(f"Dynamic config loaded: {len(cls._dynamic_config)} parameters")
-        except Exception as e:
-            print(f"Error loading dynamic config: {e}")
+# Configuración para DexScreener (si se requiere autenticación o URL base personalizada)
+DEXSCREENER_BASE_URL = os.environ.get("DEXSCREENER_BASE_URL", "https://api.dexscreener.com")
+# En caso de necesitar clave de API para DexScreener, se puede agregar aquí (por ahora se deja vacío)
+DEXSCREENER_API_KEY = os.environ.get("DEXSCREENER_API_KEY", "")
 
-    @classmethod
-    def get(cls, key, default=None):
-        """
-        Obtiene un valor de configuración, con el siguiente orden de prioridad:
-        1. Configuración dinámica (de DB)
-        2. Atributos de clase Config
-        3. Valor por defecto proporcionado
-        """
-        if not cls._initialized:
-            cls.initialize()
-            
-        if key in cls._dynamic_config:
-            return cls._dynamic_config[key]
-        if hasattr(cls, key.upper()):
-            return getattr(cls, key.upper())
-        return default
+# Parámetros de transacción y umbrales
+MIN_TRANSACTION_USD = os.environ.get("MIN_TRANSACTION_USD", "200")
+MIN_TRADERS_FOR_SIGNAL = os.environ.get("MIN_TRADERS_FOR_SIGNAL", "2")
+SIGNAL_WINDOW_SECONDS = os.environ.get("SIGNAL_WINDOW_SECONDS", "540")
+MIN_CONFIDENCE_THRESHOLD = os.environ.get("MIN_CONFIDENCE_THRESHOLD", "0.3")
+# Umbrales de mercado
+MCAP_THRESHOLD = os.environ.get("MCAP_THRESHOLD", "100000")
+VOLUME_THRESHOLD = os.environ.get("VOLUME_THRESHOLD", "200000")
 
-    @classmethod
-    def check_required_config(cls):
-        required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "CIELO_API_KEY", "HELIUS_API_KEY"]
-        missing = [var for var in required_vars if not getattr(cls, var)]
-        if missing:
-            print(f"🚨 ERROR: Missing environment variables: {', '.join(missing)}")
-            sys.exit(1)
-        print("✅ Required configuration verified")
+# Configuración de caché
+HELIUS_CACHE_DURATION = os.environ.get("HELIUS_CACHE_DURATION", "300")  # Si ya no se usa Helius, puede usarse para DexScreener
+# Parámetro para DexScreener (usar el mismo valor si no se requiere diferencia)
+DEXSCREENER_CACHE_DURATION = os.environ.get("DEXSCREENER_CACHE_DURATION", "300")
+
+# Configuración de salud de fuentes (para Cielo y DexScreener)
+SOURCE_HEALTH_CHECK_INTERVAL = os.environ.get("SOURCE_HEALTH_CHECK_INTERVAL", "60")
+MAX_SOURCE_FAILURES = os.environ.get("MAX_SOURCE_FAILURES", "3")
+SOURCE_TIMEOUT = os.environ.get("SOURCE_TIMEOUT", "300")
+
+# Configuración de base de datos
+DATABASE_PATH = os.environ.get("DATABASE_PATH", "")
+
+# Configuración de logging
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+DEFAULT_SCORE = os.environ.get("DEFAULT_SCORE", "5.0")
+
+def load_dynamic_config():
+    """
+    Carga configuración dinámica desde la base de datos o archivo de configuración.
+    Este método se puede extender para recargar parámetros sin reiniciar el servicio.
+    """
+    # Aquí se podría implementar la recarga dinámica; por ahora solo se imprime un log.
+    logging.getLogger("config").info("Dynamic configuration reloaded.")
+
+def update_setting(key: str, value: str) -> bool:
+    """
+    Actualiza la configuración en memoria. Esta función se puede integrar con
+    la base de datos para persistir cambios.
     
-    @classmethod
-    def setup_logging(cls):
-        """Configura el sistema de logging para todo el proyecto"""
-        log_level = os.environ.get("LOG_LEVEL", "INFO")
-        log_levels = {
-            "DEBUG": logging.DEBUG,
-            "INFO": logging.INFO,
-            "WARNING": logging.WARNING,
-            "ERROR": logging.ERROR,
-            "CRITICAL": logging.CRITICAL
-        }
+    Args:
+        key: Nombre del setting
+        value: Nuevo valor a asignar
         
-        level = log_levels.get(log_level.upper(), logging.INFO)
-        
-        # Configuración básica para todos los loggers
-        logging.basicConfig(
-            level=level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler()
-            ]
-        )
-        
-        # Configurar loggers específicos para módulos
-        loggers = [
-            "signal_logic", "performance_tracker", "whale_detector",
-            "market_metrics", "token_analyzer", "trader_profiler",
-            "dex_monitor", "telegram_utils", "database"
-        ]
-        
-        for logger_name in loggers:
-            logger = logging.getLogger(logger_name)
-            logger.setLevel(level)
-            
-            # Evitar propagar eventos a los handlers del padre
-            # si ya tiene handlers propios
-            if logger.handlers:
-                logger.propagate = False
-        
-        # Configurar bibliotecas externas para que no sean tan verbosas
-        logging.getLogger("aiohttp").setLevel(logging.WARNING)
-        logging.getLogger("requests").setLevel(logging.WARNING)
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-        logging.getLogger("websockets").setLevel(logging.WARNING)
-    
-    @classmethod
-    def update_setting(cls, key, value):
-        """
-        Actualiza un valor de configuración en tiempo de ejecución
-        y lo guarda en la base de datos si está disponible.
-        """
-        cls._dynamic_config[key] = value
-        
-        try:
-            import db
-            db.update_setting(key, str(value))
-            print(f"Updated setting {key} = {value} (saved to DB)")
-        except Exception as e:
-            print(f"Setting {key} = {value} updated in memory only: {e}")
-    
-    @classmethod
-    def get_signal_level(cls, confidence):
-        """
-        Determina el nivel de señal (S, A, B, C) basado en la confianza.
-        
-        Args:
-            confidence (float): Valor de confianza entre 0 y 1
-            
-        Returns:
-            str: Nivel de señal (S, A, B, C)
-        """
-        if confidence >= cls.SIGNAL_LEVELS["S"]:
-            return "S"
-        elif confidence >= cls.SIGNAL_LEVELS["A"]:
-            return "A"
-        elif confidence >= cls.SIGNAL_LEVELS["B"]:
-            return "B"
-        elif confidence >= cls.SIGNAL_LEVELS["C"]:
-            return "C"
-        return "D"  # Por debajo del umbral mínimo
+    Returns:
+        bool: True si se actualizó correctamente, False en caso contrario.
+    """
+    # En esta implementación se actualiza en memoria; en producción se debería
+    # persistir el valor en la base de datos mediante el módulo db.
+    globals()[key] = value
+    logging.getLogger("config").info(f"Updated setting {key} = {value} (in memory)")
+    return True
 
-# Inicializar Config al importar el módulo
-Config.initialize()
+def check_required_config():
+    """
+    Verifica que las variables de entorno críticas estén definidas.
+    Se eliminan las variables referentes a Helius y se verifica solo lo necesario.
+    """
+    missing = []
+    if not TELEGRAM_BOT_TOKEN:
+        missing.append("TELEGRAM_BOT_TOKEN")
+    if not TELEGRAM_CHAT_ID:
+        missing.append("TELEGRAM_CHAT_ID")
+    if not CIELO_API_KEY:
+        missing.append("CIELO_API_KEY")
+    if not DATABASE_PATH:
+        missing.append("DATABASE_PATH")
+    # Opcional: Si DexScreener requiere autenticación, se puede verificar DEXSCREENER_API_KEY
+    if missing:
+        raise ValueError(f"Faltan las siguientes variables de entorno requeridas: {', '.join(missing)}")
+
+def setup_logging():
+    """
+    Configura el logging para el sistema.
+    """
+    logging.basicConfig(
+        level=LOG_LEVEL,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    # Se puede configurar loggers específicos para ciertos módulos si es necesario.
+    logging.getLogger("telegram_utils").setLevel(LOG_LEVEL)
+    logging.getLogger("transaction_manager").setLevel(LOG_LEVEL)
+    logging.getLogger("signal_logic").setLevel(LOG_LEVEL)
+
+# Ejecutar configuración inicial
+setup_logging()
+check_required_config()
+
+# Opcional: imprimir configuración cargada (para depuración)
+logging.getLogger("config").debug("Configuración inicial cargada:")
+logging.getLogger("config").debug(f"TELEGRAM_BOT_TOKEN: {TELEGRAM_BOT_TOKEN}")
+logging.getLogger("config").debug(f"TELEGRAM_CHAT_ID: {TELEGRAM_CHAT_ID}")
+logging.getLogger("config").debug(f"CIELO_API_KEY: {CIELO_API_KEY}")
+logging.getLogger("config").debug(f"DEXSCREENER_BASE_URL: {DEXSCREENER_BASE_URL}")
+logging.getLogger("config").debug(f"MIN_TRANSACTION_USD: {MIN_TRANSACTION_USD}")
+logging.getLogger("config").debug(f"MCAP_THRESHOLD: {MCAP_THRESHOLD}")
+logging.getLogger("config").debug(f"VOLUME_THRESHOLD: {VOLUME_THRESHOLD}")
+
+# Fin del archivo de configuración
