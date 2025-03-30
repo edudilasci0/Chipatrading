@@ -2,7 +2,7 @@ import time
 import asyncio
 import logging
 import math
-from typing import Dict, Any  # Añadir la importación
+from typing import Dict, Any
 from config import Config
 import db
 from whale_detector import WhaleDetector
@@ -17,9 +17,6 @@ class SignalLogic:
     def __init__(self, scoring_system=None, helius_client=None,
                  rugcheck_api=None, ml_predictor=None, pattern_detector=None,
                  wallet_tracker=None):
-        """
-        Inicializa la clase con los parámetros actuales e instancia los módulos necesarios.
-        """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
         self.rugcheck_api = rugcheck_api  # Puede ser None
@@ -32,7 +29,7 @@ class SignalLogic:
         self.watched_tokens = set()
         self.token_type_scores = {}
         self._init_token_type_scores()
-        self.monitored_tokens = {}  # Para tokens que necesitan monitoreo continuo
+        self.monitored_tokens = {}
         self.last_monitoring_time = time.time()
         
         self.whale_detector = WhaleDetector(helius_client=self.helius_client)
@@ -51,10 +48,6 @@ class SignalLogic:
         }
     
     def process_transaction(self, tx_data):
-        """
-        Procesa una transacción entrante y actualiza las estadísticas del token.
-        Se procesan todas las transacciones sin filtrar por traders elite.
-        """
         try:
             if not tx_data or "token" not in tx_data:
                 return
@@ -83,7 +76,7 @@ class SignalLogic:
             
             if self.scoring_system:
                 self.scoring_system.update_score_on_trade(tx_data["wallet"], tx_data)
-            if hasattr(self.wallet_tracker, 'register_transaction'):
+            if self.wallet_tracker and hasattr(self.wallet_tracker, 'register_transaction'):
                 self.wallet_tracker.register_transaction(
                     tx_data["wallet"],
                     tx_data["token"],
@@ -92,7 +85,6 @@ class SignalLogic:
                 )
             logger.debug(f"Transacción procesada: {tx_data['wallet']} - {tx_data['token']} - ${tx_data['amount_usd']:.2f}")
             
-            # Verifica si esta transacción podría ser parte de una señal
             asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
             
         except Exception as e:
@@ -133,10 +125,6 @@ class SignalLogic:
         candidate["last_update"] = timestamp
 
     def _calculate_transaction_confidence(self, transactions):
-        """
-        Calcula un factor de confianza basado en los montos individuales de las transacciones.
-        Prioriza transacciones mayores: $1K, $2K, $3K, $5K, $10K+.
-        """
         if not transactions:
             return 0.0
         total = sum(tx.get("amount_usd", 0) for tx in transactions)
@@ -155,9 +143,6 @@ class SignalLogic:
             return 0.5
 
     async def _verify_and_signal(self, token, wallet, tx_data, wallet_score):
-        """
-        Verifica si una transacción cumple ciertos umbrales y, de ser así, genera una señal.
-        """
         try:
             if token in self.watched_tokens:
                 logger.debug(f"Token {token} ya está en seguimiento")
@@ -165,8 +150,8 @@ class SignalLogic:
             market_data = await self.get_token_market_data(token)
             market_cap = market_data.get("market_cap", 0)
             volume = market_data.get("volume", 0)
-            mcap_threshold = 100000  # $100K
-            volume_threshold = 200000  # $200K
+            mcap_threshold = 100000
+            volume_threshold = 200000
             meets_mcap = market_cap >= mcap_threshold
             meets_volume = volume >= volume_threshold
             if meets_mcap and meets_volume:
@@ -190,9 +175,6 @@ class SignalLogic:
             logger.error(f"Error verificando token {token} para señal: {e}", exc_info=True)
     
     async def get_token_market_data(self, token):
-        """
-        Obtiene datos de mercado para un token.
-        """
         result = {"market_cap": 0, "volume": 0, "price": 0}
         try:
             if self.helius_client:
@@ -209,8 +191,8 @@ class SignalLogic:
         return result
 
     async def periodic_monitoring(self):
-        monitor_interval = 60  # cada 60 segundos
-        max_monitoring_time = 3600 * 4  # hasta 4 horas
+        monitor_interval = 60
+        max_monitoring_time = 3600 * 4
         while True:
             try:
                 now = time.time()
@@ -259,8 +241,7 @@ class SignalLogic:
                 logger.debug(f"Ignorando señal duplicada para {token}")
                 return
             now = time.time()
-            # Puedes extender el análisis aquí si lo deseas
-            extended_analysis = {}
+            extended_analysis = {}  # Aquí se puede extender el análisis
             candidate = self.token_candidates.get(token, {
                 "wallets": {wallet},
                 "high_quality_traders": {wallet} if wallet_score >= 8.0 else set(),
@@ -308,7 +289,7 @@ class SignalLogic:
                 self.recent_signals = self.recent_signals[-20:]
             self.watched_tokens.add(token)
             token_type = "🔴 TOKEN PUMP" if token.endswith("pump") else ""
-            tx_velocity = len(candidate.get("transactions", [])) / (now - candidate.get("first_seen", now) + 1) * 60  # tx/min
+            tx_velocity = len(candidate.get("transactions", [])) / (now - candidate.get("first_seen", now) + 1) * 60
             send_enhanced_signal(
                 token=token,
                 confidence=confidence,
@@ -326,15 +307,9 @@ class SignalLogic:
             logger.error(f"Error generando señal para {token}: {e}", exc_info=True)
 
     def get_active_candidates_count(self):
-        """
-        Retorna el número de tokens candidatos activos en seguimiento.
-        """
         return len(self.token_candidates)
 
     def get_stats(self) -> dict:
-        """
-        Retorna estadísticas sobre el estado actual del sistema.
-        """
         now = time.time()
         return {
             "active_tokens": len(self.token_candidates),
