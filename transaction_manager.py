@@ -20,22 +20,21 @@ class TransactionManager:
         self.wallet_manager = wallet_manager
 
         self.cielo_adapter = None
-        self.helius_adapter = None  # Se elimina su uso, se mantendrá None
+        self.helius_adapter = None  # No se usará
 
-        self.active_source = DataSource.CIELO
+        self.active_source = DataSource.CIELO  # Usamos siempre Cielo
         self.preferred_source = DataSource.CIELO
         self.source_health = {
             DataSource.CIELO: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()},
             DataSource.HELIUS: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()}
         }
+
         self.health_check_interval = int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60))
         self.max_failures = int(Config.get("MAX_SOURCE_FAILURES", 3))
         self.source_timeout = int(Config.get("SOURCE_TIMEOUT", 300))
-        self.helius_polling_interval = int(Config.get("HELIUS_POLLING_INTERVAL", 15))
         self.running = False
         self.tasks = []
         self.health_check_task = None
-        self.helius_polling_task = None
 
         self.processed_tx_cache = {}
         self.cache_cleanup_time = 0
@@ -48,23 +47,18 @@ class TransactionManager:
         if self.running:
             logger.warning("TransactionManager ya está en ejecución")
             return
-
         self.running = True
         logger.info("Iniciando TransactionManager...")
 
         if not self.cielo_adapter:
-            logger.error("No hay adaptador Cielo configurado")
+            logger.error("Adaptador Cielo no configurado")
             self.running = False
             return
 
         if hasattr(self.cielo_adapter, 'set_message_callback'):
             self.cielo_adapter.set_message_callback(self.handle_cielo_message)
         logger.info("Adaptador Cielo configurado")
-        # Se elimina cualquier configuración de helius
-        self.active_source = DataSource.CIELO
-        self.source_health[DataSource.CIELO]["healthy"] = True
-        self.source_health[DataSource.CIELO]["last_check"] = time.time()
-
+        
         self.health_check_task = asyncio.create_task(self.run_health_checks())
 
         wallets_to_track = self._get_wallets_to_track()
@@ -74,7 +68,6 @@ class TransactionManager:
             return
 
         logger.info(f"Monitoreando {len(wallets_to_track)} wallets")
-
         try:
             if hasattr(self.cielo_adapter, 'connect'):
                 self.tasks.append(asyncio.create_task(
@@ -90,10 +83,11 @@ class TransactionManager:
                     )
                 ))
                 logger.info("Iniciada conexión a Cielo (modo legacy)")
+            self.active_source = DataSource.CIELO
+            self.source_health[DataSource.CIELO]["healthy"] = True
+            self.source_health[DataSource.CIELO]["last_check"] = time.time()
         except Exception as e:
             logger.error(f"Error conectando a Cielo: {e}")
-            return
-
         logger.info(f"TransactionManager iniciado con fuente activa: {self.active_source}")
 
     async def handle_cielo_message(self, message):
@@ -127,10 +121,6 @@ class TransactionManager:
             await self.process_transaction(normalized_tx)
         except Exception as e:
             logger.error(f"Error en handle_cielo_message: {e}", exc_info=True)
-
-    async def handle_helius_transaction(self, transaction):
-        # Se elimina implementación de helius, dejando como stub
-        pass
 
     async def process_transaction(self, tx_data):
         try:
@@ -213,232 +203,16 @@ class TransactionManager:
     async def _check_sources_health(self):
         now = time.time()
         active_health = self.source_health[self.active_source]
-        active_timeout = now - active_health["last_message"] > self.source_timeout
-        if self.active_source != DataSource.NONE and active_timeout:
+        if now - active_health["last_message"] > self.source_timeout:
             logger.warning(f"Fuente activa {self.active_source} sin mensajes por {self.source_timeout}s")
             active_health["healthy"] = False
             active_health["failures"] += 1
-        if self.active_source != DataSource.NONE and (not active_health["healthy"] or active_health["failures"] >= self.max_failures):
-            target_source = DataSource.HELIUS if self.active_source == DataSource.CIELO else DataSource.CIELO
-            logger.warning(f"Fuente {self.active_source} no saludable. Intentando conmutar a {target_source}")
-            await self._try_switch_to_source(target_source)
-        if self.cielo_adapter and self.active_source != DataSource.CIELO:
-            cielo_health = self.source_health[DataSource.CIELO]
-            if now - cielo_health["last_check"] > int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60)) * 2:
-                try:
-                    is_available = await self.cielo_adapter.check_availability() if hasattr(self.cielo_adapter, 'check_availability') else True
-                    cielo_health["healthy"] = is_available
-                    if is_available:
-                        cielo_health["failures"] = 0
-                        if self.preferred_source == DataSource.CIELO and self.active_source != DataSource.CIELO:
-                            logger.info("Cielo disponible nuevamente. Conmutando de vuelta.")
-                            await self._try_switch_to_source(DataSource.CIELO)
-                    else:
-                        cielo_health["failures"] += 1
-                except Exception as e:
-                    logger.warning(f"Error verificando disponibilidad de Cielo: {e}")
-                    cielo_health["healthy"] = False
-                    cielo_health["failures"] += 1
-                cielo_health["last_check"] = now
-        if self.helius_adapter and self.active_source != DataSource.HELIUS:
-            helius_health = self.source_health[DataSource.HELIUS]
-            if now - helius_health["last_check"] > int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60)) * 2:
-                try:
-                    is_available = False
-                    if hasattr(self.helius_adapter, 'check_availability'):
-                        is_available = await self.helius_adapter.check_availability()
-                    else:
-                        is_available = True
-                    helius_health["healthy"] = is_available
-                    if is_available:
-                        helius_health["failures"] = 0
-                        if self.active_source == DataSource.NONE and not self.source_health[DataSource.CIELO]["healthy"]:
-                            logger.info("Helius disponible. Conmutando.")
-                            await self._try_switch_to_source(DataSource.HELIUS)
-                    else:
-                        helius_health["failures"] += 1
-                except Exception as e:
-                    logger.warning(f"Error verificando disponibilidad de Helius: {e}")
-                    helius_health["healthy"] = False
-                    helius_health["failures"] += 1
-                helius_health["last_check"] = now
+        if not active_health["healthy"] or active_health["failures"] >= self.max_failures:
+            logger.warning(f"Fuente {self.active_source} no saludable, pero solo Cielo está disponible.")
+            # Como se usará solo Cielo, no se realiza conmutación
+        active_health["last_check"] = now
 
     async def _try_switch_to_source(self, target_source):
-        if target_source == self.active_source:
-            return
-        logger.info(f"Intentando conmutar de {self.active_source} a {target_source}")
-        if self.active_source != DataSource.NONE:
-            current_source = self.active_source
-            self.active_source = DataSource.NONE
-            if current_source == DataSource.CIELO and self.cielo_adapter:
-                try:
-                    if hasattr(self.cielo_adapter, 'disconnect'):
-                        await self.cielo_adapter.disconnect()
-                    logger.info("Conexión a Cielo cerrada")
-                except Exception as e:
-                    logger.error(f"Error cerrando conexión a Cielo: {e}")
-            elif current_source == DataSource.HELIUS and self.helius_adapter:
-                try:
-                    if hasattr(self.helius_adapter, 'stop_polling'):
-                        self.helius_adapter.stop_polling()
-                    logger.info("Polling de Helius detenido")
-                except Exception as e:
-                    logger.error(f"Error deteniendo polling de Helius: {e}")
-                if self.helius_polling_task:
-                    self.helius_polling_task.cancel()
-                    try:
-                        await self.helius_polling_task
-                    except asyncio.CancelledError:
-                        pass
-                    self.helius_polling_task = None
-        wallets_to_track = self._get_wallets_to_track()
-        if target_source == DataSource.CIELO and self.cielo_adapter:
-            try:
-                if hasattr(self.cielo_adapter, 'connect'):
-                    self.tasks.append(asyncio.create_task(
-                        self.cielo_adapter.connect(wallets_to_track)
-                    ))
-                    logger.info("Iniciada conexión a Cielo")
-                else:
-                    callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
-                    self.tasks.append(asyncio.create_task(
-                        self.cielo_adapter.run_forever_wallets(
-                            wallets=wallets_to_track,
-                            on_message_callback=callback
-                        )
-                    ))
-                    logger.info("Iniciada conexión a Cielo (modo legacy)")
-                self.active_source = DataSource.CIELO
-                self.source_health[DataSource.CIELO]["healthy"] = True
-                self.source_health[DataSource.CIELO]["last_check"] = time.time()
-                self.source_health[DataSource.CIELO]["failures"] = 0
-            except Exception as e:
-                logger.error(f"Error conectando a Cielo: {e}")
-                self.source_health[DataSource.CIELO]["healthy"] = False
-                self.source_health[DataSource.CIELO]["failures"] += 1
-                return False
-        elif target_source == DataSource.HELIUS and self.helius_adapter:
-            try:
-                if hasattr(self.helius_adapter, 'start_polling'):
-                    self.helius_polling_task = asyncio.create_task(
-                        self.helius_adapter.start_polling(
-                            wallets_to_track, 
-                            interval=self.helius_polling_interval
-                        )
-                    )
-                    logger.info(f"Iniciado polling de Helius cada {self.helius_polling_interval}s")
-                else:
-                    self.helius_polling_task = asyncio.create_task(
-                        self._run_helius_polling(wallets_to_track)
-                    )
-                    logger.info(f"Iniciado polling interno de Helius cada {self.helius_polling_interval}s")
-                self.active_source = DataSource.HELIUS
-                self.source_health[DataSource.HELIUS]["healthy"] = True
-                self.source_health[DataSource.HELIUS]["last_check"] = time.time()
-                self.source_health[DataSource.HELIUS]["failures"] = 0
-            except Exception as e:
-                logger.error(f"Error iniciando polling de Helius: {e}")
-                self.source_health[DataSource.HELIUS]["healthy"] = False
-                self.source_health[DataSource.HELIUS]["failures"] += 1
-                return False
-        else:
-            logger.warning(f"No se puede conmutar a {target_source}: adaptador no disponible")
-            return False
-        logger.info(f"Conmutación exitosa a {target_source}")
+        # En esta versión, usamos solo Cielo, por lo que este método puede dejarse como stub
+        logger.info(f"Conmutación solicitada a {target_source} (no implementada, usando Cielo)")
         return True
-
-    async def _run_helius_polling(self, wallets):
-        try:
-            logger.info(f"Iniciando polling de Helius para {len(wallets)} wallets")
-            while self.running and self.active_source == DataSource.HELIUS:
-                start_time = time.time()
-                chunk_size = 10
-                for i in range(0, len(wallets), chunk_size):
-                    chunk = wallets[i:i+chunk_size]
-                    for wallet in chunk:
-                        try:
-                            transactions = await self._get_wallet_transactions(wallet)
-                            if transactions:
-                                for tx in transactions:
-                                    normalized_tx = self._normalize_helius_transaction(wallet, tx)
-                                    if normalized_tx:
-                                        await self.handle_helius_transaction(normalized_tx)
-                        except Exception as e:
-                            logger.debug(f"Error obteniendo transacciones para {wallet}: {e}")
-                    await asyncio.sleep(0.5)
-                elapsed = time.time() - start_time
-                wait_time = max(0.1, self.helius_polling_interval - elapsed)
-                await asyncio.sleep(wait_time)
-        except asyncio.CancelledError:
-            logger.info("Polling de Helius cancelado")
-        except Exception as e:
-            logger.error(f"Error en _run_helius_polling: {e}")
-            self.source_health[DataSource.HELIUS]["healthy"] = False
-            self.source_health[DataSource.HELIUS]["failures"] += 1
-
-    async def _get_wallet_transactions(self, wallet):
-        try:
-            url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
-            params = {
-                "api-key": self.cielo_adapter.api_key,  # Se usa el API key de Cielo o se puede configurar uno específico
-                "limit": 10
-            }
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=5) as response:
-                    if response.status == 200:
-                        transactions = await response.json()
-                        return transactions
-                    else:
-                        logger.warning(f"Error obteniendo transacciones: {response.status}")
-                        return []
-        except Exception as e:
-            logger.error(f"Error en _get_wallet_transactions para {wallet}: {e}")
-            return []
-
-    def _normalize_helius_transaction(self, wallet, tx_data):
-        try:
-            if not tx_data:
-                return None
-            token = None
-            if "tokenTransfers" in tx_data and tx_data["tokenTransfers"]:
-                for transfer in tx_data["tokenTransfers"]:
-                    if "mint" in transfer:
-                        token = transfer["mint"]
-                        break
-            if not token:
-                return None
-            tx_type = "UNKNOWN"
-            if "description" in tx_data:
-                if "buy" in tx_data["description"].lower():
-                    tx_type = "BUY"
-                elif "sell" in tx_data["description"].lower():
-                    tx_type = "SELL"
-                elif "swap" in tx_data["description"].lower():
-                    tx_type = "SWAP"
-            amount_usd = 0
-            if "nativeTransfers" in tx_data and tx_data["nativeTransfers"]:
-                for transfer in tx_data["nativeTransfers"]:
-                    if "amount" in transfer:
-                        sol_amount = float(transfer["amount"]) / 1000000000
-                        amount_usd = sol_amount * 100  # Suponiendo 1 SOL = $100
-            if amount_usd <= 0:
-                amount_usd = 500
-            normalized_tx = {
-                "wallet": wallet,
-                "token": token,
-                "type": tx_type,
-                "amount_usd": amount_usd,
-                "timestamp": time.time(),
-                "source": "helius_polling"
-            }
-            return normalized_tx
-        except Exception as e:
-            logger.error(f"Error normalizando transacción de Helius: {e}")
-            return None
-
-    def get_health_metrics(self):
-        return {
-            "health_status": self.cielo_adapter.is_connected() if self.cielo_adapter else False,
-            "polling_active": self.polling_active if hasattr(self, 'polling_active') else False
-        }
