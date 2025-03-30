@@ -1,22 +1,14 @@
-#!/usr/bin/env python3
-# performance_tracker.py
 import asyncio
 import time
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from datetime import datetime
 import db
 from config import Config
+from telegram_utils import send_performance_report
 
 logger = logging.getLogger("performance_tracker")
 
 class PerformanceTracker:
-    """
-    Realiza seguimiento del rendimiento de las señales emitidas con intervalos específicos.
-    También detecta señales "muertas" para evitar procesarlas indefinidamente.
-    """
-    
-    # Definición de intervalos de seguimiento (por ejemplo: 3m, 5m, etc.)
     TRACK_INTERVALS = [
         (3, "3m"),
         (5, "5m"),
@@ -28,122 +20,98 @@ class PerformanceTracker:
         (1440, "24h")
     ]
     
-    def __init__(self, token_data_service=None, dex_monitor=None, market_metrics=None, whale_detector=None):
-        """
-        Inicializa el tracker de rendimiento con servicios avanzados.
-        
-        Args:
-            token_data_service: Servicio para obtener datos de tokens.
-            dex_monitor: Monitor de DEX para datos de liquidez.
-            market_metrics: Analizador de métricas de mercado.
-            whale_detector: Detector de actividad de ballenas.
-        """
-        self.token_data_service = token_data_service
+    def __init__(self, dexscreener_client=None, dex_monitor=None, market_metrics=None):
+        self.dexscreener_client = dexscreener_client
         self.dex_monitor = dex_monitor
         self.market_metrics = market_metrics
-        self.whale_detector = whale_detector
-        
-        # Estructuras de seguimiento
-        self.signal_performance: Dict[str, Any] = {}  # Almacena los datos de rendimiento por token
-        self.last_prices: Dict[str, float] = {}         # Último precio conocido por token
-        self.signal_updates: Dict[str, float] = {}      # Última actualización en cada señal
-        self.early_stage_monitoring: Dict[str, bool] = {} # Monitoreo intensivo en etapa temprana
-        self.dead_signals: set = set()                  # Señales marcadas como "muertas" para evitar procesamiento
-        
-        # Control de tareas
+        self.signal_performance = {}
+        self.last_prices = {}
+        self.signal_updates = {}
+        self.early_stage_monitoring = {}
+        self.dead_signals = set()
         self.dead_signal_task = None
         self.running = False
         self.shutdown_flag = False
-        
         logger.info("PerformanceTracker inicializado con servicios avanzados")
     
     async def start(self):
-        """
-        Inicia el tracker y sus tareas en segundo plano.
-        """
         if self.running:
             return
-        
         self.running = True
         self.shutdown_flag = False
-        
-        # Iniciar la tarea de detección de señales muertas
-        self.dead_signal_task = asyncio.create_task(self._periodic_dead_signal_detection())
-        logger.info("PerformanceTracker iniciado con detector de señales muertas")
+        # Para simplificar, se omite la detección de señales muertas si ya no se utiliza whale_detector
+        # self.dead_signal_task = asyncio.create_task(self._periodic_dead_signal_detection())
+        logger.info("PerformanceTracker iniciado")
     
     async def stop(self):
-        """
-        Detiene el tracker y cancela las tareas en segundo plano.
-        """
         self.shutdown_flag = True
-        
         if self.dead_signal_task:
             self.dead_signal_task.cancel()
             try:
                 await self.dead_signal_task
             except asyncio.CancelledError:
                 pass
-        
         self.running = False
         logger.info("PerformanceTracker detenido")
     
-    async def _periodic_dead_signal_detection(self):
-        """
-        Tarea que se ejecuta periódicamente para detectar señales muertas.
-        En una implementación real, aquí se podría evaluar si las señales han dejado de actualizarse
-        o han reversado de forma crítica y, de ser así, marcarlas como "muertas".
-        Actualmente, se registra simplemente que se está ejecutando la detección.
-        """
-        try:
-            while self.running:
-                logger.info("Ejecutando detección de señales muertas...")
-                # Aquí se podría llamar a un método self.detect_dead_signals() para evaluar cada señal.
-                # Por ahora, se simula con un sleep.
-                await asyncio.sleep(300)  # Ejecuta cada 5 minutos
-        except asyncio.CancelledError:
-            logger.info("Tarea de detección de señales muertas cancelada")
-        except Exception as e:
-            logger.error(f"Error en detección de señales muertas: {e}", exc_info=True)
+    def add_signal(self, token, signal_info):
+        timestamp = int(time.time())
+        performance_data = {
+            "timestamp": timestamp,
+            "initial_price": signal_info.get("initial_price", 0),
+            "performances": {},
+            "max_price": signal_info.get("initial_price", 0),
+            "max_gain": 0,
+            "confidence": signal_info.get("confidence", 0),
+            "traders_count": signal_info.get("traders_count", 0),
+            "total_volume": signal_info.get("total_volume", 0),
+            "signal_id": signal_info.get("signal_id"),
+            "token_name": signal_info.get("token_name", ""),
+            "known_traders": signal_info.get("known_traders", []),
+            "last_update": timestamp,
+            "is_dead": False,
+            "death_reason": None
+        }
+        self.signal_performance[token] = performance_data
+        self.last_prices[token] = signal_info.get("initial_price", 0)
+        self.signal_updates[token] = timestamp
+        self.early_stage_monitoring[token] = True
+        asyncio.create_task(self._track_performance(token))
+        logger.info(f"Iniciado seguimiento para {token} con precio inicial ${signal_info.get('initial_price', 0)}")
     
-    def add_signal(self, token: str, signal_info: Dict[str, Any]):
-        """
-        Registra una nueva señal para seguimiento.
-        
-        Args:
-            token: Identificador del token.
-            signal_info: Diccionario con datos de la señal (por ejemplo, precio inicial, volumen, etc.)
-        """
-        self.signal_performance[token] = signal_info
-        logger.info(f"Señal agregada para {token}")
+    async def _track_performance(self, token):
+        # Implementación simplificada: Simula seguimiento de rendimiento en intervalos
+        for minutes, label in self.TRACK_INTERVALS:
+            try:
+                await asyncio.sleep(minutes * 60)
+                if token not in self.signal_performance or self.shutdown_flag:
+                    break
+                performance_entry = {
+                    "price": self.last_prices.get(token, 0),
+                    "percent_change": 0,  # Calcular según evolución
+                    "timestamp": int(time.time())
+                }
+                self.signal_performance[token]["performances"][label] = performance_entry
+                self.signal_performance[token]["last_update"] = time.time()
+                logger.info(f"Actualización para {token} ({label})")
+            except Exception as e:
+                logger.error(f"Error en seguimiento de {token} a {label}: {e}")
     
-    def get_signal_performance_summary(self, token: str) -> Any:
-        """
-        Retorna un resumen del rendimiento para un token a partir de los datos almacenados.
-        
-        Args:
-            token: Identificador del token.
-            
-        Returns:
-            Resumen de rendimiento o None si no existe.
-        """
+    def get_signal_performance_summary(self, token):
         if token not in self.signal_performance:
             return None
-        
         data = self.signal_performance[token]
         initial_price = data.get("initial_price", 0)
         last_price = self.last_prices.get(token, 0)
-        
-        if initial_price <= 0 or last_price <= 0:
-            return "N/A"
-        
-        percent_change = ((last_price - initial_price) / initial_price) * 100
-        return f"{percent_change:.2f}%"
-    
-    # Aquí se pueden agregar más métodos para el seguimiento de intervalos, actualización de datos, etc.
-    
-    # Por ejemplo, métodos para actualizar el rendimiento en intervalos específicos (3m, 5m, etc.)
-    # y almacenar esos datos en self.signal_performance.
-    
-    # Otras funciones internas de soporte para el análisis de señales pueden añadirse aquí.
-
-# Fin de performance_tracker.py
+        current_gain = ((last_price - initial_price) / initial_price) * 100 if initial_price > 0 and last_price > 0 else 0
+        return {
+            "token": token,
+            "signal_id": data.get("signal_id", ""),
+            "initial_price": initial_price,
+            "current_price": last_price,
+            "current_gain": current_gain,
+            "max_gain": data.get("max_gain", 0),
+            "is_dead": data.get("is_dead", False),
+            "death_reason": data.get("death_reason"),
+            "elapsed_time": int(time.time() - data.get("timestamp", 0))
+        }
