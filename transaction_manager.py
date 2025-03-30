@@ -42,9 +42,10 @@ class TransactionManager:
         
         self.active_source = DataSource.NONE
         self.preferred_source = DataSource.CIELO
+        # Inicializamos last_message con time.time() para evitar error en la validación inicial.
         self.source_health = {
-            DataSource.CIELO: {"healthy": False, "last_check": 0, "failures": 0, "last_message": 0},
-            DataSource.HELIUS: {"healthy": False, "last_check": 0, "failures": 0, "last_message": 0}
+            DataSource.CIELO: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()},
+            DataSource.HELIUS: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()}
         }
         
         self.health_check_interval = int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60))
@@ -308,7 +309,7 @@ class TransactionManager:
         Procesa mensajes recibidos desde el adaptador de Cielo.
         
         Args:
-            message: Mensaje en formato string (generalmente JSON)
+            message: Mensaje en formato string (generalmente JSON).
         """
         try:
             self.source_health[DataSource.CIELO]["last_message"] = time.time()
@@ -488,6 +489,7 @@ class TransactionManager:
         if not self.helius_adapter:
             return []
         try:
+            # Intentar obtener transacciones desde la BD como fallback
             db_txs = db.get_wallet_recent_transactions(wallet, hours=1)
             if db_txs and len(db_txs) > 0:
                 return db_txs
@@ -549,9 +551,7 @@ class TransactionManager:
             str: Dirección de wallet o None si no hay ninguna.
         """
         wallets = self._get_wallets_to_track()
-        if wallets and len(wallets) > 0:
-            return wallets[0]
-        return None
+        return wallets[0] if wallets else None
 
     def get_stats(self) -> Dict[str, Any]:
         return {
