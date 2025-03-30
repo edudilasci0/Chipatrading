@@ -5,6 +5,7 @@ config.py – Configuración centralizada para el bot de trading en Solana
 
 import os
 import logging
+import time
 
 class Config:
     # Variables de API y credenciales
@@ -39,16 +40,116 @@ class Config:
     # Configuración de logging
     LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
     DEFAULT_SCORE = os.environ.get("DEFAULT_SCORE", "5.0")
+    
+    # Configuración para trading y análisis
+    HIGH_QUALITY_TRADER_SCORE = os.environ.get("HIGH_QUALITY_TRADER_SCORE", "7.0")
+    WHALE_TRANSACTION_THRESHOLD = os.environ.get("WHALE_TRANSACTION_THRESHOLD", "10000")
+    LIQUIDITY_HEALTHY_THRESHOLD = os.environ.get("LIQUIDITY_HEALTHY_THRESHOLD", "20000")
+    SLIPPAGE_WARNING_THRESHOLD = os.environ.get("SLIPPAGE_WARNING_THRESHOLD", "10")
+    TRADER_QUALITY_WEIGHT = os.environ.get("TRADER_QUALITY_WEIGHT", "0.35")
+    WHALE_ACTIVITY_WEIGHT = os.environ.get("WHALE_ACTIVITY_WEIGHT", "0.20")
+    HOLDER_GROWTH_WEIGHT = os.environ.get("HOLDER_GROWTH_WEIGHT", "0.15")
+    LIQUIDITY_HEALTH_WEIGHT = os.environ.get("LIQUIDITY_HEALTH_WEIGHT", "0.15")
+    TECHNICAL_FACTORS_WEIGHT = os.environ.get("TECHNICAL_FACTORS_WEIGHT", "0.15")
+    
+    # Cache para valores obtenidos de la base de datos
+    _db_cache = {}
+    _db_cache_timestamp = {}
+    _db_cache_ttl = 300  # 5 minutos
+
+    @staticmethod
+    def get(key, default=None):
+        """
+        Obtiene un valor de configuración o devuelve el valor por defecto si no existe.
+        
+        Args:
+            key: Clave de configuración
+            default: Valor por defecto si la clave no existe
+            
+        Returns:
+            El valor de la configuración o el valor por defecto
+        """
+        # Primero intentar obtener el valor desde la clase
+        try:
+            value = getattr(Config, key.upper(), None)
+            if value is not None:
+                return value
+        except:
+            pass
+            
+        # Luego intentar obtener desde caché
+        now = time.time()
+        if key in Config._db_cache and now - Config._db_cache_timestamp.get(key, 0) < Config._db_cache_ttl:
+            return Config._db_cache[key]
+            
+        # Finalmente intentar obtener desde la base de datos
+        try:
+            import db
+            if hasattr(db, 'execute_cached_query'):
+                result = db.execute_cached_query("SELECT value FROM bot_settings WHERE key = %s", (key,), max_age=300)
+                if result and len(result) > 0 and 'value' in result[0]:
+                    Config._db_cache[key] = result[0]['value']
+                    Config._db_cache_timestamp[key] = now
+                    return result[0]['value']
+        except Exception as e:
+            logger = logging.getLogger("config")
+            logger.debug(f"Error obteniendo valor desde BD para '{key}': {e}")
+            
+        return default
 
     @staticmethod
     def load_dynamic_config():
-        logging.getLogger("config").info("Dynamic configuration reloaded.")
+        """Recarga la configuración dinámica desde la base de datos"""
+        Config._db_cache = {}
+        Config._db_cache_timestamp = {}
+        logger = logging.getLogger("config")
+        logger.info("Configuración dinámica recargada")
+        
+        try:
+            import db
+            if hasattr(db, 'execute_cached_query'):
+                settings = db.execute_cached_query("SELECT key, value FROM bot_settings", max_age=1)
+                for setting in settings:
+                    Config._db_cache[setting['key']] = setting['value']
+                    Config._db_cache_timestamp[setting['key']] = time.time()
+                logger.info(f"Cargados {len(settings)} ajustes desde la base de datos")
+        except Exception as e:
+            logger.error(f"Error cargando configuración dinámica: {e}")
 
     @staticmethod
     def update_setting(key: str, value: str) -> bool:
-        setattr(Config, key, value)
-        logging.getLogger("config").info(f"Updated setting {key} = {value} (in memory)")
-        return True
+        """
+        Actualiza un ajuste en memoria y en la base de datos si está disponible
+        
+        Args:
+            key: Clave del ajuste
+            value: Valor a establecer
+            
+        Returns:
+            bool: True si la actualización fue exitosa
+        """
+        try:
+            # Actualizar en memoria
+            setattr(Config, key.upper(), value)
+            Config._db_cache[key] = value
+            Config._db_cache_timestamp[key] = time.time()
+            
+            # Actualizar en la base de datos si está disponible
+            try:
+                import db
+                if hasattr(db, 'update_setting'):
+                    db.update_setting(key, value)
+            except Exception as e:
+                logger = logging.getLogger("config")
+                logger.warning(f"Error actualizando ajuste en BD: {e}")
+                
+            logger = logging.getLogger("config")
+            logger.info(f"Actualizado ajuste {key} = {value}")
+            return True
+        except Exception as e:
+            logger = logging.getLogger("config")
+            logger.error(f"Error actualizando ajuste {key}: {e}")
+            return False
 
     @staticmethod
     def check_required_config():
@@ -67,16 +168,15 @@ class Config:
     @staticmethod
     def setup_logging():
         logging.basicConfig(
-            level=Config.LOG_LEVEL,
+            level=getattr(logging, Config.LOG_LEVEL),
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
-        logging.getLogger("telegram_utils").setLevel(Config.LOG_LEVEL)
-        logging.getLogger("transaction_manager").setLevel(Config.LOG_LEVEL)
-        logging.getLogger("signal_logic").setLevel(Config.LOG_LEVEL)
+        logging.getLogger("telegram_utils").setLevel(getattr(logging, Config.LOG_LEVEL))
+        logging.getLogger("transaction_manager").setLevel(getattr(logging, Config.LOG_LEVEL))
+        logging.getLogger("signal_logic").setLevel(getattr(logging, Config.LOG_LEVEL))
 
 # Ejecutar configuración inicial
 Config.setup_logging()
-Config.check_required_config()
 
 logger = logging.getLogger("config")
 logger.debug("Configuración inicial cargada:")
