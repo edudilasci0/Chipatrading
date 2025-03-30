@@ -7,22 +7,22 @@ logger = logging.getLogger("market_metrics")
 class MarketMetricsAnalyzer:
     def __init__(self, dexscreener_client=None):
         self.dexscreener_client = dexscreener_client
-        # Se elimina helius_client
 
-    async def get_holder_growth(self, token: str) -> dict:
-        """
-        Obtiene el crecimiento de holders para un token usando DexScreener.
-        """
+    async def fetch_token_data(self, token: str) -> dict:
         try:
             if self.dexscreener_client:
                 data = await self.dexscreener_client.fetch_token_data(token)
                 if data:
-                    # Supongamos que DexScreener nos devuelve holderCount o similar
-                    return {
-                        "holder_count": data.get("holders", 0),
-                        "growth_rate_1h": data.get("holderGrowthRate1h", 0)
-                    }
-            return {"holder_count": 0, "growth_rate_1h": 0}
+                    return data
+            logger.warning(f"No se pudieron obtener datos de mercado para {token}")
         except Exception as e:
-            logger.error(f"Error en get_holder_growth para {token}: {e}")
-            return {"holder_count": 0, "growth_rate_1h": 0}
+            logger.error(f"Error en fetch_token_data para {token}: {e}")
+        return {
+            "price": 0.00001,
+            "market_cap": 1000000,
+            "volume": 10000,
+            "liquidity": 5000,
+            "holders": 25,
+            "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
+            "source": "default"
+        }
