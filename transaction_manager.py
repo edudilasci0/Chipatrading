@@ -29,9 +29,10 @@ class TransactionManager:
             DataSource.HELIUS: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()}
         }
 
-        self.health_check_interval = int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60))
-        self.max_failures = int(Config.get("MAX_SOURCE_FAILURES", 3))
-        self.source_timeout = int(Config.get("SOURCE_TIMEOUT", 300))
+        # Valores por defecto en caso de que Config.get falle
+        self.health_check_interval = int(Config.SOURCE_HEALTH_CHECK_INTERVAL) 
+        self.max_failures = int(Config.MAX_SOURCE_FAILURES)
+        self.source_timeout = int(Config.SOURCE_TIMEOUT)
         self.running = False
         self.tasks = []
         self.health_check_task = None
@@ -70,10 +71,18 @@ class TransactionManager:
         logger.info(f"Monitoreando {len(wallets_to_track)} wallets")
         try:
             if hasattr(self.cielo_adapter, 'connect'):
-                self.tasks.append(asyncio.create_task(
-                    self.cielo_adapter.connect(wallets_to_track)
-                ))
-                logger.info("Iniciada conexión a Cielo")
+                connected = await self.cielo_adapter.connect(wallets_to_track)
+                if connected:
+                    logger.info("Conexión a Cielo establecida correctamente")
+                else:
+                    logger.warning("No se pudo establecer conexión a Cielo, intentando método alternativo")
+                    callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
+                    self.tasks.append(asyncio.create_task(
+                        self.cielo_adapter.run_forever_wallets(
+                            wallets=wallets_to_track,
+                            on_message_callback=callback
+                        )
+                    ))
             else:
                 callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
                 self.tasks.append(asyncio.create_task(
@@ -90,6 +99,35 @@ class TransactionManager:
             logger.error(f"Error conectando a Cielo: {e}")
         logger.info(f"TransactionManager iniciado con fuente activa: {self.active_source}")
 
+    async def stop(self):
+        """Detiene el TransactionManager y sus tareas asociadas"""
+        if not self.running:
+            return
+        
+        self.running = False
+        logger.info("Deteniendo TransactionManager...")
+        
+        # Cancelar tareas
+        if self.health_check_task:
+            self.health_check_task.cancel()
+            try:
+                await self.health_check_task
+            except asyncio.CancelledError:
+                pass
+            
+        for task in self.tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        
+        # Cerrar conexiones
+        if self.cielo_adapter and hasattr(self.cielo_adapter, 'disconnect'):
+            await self.cielo_adapter.disconnect()
+            
+        logger.info("TransactionManager detenido")
+
     async def handle_cielo_message(self, message):
         try:
             self.source_health[DataSource.CIELO]["last_message"] = time.time()
@@ -102,6 +140,12 @@ class TransactionManager:
                     return
             else:
                 data = message
+            
+            # Para mensajes de ping, simplemente actualizar el estado
+            if isinstance(data, dict) and data.get("type") == "pong":
+                logger.debug("Recibido pong de Cielo")
+                return
+                
             if not isinstance(data, dict) or data.get("type") != "transaction":
                 return
             if "data" not in data:
@@ -124,7 +168,7 @@ class TransactionManager:
 
     async def process_transaction(self, tx_data):
         try:
-            min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+            min_usd = float(Config.MIN_TRANSACTION_USD)
             if tx_data.get("amount_usd", 0) < min_usd:
                 return
             if await self.is_duplicate_transaction(tx_data):
@@ -193,7 +237,7 @@ class TransactionManager:
     async def run_health_checks(self):
         try:
             while self.running:
-                await asyncio.sleep(int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60)))
+                await asyncio.sleep(self.health_check_interval)
                 await self._check_sources_health()
         except asyncio.CancelledError:
             logger.info("Tarea de verificación de salud cancelada")
@@ -207,9 +251,36 @@ class TransactionManager:
             logger.warning(f"Fuente activa {self.active_source} sin mensajes por {self.source_timeout}s")
             active_health["healthy"] = False
             active_health["failures"] += 1
+            
+            # Intentar enviar ping para verificar conexión
+            if self.cielo_adapter and hasattr(self.cielo_adapter, 'ws') and self.cielo_adapter.ws:
+                try:
+                    await self.cielo_adapter.ws.send(json.dumps({"type": "ping"}))
+                    logger.info("Ping enviado a Cielo para verificar conexión")
+                except Exception as e:
+                    logger.error(f"Error enviando ping a Cielo: {e}")
+                    
         if not active_health["healthy"] or active_health["failures"] >= self.max_failures:
-            logger.warning(f"Fuente {self.active_source} no saludable, pero solo Cielo está disponible.")
-            # Como se usará solo Cielo, no se realiza conmutación
+            logger.warning(f"Fuente {self.active_source} no saludable, intentando reconectar")
+            if self.cielo_adapter:
+                try:
+                    # Intentar reconectar
+                    if hasattr(self.cielo_adapter, 'disconnect'):
+                        await self.cielo_adapter.disconnect()
+                    
+                    wallets = self._get_wallets_to_track()
+                    if hasattr(self.cielo_adapter, 'connect'):
+                        connected = await self.cielo_adapter.connect(wallets)
+                        if connected:
+                            logger.info("Reconexión a Cielo exitosa")
+                            active_health["healthy"] = True
+                            active_health["failures"] = 0
+                    else:
+                        # Intentar reiniciar mediante otras tareas
+                        logger.warning("Reconexión a Cielo no implementada, necesita reinicio manual")
+                except Exception as e:
+                    logger.error(f"Error reconectando a Cielo: {e}")
+            
         active_health["last_check"] = now
 
     async def _try_switch_to_source(self, target_source):
