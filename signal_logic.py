@@ -2,7 +2,7 @@ import time
 import asyncio
 import logging
 import math
-from typing import Dict, Any
+from typing import Dict, Any  # Importación necesaria para tipado
 from config import Config
 import db
 from whale_detector import WhaleDetector
@@ -17,6 +17,9 @@ class SignalLogic:
     def __init__(self, scoring_system=None, helius_client=None,
                  rugcheck_api=None, ml_predictor=None, pattern_detector=None,
                  wallet_tracker=None):
+        """
+        Inicializa la clase con los parámetros actuales e instancia los módulos necesarios.
+        """
         self.scoring_system = scoring_system
         self.helius_client = helius_client
         self.rugcheck_api = rugcheck_api  # Puede ser None
@@ -29,7 +32,7 @@ class SignalLogic:
         self.watched_tokens = set()
         self.token_type_scores = {}
         self._init_token_type_scores()
-        self.monitored_tokens = {}
+        self.monitored_tokens = {}  # Para tokens que necesitan monitoreo continuo
         self.last_monitoring_time = time.time()
         
         self.whale_detector = WhaleDetector(helius_client=self.helius_client)
@@ -48,19 +51,26 @@ class SignalLogic:
         }
     
     def process_transaction(self, tx_data):
+        """
+        Procesa una transacción entrante y actualiza las estadísticas del token.
+        Se procesan todas las transacciones sin filtrar por traders elite.
+        Se descartan las transacciones de SOL.
+        """
         try:
             if not tx_data or "token" not in tx_data:
                 return
+
+            # Filtrar transacciones de SOL
+            if tx_data.get("token") == "So11111111111111111111111111111111111111112":
+                logger.debug("Transacción de SOL recibida y descartada en process_transaction")
+                return
+
             token = tx_data.get("token")
             wallet = tx_data.get("wallet")
             amount_usd = float(tx_data.get("amount_usd", 0))
             tx_type = tx_data.get("type", "").upper()
             timestamp = tx_data.get("timestamp", time.time())
             
-            if token in ["native", "So11111111111111111111111111111111111111112"]:
-                logger.debug(f"Ignorando token nativo: {token}")
-                return
-                
             min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
             if amount_usd < min_usd:
                 return
@@ -75,16 +85,12 @@ class SignalLogic:
                 logger.error(f"Error guardando transacción en BD: {e}")
             
             if self.scoring_system:
-                self.scoring_system.update_score_on_trade(tx_data["wallet"], tx_data)
-            if self.wallet_tracker and hasattr(self.wallet_tracker, 'register_transaction'):
-                self.wallet_tracker.register_transaction(
-                    tx_data["wallet"],
-                    tx_data["token"],
-                    tx_data["type"],
-                    tx_data["amount_usd"]
-                )
-            logger.debug(f"Transacción procesada: {tx_data['wallet']} - {tx_data['token']} - ${tx_data['amount_usd']:.2f}")
+                self.scoring_system.update_score_on_trade(wallet, tx_data)
+            if hasattr(self.wallet_tracker, 'register_transaction'):
+                self.wallet_tracker.register_transaction(wallet, token, tx_type, amount_usd)
+            logger.debug(f"Transacción procesada: {wallet} - {token} - ${amount_usd:.2f}")
             
+            # Ejecutar verificación para generar señal de forma asíncrona
             asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
             
         except Exception as e:
@@ -125,6 +131,10 @@ class SignalLogic:
         candidate["last_update"] = timestamp
 
     def _calculate_transaction_confidence(self, transactions):
+        """
+        Calcula un factor de confianza basado en los montos individuales de las transacciones.
+        Prioriza transacciones mayores: $1K, $2K, $3K, $5K, $10K+.
+        """
         if not transactions:
             return 0.0
         total = sum(tx.get("amount_usd", 0) for tx in transactions)
@@ -143,6 +153,9 @@ class SignalLogic:
             return 0.5
 
     async def _verify_and_signal(self, token, wallet, tx_data, wallet_score):
+        """
+        Verifica si una transacción cumple ciertos umbrales y, de ser así, genera una señal.
+        """
         try:
             if token in self.watched_tokens:
                 logger.debug(f"Token {token} ya está en seguimiento")
@@ -150,8 +163,8 @@ class SignalLogic:
             market_data = await self.get_token_market_data(token)
             market_cap = market_data.get("market_cap", 0)
             volume = market_data.get("volume", 0)
-            mcap_threshold = 100000
-            volume_threshold = 200000
+            mcap_threshold = 100000  # $100K
+            volume_threshold = 200000  # $200K
             meets_mcap = market_cap >= mcap_threshold
             meets_volume = volume >= volume_threshold
             if meets_mcap and meets_volume:
@@ -175,6 +188,9 @@ class SignalLogic:
             logger.error(f"Error verificando token {token} para señal: {e}", exc_info=True)
     
     async def get_token_market_data(self, token):
+        """
+        Obtiene datos de mercado para un token.
+        """
         result = {"market_cap": 0, "volume": 0, "price": 0}
         try:
             if self.helius_client:
@@ -191,8 +207,8 @@ class SignalLogic:
         return result
 
     async def periodic_monitoring(self):
-        monitor_interval = 60
-        max_monitoring_time = 3600 * 4
+        monitor_interval = 60  # cada 60 segundos
+        max_monitoring_time = 3600 * 4  # hasta 4 horas
         while True:
             try:
                 now = time.time()
@@ -241,7 +257,7 @@ class SignalLogic:
                 logger.debug(f"Ignorando señal duplicada para {token}")
                 return
             now = time.time()
-            extended_analysis = {}  # Aquí se puede extender el análisis
+            extended_analysis = {}  # Aquí se podrían incorporar análisis adicionales
             candidate = self.token_candidates.get(token, {
                 "wallets": {wallet},
                 "high_quality_traders": {wallet} if wallet_score >= 8.0 else set(),
@@ -289,7 +305,7 @@ class SignalLogic:
                 self.recent_signals = self.recent_signals[-20:]
             self.watched_tokens.add(token)
             token_type = "🔴 TOKEN PUMP" if token.endswith("pump") else ""
-            tx_velocity = len(candidate.get("transactions", [])) / (now - candidate.get("first_seen", now) + 1) * 60
+            tx_velocity = len(candidate.get("transactions", [])) / (now - candidate.get("first_seen", now) + 1) * 60  # tx/min
             send_enhanced_signal(
                 token=token,
                 confidence=confidence,
@@ -307,9 +323,15 @@ class SignalLogic:
             logger.error(f"Error generando señal para {token}: {e}", exc_info=True)
 
     def get_active_candidates_count(self):
+        """
+        Retorna el número de tokens candidatos activos en seguimiento.
+        """
         return len(self.token_candidates)
 
     def get_stats(self) -> dict:
+        """
+        Retorna estadísticas sobre el estado actual del sistema.
+        """
         now = time.time()
         return {
             "active_tokens": len(self.token_candidates),
@@ -318,3 +340,23 @@ class SignalLogic:
             "signals_today": len([s for s in self.recent_signals if now - s["timestamp"] < 86400]),
             "high_confidence_signals": len([s for s in self.recent_signals if s["confidence"] >= 0.8]),
         }
+
+    def _get_sample_wallet(self):
+        wallets = self._get_wallets_to_track()
+        if wallets:
+            return wallets[0]
+        return None
+
+    def cleanup_old_data(self):
+        try:
+            now = time.time()
+            async def async_cleanup():
+                async with self.processed_tx_lock:
+                    keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
+                    for key in keys_to_remove:
+                        del self.processed_tx_cache[key]
+                    self.cache_cleanup_time = now
+                    logger.info(f"Limpiados {len(keys_to_remove)} elementos del caché de transacciones")
+            asyncio.create_task(async_cleanup())
+        except Exception as e:
+            logger.error(f"Error limpiando datos antiguos: {e}")
