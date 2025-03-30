@@ -7,7 +7,6 @@ import db
 
 logger = logging.getLogger("transaction_manager")
 
-# Definición de las fuentes de datos
 class DataSource:
     CIELO = "cielo"
     HELIUS = "helius"
@@ -21,15 +20,14 @@ class TransactionManager:
         self.wallet_manager = wallet_manager
 
         self.cielo_adapter = None
-        self.helius_adapter = None
+        self.helius_adapter = None  # Se elimina su uso, se mantendrá None
 
-        self.active_source = DataSource.NONE
+        self.active_source = DataSource.CIELO
         self.preferred_source = DataSource.CIELO
         self.source_health = {
             DataSource.CIELO: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()},
             DataSource.HELIUS: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()}
         }
-
         self.health_check_interval = int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60))
         self.max_failures = int(Config.get("MAX_SOURCE_FAILURES", 3))
         self.source_timeout = int(Config.get("SOURCE_TIMEOUT", 300))
@@ -41,7 +39,7 @@ class TransactionManager:
 
         self.processed_tx_cache = {}
         self.cache_cleanup_time = 0
-        self.cache_ttl = 3600  # 1 hora
+        self.cache_ttl = 3600
         self.processed_tx_lock = asyncio.Lock()
 
         logger.info("TransactionManager inicializado")
@@ -54,19 +52,18 @@ class TransactionManager:
         self.running = True
         logger.info("Iniciando TransactionManager...")
 
-        if not self.cielo_adapter and not self.helius_adapter:
-            logger.error("No hay adaptadores de fuentes configurados")
+        if not self.cielo_adapter:
+            logger.error("No hay adaptador Cielo configurado")
             self.running = False
             return
 
-        if self.cielo_adapter:
-            if hasattr(self.cielo_adapter, 'set_message_callback'):
-                self.cielo_adapter.set_message_callback(self.handle_cielo_message)
-            logger.info("Adaptador Cielo configurado")
-        if self.helius_adapter:
-            if hasattr(self.helius_adapter, 'set_transaction_callback'):
-                self.helius_adapter.set_transaction_callback(self.handle_helius_transaction)
-            logger.info("Adaptador Helius configurado")
+        if hasattr(self.cielo_adapter, 'set_message_callback'):
+            self.cielo_adapter.set_message_callback(self.handle_cielo_message)
+        logger.info("Adaptador Cielo configurado")
+        # Se elimina cualquier configuración de helius
+        self.active_source = DataSource.CIELO
+        self.source_health[DataSource.CIELO]["healthy"] = True
+        self.source_health[DataSource.CIELO]["last_check"] = time.time()
 
         self.health_check_task = asyncio.create_task(self.run_health_checks())
 
@@ -78,30 +75,24 @@ class TransactionManager:
 
         logger.info(f"Monitoreando {len(wallets_to_track)} wallets")
 
-        if self.cielo_adapter:
-            try:
-                if hasattr(self.cielo_adapter, 'connect'):
-                    self.tasks.append(asyncio.create_task(
-                        self.cielo_adapter.connect(wallets_to_track)
-                    ))
-                    logger.info("Iniciada conexión a Cielo")
-                else:
-                    callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
-                    self.tasks.append(asyncio.create_task(
-                        self.cielo_adapter.run_forever_wallets(
-                            wallets=wallets_to_track,
-                            on_message_callback=callback
-                        )
-                    ))
-                    logger.info("Iniciada conexión a Cielo (modo legacy)")
-                self.active_source = DataSource.CIELO
-                self.source_health[DataSource.CIELO]["healthy"] = True
-                self.source_health[DataSource.CIELO]["last_check"] = time.time()
-            except Exception as e:
-                logger.error(f"Error conectando a Cielo: {e}")
-                await self._try_switch_to_source(DataSource.HELIUS)
-        else:
-            await self._try_switch_to_source(DataSource.HELIUS)
+        try:
+            if hasattr(self.cielo_adapter, 'connect'):
+                self.tasks.append(asyncio.create_task(
+                    self.cielo_adapter.connect(wallets_to_track)
+                ))
+                logger.info("Iniciada conexión a Cielo")
+            else:
+                callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
+                self.tasks.append(asyncio.create_task(
+                    self.cielo_adapter.run_forever_wallets(
+                        wallets=wallets_to_track,
+                        on_message_callback=callback
+                    )
+                ))
+                logger.info("Iniciada conexión a Cielo (modo legacy)")
+        except Exception as e:
+            logger.error(f"Error conectando a Cielo: {e}")
+            return
 
         logger.info(f"TransactionManager iniciado con fuente activa: {self.active_source}")
 
@@ -109,7 +100,6 @@ class TransactionManager:
         try:
             self.source_health[DataSource.CIELO]["last_message"] = time.time()
             self.source_health[DataSource.CIELO]["healthy"] = True
-
             if isinstance(message, str):
                 try:
                     data = json.loads(message)
@@ -118,20 +108,14 @@ class TransactionManager:
                     return
             else:
                 data = message
-
             if not isinstance(data, dict) or data.get("type") != "transaction":
                 return
-
             if "data" not in data:
                 return
-
             tx_data = data["data"]
-
-            # Filtrar transacciones de SOL
-            if tx_data.get("token") == "So11111111111111111111111111111111111111112":
-                logger.debug("Transacción de SOL recibida y descartada")
+            if "token" not in tx_data or "amountUsd" not in tx_data:
+                logger.debug("Transacción sin datos de token o monto ignorada")
                 return
-
             normalized_tx = {
                 "wallet": tx_data.get("wallet", ""),
                 "token": tx_data.get("token", ""),
@@ -145,41 +129,20 @@ class TransactionManager:
             logger.error(f"Error en handle_cielo_message: {e}", exc_info=True)
 
     async def handle_helius_transaction(self, transaction):
-        try:
-            self.source_health[DataSource.HELIUS]["last_message"] = time.time()
-            self.source_health[DataSource.HELIUS]["healthy"] = True
-            if not transaction or "token" not in transaction:
-                return
-
-            if transaction.get("token") == "So11111111111111111111111111111111111111112":
-                logger.debug("Transacción de SOL de Helius recibida y descartada")
-                return
-
-            if "source" not in transaction:
-                transaction["source"] = "helius"
-            await self.process_transaction(transaction)
-        except Exception as e:
-            logger.error(f"Error en handle_helius_transaction: {e}", exc_info=True)
+        # Se elimina implementación de helius, dejando como stub
+        pass
 
     async def process_transaction(self, tx_data):
         try:
             min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
             if tx_data.get("amount_usd", 0) < min_usd:
                 return
-
-            # Filtrar transacciones de SOL
-            if tx_data.get("token") == "So11111111111111111111111111111111111111112":
-                logger.debug("Transacción de SOL filtrada en process_transaction")
-                return
-
             if await self.is_duplicate_transaction(tx_data):
                 return
-
             try:
                 db.save_transaction(tx_data)
             except Exception as e:
                 logger.error(f"Error guardando transacción en BD: {e}")
-
             if self.signal_logic:
                 self.signal_logic.process_transaction(tx_data)
             if self.scoring_system:
@@ -202,13 +165,11 @@ class TransactionManager:
                 for key in keys_to_remove:
                     del self.processed_tx_cache[key]
                 self.cache_cleanup_time = now
-
         wallet = tx_data.get("wallet", "")
         token = tx_data.get("token", "")
         amount = str(tx_data.get("amount_usd", 0))
         tx_type = tx_data.get("type", "")
         cache_key = f"{wallet}:{token}:{amount}:{tx_type}"
-
         async with self.processed_tx_lock:
             if cache_key in self.processed_tx_cache:
                 return True
@@ -265,11 +226,7 @@ class TransactionManager:
             cielo_health = self.source_health[DataSource.CIELO]
             if now - cielo_health["last_check"] > int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", 60)) * 2:
                 try:
-                    is_available = False
-                    if hasattr(self.cielo_adapter, 'check_availability'):
-                        is_available = await self.cielo_adapter.check_availability()
-                    else:
-                        is_available = True
+                    is_available = await self.cielo_adapter.check_availability() if hasattr(self.cielo_adapter, 'check_availability') else True
                     cielo_health["healthy"] = is_available
                     if is_available:
                         cielo_health["failures"] = 0
@@ -291,12 +248,7 @@ class TransactionManager:
                     if hasattr(self.helius_adapter, 'check_availability'):
                         is_available = await self.helius_adapter.check_availability()
                     else:
-                        sample_wallet = self._get_sample_wallet()
-                        if sample_wallet:
-                            token_data = await self.helius_adapter.get_token_data_async("So11111111111111111111111111111111111111112")
-                            is_available = token_data is not None
-                        else:
-                            is_available = True
+                        is_available = True
                     helius_health["healthy"] = is_available
                     if is_available:
                         helius_health["failures"] = 0
@@ -426,30 +378,36 @@ class TransactionManager:
 
     async def _get_wallet_transactions(self, wallet):
         try:
-            # Se delega a la propia implementación de Helius, si existe
-            if hasattr(self.helius_adapter, '_get_wallet_transactions'):
-                return await self.helius_adapter._get_wallet_transactions(wallet)
-            else:
-                return []
+            url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
+            params = {
+                "api-key": self.cielo_adapter.api_key,  # Se usa el API key de Cielo o se puede configurar uno específico
+                "limit": 10
+            }
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=5) as response:
+                    if response.status == 200:
+                        transactions = await response.json()
+                        return transactions
+                    else:
+                        logger.warning(f"Error obteniendo transacciones: {response.status}")
+                        return []
         except Exception as e:
-            logger.error(f"Error obteniendo transacciones para {wallet}: {e}")
+            logger.error(f"Error en _get_wallet_transactions para {wallet}: {e}")
             return []
 
     def _normalize_helius_transaction(self, wallet, tx_data):
         try:
             if not tx_data:
                 return None
-
             token = None
             if "tokenTransfers" in tx_data and tx_data["tokenTransfers"]:
                 for transfer in tx_data["tokenTransfers"]:
                     if "mint" in transfer:
                         token = transfer["mint"]
                         break
-
             if not token:
                 return None
-
             tx_type = "UNKNOWN"
             if "description" in tx_data:
                 if "buy" in tx_data["description"].lower():
@@ -458,16 +416,14 @@ class TransactionManager:
                     tx_type = "SELL"
                 elif "swap" in tx_data["description"].lower():
                     tx_type = "SWAP"
-
             amount_usd = 0
             if "nativeTransfers" in tx_data and tx_data["nativeTransfers"]:
                 for transfer in tx_data["nativeTransfers"]:
                     if "amount" in transfer:
                         sol_amount = float(transfer["amount"]) / 1000000000
-                        amount_usd = sol_amount * 100
+                        amount_usd = sol_amount * 100  # Suponiendo 1 SOL = $100
             if amount_usd <= 0:
                 amount_usd = 500
-
             normalized_tx = {
                 "wallet": wallet,
                 "token": token,
@@ -481,22 +437,8 @@ class TransactionManager:
             logger.error(f"Error normalizando transacción de Helius: {e}")
             return None
 
-    def _get_sample_wallet(self):
-        wallets = self._get_wallets_to_track()
-        if wallets:
-            return wallets[0]
-        return None
-
-    def cleanup_old_data(self):
-        try:
-            now = time.time()
-            async def async_cleanup():
-                async with self.processed_tx_lock:
-                    keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
-                    for key in keys_to_remove:
-                        del self.processed_tx_cache[key]
-                    self.cache_cleanup_time = now
-                    logger.info(f"Limpiados {len(keys_to_remove)} elementos del caché de transacciones")
-            asyncio.create_task(async_cleanup())
-        except Exception as e:
-            logger.error(f"Error limpiando datos antiguos: {e}")
+    def get_health_metrics(self):
+        return {
+            "health_status": self.cielo_adapter.is_connected() if self.cielo_adapter else False,
+            "polling_active": self.polling_active if hasattr(self, 'polling_active') else False
+        }
