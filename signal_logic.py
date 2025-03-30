@@ -2,6 +2,7 @@ import time
 import asyncio
 import logging
 import math
+from typing import Dict, Any  # Añadir la importación
 from config import Config
 import db
 from whale_detector import WhaleDetector
@@ -89,12 +90,11 @@ class SignalLogic:
                     tx_data["type"],
                     tx_data["amount_usd"]
                 )
-            if self.signal_logic and self is not None:
-                # Si se está procesando desde SignalLogic, continúa con el flujo normal.
-                pass  # Aquí ya se está registrando la transacción en otras partes.
             logger.debug(f"Transacción procesada: {tx_data['wallet']} - {tx_data['token']} - ${tx_data['amount_usd']:.2f}")
-            # Se puede también invocar el procesamiento de señales:
-            # asyncio.create_task(self._verify_and_signal(...))
+            
+            # Verifica si esta transacción podría ser parte de una señal
+            asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
+            
         except Exception as e:
             logger.error(f"Error en process_transaction: {e}", exc_info=True)
     
@@ -188,6 +188,25 @@ class SignalLogic:
                 }
         except Exception as e:
             logger.error(f"Error verificando token {token} para señal: {e}", exc_info=True)
+    
+    async def get_token_market_data(self, token):
+        """
+        Obtiene datos de mercado para un token.
+        """
+        result = {"market_cap": 0, "volume": 0, "price": 0}
+        try:
+            if self.helius_client:
+                if hasattr(self.helius_client, 'get_token_data_async'):
+                    token_data = await self.helius_client.get_token_data_async(token)
+                    if token_data:
+                        result = token_data
+                elif hasattr(self.helius_client, 'get_token_data'):
+                    token_data = self.helius_client.get_token_data(token)
+                    if token_data:
+                        result = token_data
+        except Exception as e:
+            logger.error(f"Error obteniendo datos de mercado para {token}: {e}")
+        return result
 
     async def periodic_monitoring(self):
         monitor_interval = 60  # cada 60 segundos
@@ -240,8 +259,8 @@ class SignalLogic:
                 logger.debug(f"Ignorando señal duplicada para {token}")
                 return
             now = time.time()
-            # Se puede extender el análisis aquí si se desea
-            extended_analysis = {}  # Placeholder; se puede llamar a _extend_token_analysis si está implementado.
+            # Puedes extender el análisis aquí si lo deseas
+            extended_analysis = {}
             candidate = self.token_candidates.get(token, {
                 "wallets": {wallet},
                 "high_quality_traders": {wallet} if wallet_score >= 8.0 else set(),
@@ -268,7 +287,6 @@ class SignalLogic:
                 signal_level = "C"
             trader_count = num_wallets
             signal_id = db.save_signal(token, trader_count, confidence, initial_price, market_cap, market_data.get("volume", 0))
-            # Se pueden guardar features adicionales, etc.
             if self.performance_tracker:
                 signal_info = {
                     "confidence": confidence,
@@ -290,7 +308,7 @@ class SignalLogic:
                 self.recent_signals = self.recent_signals[-20:]
             self.watched_tokens.add(token)
             token_type = "🔴 TOKEN PUMP" if token.endswith("pump") else ""
-            tx_velocity = 0  # Se puede calcular usando _calculate_tx_velocity si se desea.
+            tx_velocity = len(candidate.get("transactions", [])) / (now - candidate.get("first_seen", now) + 1) * 60  # tx/min
             send_enhanced_signal(
                 token=token,
                 confidence=confidence,
@@ -307,62 +325,21 @@ class SignalLogic:
         except Exception as e:
             logger.error(f"Error generando señal para {token}: {e}", exc_info=True)
 
-    async def _get_wallet_recent_transactions(self, wallet, limit=5):
+    def get_active_candidates_count(self):
         """
-        Obtiene transacciones recientes de una wallet desde Helius.
-        Método de fallback en caso de que el adaptador no disponga de get_wallet_transactions.
-        
-        Args:
-            wallet: Dirección de la wallet.
-            limit: Número máximo de transacciones a obtener.
-            
-        Returns:
-            list: Lista de transacciones normalizadas.
+        Retorna el número de tokens candidatos activos en seguimiento.
         """
-        if not self.helius_adapter:
-            return []
-        try:
-            db_txs = db.get_wallet_recent_transactions(wallet, hours=1)
-            if db_txs and len(db_txs) > 0:
-                return db_txs
-            if hasattr(self.helius_adapter, 'get_wallet_transactions'):
-                raw_txs = await self.helius_adapter.get_wallet_transactions(wallet, limit)
-            else:
-                logger.warning("Método get_wallet_transactions no disponible en Helius adapter")
-                return []
-            normalized_txs = []
-            for tx in raw_txs:
-                normalized_tx = {
-                    "wallet": wallet,
-                    "token": tx.get("token", ""),
-                    "type": tx.get("type", "UNKNOWN").upper(),
-                    "amount_usd": float(tx.get("amount_usd", 0)),
-                    "timestamp": tx.get("timestamp", time.time()),
-                    "source": "helius_api"
-                }
-                normalized_txs.append(normalized_tx)
-            return normalized_txs
-        except Exception as e:
-            logger.error(f"Error obteniendo transacciones de {wallet} desde Helius: {e}")
-            return []
+        return len(self.token_candidates)
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict:
+        """
+        Retorna estadísticas sobre el estado actual del sistema.
+        """
+        now = time.time()
         return {
-            "active_source": self.active_source.value,
-            "preferred_source": self.preferred_source.value,
-            "sources_health": {
-                "cielo": {
-                    "healthy": self.source_health[DataSource.CIELO]["healthy"],
-                    "failures": self.source_health[DataSource.CIELO]["failures"],
-                    "last_message_ago": time.time() - self.source_health[DataSource.CIELO]["last_message"] if self.source_health[DataSource.CIELO]["last_message"] > 0 else -1
-                },
-                "helius": {
-                    "healthy": self.source_health[DataSource.HELIUS]["healthy"],
-                    "failures": self.source_health[DataSource.HELIUS]["failures"],
-                    "last_message_ago": time.time() - self.source_health[DataSource.HELIUS]["last_message"] if self.source_health[DataSource.HELIUS]["last_message"] > 0 else -1
-                }
-            },
-            "wallets_count": len(self._get_wallets_to_track()),
-            "cache_size": len(self.processed_tx_cache),
-            "running": self.running
+            "active_tokens": len(self.token_candidates),
+            "watched_tokens": len(self.watched_tokens),
+            "monitored_tokens": len(self.monitored_tokens),
+            "signals_today": len([s for s in self.recent_signals if now - s["timestamp"] < 86400]),
+            "high_confidence_signals": len([s for s in self.recent_signals if s["confidence"] >= 0.8]),
         }
