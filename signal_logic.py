@@ -15,7 +15,7 @@ logger = logging.getLogger("signal_logic")
 class SignalLogic:
     def __init__(self, scoring_system=None, rugcheck_api=None, ml_predictor=None, pattern_detector=None, wallet_tracker=None):
         self.scoring_system = scoring_system
-        self.rugcheck_api = rugcheck_api  # Puede ser None
+        self.rugcheck_api = rugcheck_api  # Se mantiene pero puede ser None
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
         self.wallet_tracker = wallet_tracker
@@ -25,12 +25,12 @@ class SignalLogic:
         self.watched_tokens = set()
         self.token_type_scores = {}
         self._init_token_type_scores()
-        self.monitored_tokens = {}  # Para tokens que necesitan monitoreo continuo
+        self.monitored_tokens = {}
         self.last_monitoring_time = time.time()
         
-        # Utilizar DexScreener en lugar de Helius o WhaleDetector
-        self.market_metrics = None  # Se asigna externamente
-        self.token_analyzer = None   # Se asigna externamente
+        # Usamos solo DexScreener para datos de mercado
+        self.market_metrics = MarketMetricsAnalyzer()
+        self.token_analyzer = TokenAnalyzer()
         self.trader_profiler = TraderProfiler()
         
         self.performance_tracker = None  # Se asigna externamente
@@ -43,7 +43,7 @@ class SignalLogic:
             "standard": 1.0
         }
     
-    def process_transaction(self, tx_data: dict):
+    def process_transaction(self, tx_data):
         try:
             if not tx_data or "token" not in tx_data:
                 return
@@ -72,7 +72,7 @@ class SignalLogic:
             
             if self.scoring_system:
                 self.scoring_system.update_score_on_trade(tx_data["wallet"], tx_data)
-            if hasattr(self.wallet_tracker, 'register_transaction'):
+            if self.wallet_tracker and hasattr(self.wallet_tracker, 'register_transaction'):
                 self.wallet_tracker.register_transaction(
                     tx_data["wallet"],
                     tx_data["token"],
@@ -82,7 +82,6 @@ class SignalLogic:
             logger.debug(f"Transacción procesada: {tx_data['wallet']} - {tx_data['token']} - ${tx_data['amount_usd']:.2f}")
             
             asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
-            
         except Exception as e:
             logger.error(f"Error en process_transaction: {e}", exc_info=True)
     
@@ -90,7 +89,6 @@ class SignalLogic:
         timestamp = tx_data.get("timestamp", time.time())
         tx_type = tx_data.get("type", "").upper()
         amount_usd = float(tx_data.get("amount_usd", 0))
-        
         if token not in self.token_candidates:
             self.token_candidates[token] = {
                 "wallets": set(),
@@ -143,18 +141,16 @@ class SignalLogic:
             market_data = await self.get_token_market_data(token)
             market_cap = market_data.get("market_cap", 0)
             volume = market_data.get("volume", 0)
-            mcap_threshold = 100000  # $100K
-            volume_threshold = 200000  # $200K
-            meets_mcap = market_cap >= mcap_threshold
-            meets_volume = volume >= volume_threshold
-            if meets_mcap and meets_volume:
+            mcap_threshold = 100000
+            volume_threshold = 200000
+            if market_cap >= mcap_threshold and volume >= volume_threshold:
                 logger.info(f"⚡ Señal inmediata: {token} cumple umbrales - MC: ${market_cap/1000:.1f}K, Vol: ${volume/1000:.1f}K")
                 await self._generate_token_signal(token, wallet, wallet_score, market_data)
             else:
                 missing_criteria = []
-                if not meets_mcap:
+                if market_cap < mcap_threshold:
                     missing_criteria.append(f"Market Cap (${market_cap/1000:.1f}K < $100K)")
-                if not meets_volume:
+                if volume < volume_threshold:
                     missing_criteria.append(f"Volumen (${volume/1000:.1f}K < $200K)")
                 logger.info(f"👁️ Token {token} añadido a monitoreo - No cumple: {', '.join(missing_criteria)}")
                 self.monitored_tokens[token] = {
@@ -168,11 +164,11 @@ class SignalLogic:
             logger.error(f"Error verificando token {token} para señal: {e}", exc_info=True)
     
     async def get_token_market_data(self, token):
-        """Obtiene datos de mercado para un token usando DexScreener"""
         result = {"market_cap": 0, "volume": 0, "price": 0}
         try:
-            if self.dex_monitor and self.dex_monitor.dexscreener_client:
-                token_data = await self.dex_monitor.dexscreener_client.fetch_token_data(token)
+            # Usar DexScreener para obtener datos de mercado
+            if hasattr(self, 'market_metrics') and self.market_metrics:
+                token_data = await self.market_metrics.fetch_token_data(token)
                 if token_data:
                     result = token_data
         except Exception as e:
@@ -180,8 +176,8 @@ class SignalLogic:
         return result
 
     async def periodic_monitoring(self):
-        monitor_interval = 60  # cada 60 segundos
-        max_monitoring_time = 3600 * 4  # hasta 4 horas
+        monitor_interval = 60
+        max_monitoring_time = 3600 * 4
         while True:
             try:
                 now = time.time()
@@ -190,7 +186,7 @@ class SignalLogic:
                     continue
                 self.last_monitoring_time = now
                 tokens_to_remove = []
-                for token, data in list(self.monitored_tokens.items()):
+                for token, data in self.monitored_tokens.items():
                     if now - data["last_check"] < monitor_interval:
                         continue
                     if now - data["first_seen"] > max_monitoring_time:
@@ -201,19 +197,15 @@ class SignalLogic:
                     market_data = await self.get_token_market_data(token)
                     market_cap = market_data.get("market_cap", 0)
                     volume = market_data.get("volume", 0)
-                    mcap_threshold = 100000
-                    volume_threshold = 200000
-                    meets_mcap = market_cap >= mcap_threshold
-                    meets_volume = volume >= volume_threshold
-                    if meets_mcap and meets_volume:
+                    if market_cap >= 100000 and volume >= 200000:
                         logger.info(f"✅ Token monitoreado {token} ahora cumple umbrales - MC: ${market_cap/1000:.1f}K, Vol: ${volume/1000:.1f}K")
                         await self._generate_token_signal(token, data["wallet"], data["wallet_score"], market_data)
                         tokens_to_remove.append(token)
                     else:
                         missing = []
-                        if not meets_mcap:
+                        if market_cap < 100000:
                             missing.append(f"MC: ${market_cap/1000:.1f}K/$100K")
-                        if not meets_volume:
+                        if volume < 200000:
                             missing.append(f"Vol: ${volume/1000:.1f}K/$200K")
                         logger.debug(f"Token {token} continúa en monitoreo - No cumple: {', '.join(missing)}")
                 for token in tokens_to_remove:
@@ -230,7 +222,7 @@ class SignalLogic:
                 logger.debug(f"Ignorando señal duplicada para {token}")
                 return
             now = time.time()
-            extended_analysis = {}  # Se podría ampliar si se desea
+            extended_analysis = {}  # Puedes extender este análisis si se desea
             candidate = self.token_candidates.get(token, {
                 "wallets": {wallet},
                 "high_quality_traders": {wallet} if wallet_score >= 8.0 else set(),
