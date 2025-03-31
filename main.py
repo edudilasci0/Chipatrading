@@ -152,7 +152,6 @@ async def main():
         # Inicializar lógica de señales
         signal_logic = SignalLogic(
             scoring_system=scoring_system,
-            helius_client=None,
             rugcheck_api=None,
             ml_predictor=None,
             wallet_tracker=wallet_tracker
