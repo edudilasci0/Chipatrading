@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# cielo_api.py
 import asyncio
 import websockets
 import json
@@ -19,9 +21,11 @@ class CieloAPI:
         self.last_message_time = 0
 
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
+        # Nueva versión mejorada
         subscription_params = {
             "chains": ["solana"],
-            "tx_types": ["swap", "transfer"]
+            "tx_types": ["swap", "transfer"],
+            "min_amount_usd": float(Config.get("MIN_TRANSACTION_USD", "200"))
         }
         chunk_size = 50
         for i in range(0, len(wallets), chunk_size):
@@ -33,13 +37,22 @@ class CieloAPI:
                     "filter": subscription_params
                 }
                 await ws.send(json.dumps(msg))
+                logger.debug(f"Suscripción enviada para wallet: {wallet}")
                 await asyncio.sleep(0.02)
             if i + chunk_size < len(wallets):
-                print(f"  Progreso: {i+chunk_size}/{len(wallets)} wallets suscritas...")
+                logger.info(f"Progreso: {i+chunk_size}/{len(wallets)} wallets suscritas...")
                 await asyncio.sleep(0.5)
-        print("✅ Todas las wallets han sido suscritas")
-
+        # Enviar ping para confirmar suscripción
+        await ws.send(json.dumps({"type": "ping"}))
+        logger.info(f"✅ Todas las {len(wallets)} wallets han sido suscritas")
+    
     async def connect(self, wallets):
+        """
+        Inicia conexión de forma independiente al polling.
+        
+        Args:
+            wallets: Lista de direcciones de wallets a monitorear
+        """
         try:
             if self.ws is not None and not self.ws.closed:
                 await self.disconnect()
@@ -57,6 +70,7 @@ class CieloAPI:
             return False
 
     async def disconnect(self):
+        """Cierra conexión ordenadamente"""
         self.is_running = False
         if self.ping_task:
             self.ping_task.cancel()
@@ -73,6 +87,7 @@ class CieloAPI:
                 logger.error(f"Error en disconnect: {e}")
 
     async def check_availability(self):
+        """Verifica la disponibilidad de Cielo"""
         try:
             test_ws = await websockets.connect(self.ws_url, extra_headers={"X-API-KEY": self.api_key})
             await test_ws.send(json.dumps({"type": "ping"}))
@@ -84,22 +99,22 @@ class CieloAPI:
             return False
 
     def is_connected(self):
+        """Verifica si hay una conexión activa"""
         return self.ws is not None and not self.ws.closed
 
     def set_message_callback(self, callback):
+        """Configura callback externo para mensajes"""
         self.message_callback = callback
         logger.info("Callback de mensajes configurado para Cielo")
 
     async def _listen_messages(self, ws):
+        """Escucha mensajes del WebSocket y los procesa"""
         while self.is_running and not ws.closed:
             try:
                 message = await ws.recv()
                 self.last_message_time = time.time()
-                if self.message_callback is None:
-                    logger.error("No se ha configurado ningún callback para procesar mensajes de Cielo.")
-                    continue
-                # Aseguramos que el callback es awaitable
-                await self.message_callback(message)
+                if self.message_callback:
+                    await self.message_callback(message)
             except websockets.ConnectionClosed:
                 logger.warning("Conexión a Cielo cerrada")
                 break
@@ -119,18 +134,18 @@ class CieloAPI:
                     print("📡 WebSocket conectado a Cielo (modo multi-wallet)")
                     self.connection_failures = 0
                     await self.subscribe_to_wallets(ws, wallets, filter_params)
-                    self.ping_task = asyncio.create_task(self._ping_periodically(ws))
+                    ping_task = asyncio.create_task(self._ping_periodically(ws))
                     try:
                         async for message in ws:
-                            callback = on_message_callback if on_message_callback is not None else self.message_callback
-                            if callback is None:
-                                logger.error("No se ha configurado ningún callback para procesar mensajes de Cielo.")
+                            try:
+                                await on_message_callback(message)
+                            except Exception as e:
+                                logger.error(f"Error procesando mensaje: {e}", exc_info=True)
                                 continue
-                            await callback(message)
                     finally:
-                        self.ping_task.cancel()
+                        ping_task.cancel()
                         try:
-                            await self.ping_task
+                            await ping_task
                         except asyncio.CancelledError:
                             pass
             except (websockets.ConnectionClosed, OSError) as e:
