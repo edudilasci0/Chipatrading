@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 # db.py - Módulo de acceso a la base de datos para el bot de trading en Solana
+
 import os
 import time
 import psycopg2
@@ -364,7 +366,7 @@ def init_db():
                     conn.rollback()
                     logger.error(f"Error añadiendo campo market_cap: {e}")
                     return False
-            
+
             try:
                 cur.execute("SELECT volume FROM signals LIMIT 1")
             except Exception as e:
@@ -388,7 +390,7 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wallet_profits_wallet ON wallet_profits(wallet)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_features_token ON signal_features(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_features_signal_id ON signal_features(signal_id)")
-                
+
                 if current_version >= 3:
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_token_liquidity_token ON token_liquidity(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_whale_activity_token ON whale_activity(token)")
@@ -397,34 +399,34 @@ def init_db():
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_trader_patterns_token ON trader_patterns(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_token_analysis_token ON token_analysis(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_trending_tokens_token ON trending_tokens(token)")
-                
+
                 conn.commit()
                 logger.info("✅ Índices creados correctamente")
             except Exception as e:
                 conn.rollback()
                 logger.warning(f"⚠️ Error al crear índices: {e}")
-            
+
             try:
                 default_settings = [
-                    ("min_transaction_usd", str(Config.get("MIN_TRANSACTION_USD", 200))),
-                    ("min_traders_for_signal", str(Config.get("MIN_TRADERS_FOR_SIGNAL", 2))),
-                    ("signal_window_seconds", "540"),
-                    ("min_confidence_threshold", str(Config.get("MIN_CONFIDENCE_THRESHOLD", 0.3))),
+                    ("min_transaction_usd", Config.MIN_TRANSACTION_USD),
+                    ("min_traders_for_signal", Config.MIN_TRADERS_FOR_SIGNAL),
+                    ("signal_window_seconds", Config.SIGNAL_WINDOW_SECONDS),
+                    ("min_confidence_threshold", Config.MIN_CONFIDENCE_THRESHOLD),
                     ("rugcheck_min_score", "50"),
-                    ("min_volume_usd", str(Config.get("MIN_VOLUME_USD", 2000))),
-                    ("signal_throttling", str(Config.get("SIGNAL_THROTTLING", 10))),
+                    ("min_volume_usd", Config.VOLUME_THRESHOLD),
+                    ("signal_throttling", "10"),
                     ("adapt_confidence_threshold", "true"),
-                    ("high_quality_trader_score", str(Config.get("HIGH_QUALITY_TRADER_SCORE", "7.0"))),
-                    ("whale_transaction_threshold", str(Config.get("WHALE_TRANSACTION_THRESHOLD", 10000))),
-                    ("liquidity_healthy_threshold", str(Config.get("LIQUIDITY_HEALTHY_THRESHOLD", 20000))),
-                    ("slippage_warning_threshold", str(Config.get("SLIPPAGE_WARNING_THRESHOLD", 10))),
-                    ("trader_quality_weight", str(Config.get("TRADER_QUALITY_WEIGHT", 0.35))),
-                    ("whale_activity_weight", str(Config.get("WHALE_ACTIVITY_WEIGHT", 0.20))),
-                    ("holder_growth_weight", str(Config.get("HOLDER_GROWTH_WEIGHT", 0.15))),
-                    ("liquidity_health_weight", str(Config.get("LIQUIDITY_HEALTH_WEIGHT", 0.15))),
-                    ("technical_factors_weight", str(Config.get("TECHNICAL_FACTORS_WEIGHT", 0.15)))
+                    ("high_quality_trader_score", Config.HIGH_QUALITY_TRADER_SCORE),
+                    ("whale_transaction_threshold", Config.WHALE_TRANSACTION_THRESHOLD),
+                    ("liquidity_healthy_threshold", Config.LIQUIDITY_HEALTHY_THRESHOLD),
+                    ("slippage_warning_threshold", Config.SLIPPAGE_WARNING_THRESHOLD),
+                    ("trader_quality_weight", Config.TRADER_QUALITY_WEIGHT),
+                    ("whale_activity_weight", Config.WHALE_ACTIVITY_WEIGHT),
+                    ("holder_growth_weight", Config.HOLDER_GROWTH_WEIGHT),
+                    ("liquidity_health_weight", Config.LIQUIDITY_HEALTH_WEIGHT),
+                    ("technical_factors_weight", Config.TECHNICAL_FACTORS_WEIGHT)
                 ]
-                
+
                 for key, value in default_settings:
                     try:
                         cur.execute("""
@@ -657,3 +659,23 @@ def get_cache_stats():
         "cache_misses": query_cache_misses,
         "hit_ratio": hit_ratio
     }
+
+@retry_db_operation()
+def get_wallet_score(wallet):
+    """
+    Obtiene el score actual de un wallet desde la base de datos.
+    Si no existe, devuelve el score por defecto.
+    
+    Args:
+        wallet: Dirección del wallet.
+        
+    Returns:
+        float: Score del wallet (0-10).
+    """
+    query = """
+    SELECT score FROM wallet_scores WHERE wallet = %s
+    """
+    results = execute_cached_query(query, (wallet,), max_age=300)
+    if results and results[0]["score"] is not None:
+        return float(results[0]["score"])
+    return float(Config.DEFAULT_SCORE)
