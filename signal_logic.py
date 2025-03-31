@@ -1,10 +1,15 @@
+#!/usr/bin/env python3
+# signal_logic.py - Lógica central para detección de señales en el bot de trading
+
 import time
 import asyncio
 import logging
 import math
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from config import Config
 import db
+
+# Importar módulos de análisis avanzado (ahora usando solo DexScreener)
 from market_metrics import MarketMetricsAnalyzer
 from token_analyzer import TokenAnalyzer
 from trader_profiler import TraderProfiler
@@ -13,24 +18,30 @@ from telegram_utils import send_enhanced_signal
 logger = logging.getLogger("signal_logic")
 
 class SignalLogic:
-    def __init__(self, scoring_system=None, rugcheck_api=None, ml_predictor=None, pattern_detector=None, wallet_tracker=None):
+    def __init__(self, scoring_system=None, rugcheck_api=None, ml_predictor=None,
+                 pattern_detector=None, wallet_tracker=None, dexscreener_client=None):
+        """
+        Inicializa la clase con los parámetros actuales e instancia los módulos necesarios.
+        Nota: Se eliminó 'helius_client' y WhaleDetector, ya que la fuente de mercado será DexScreener.
+        """
         self.scoring_system = scoring_system
-        self.rugcheck_api = rugcheck_api  # Se mantiene pero puede ser None
+        self.rugcheck_api = rugcheck_api  # Puede ser None
         self.ml_predictor = ml_predictor
         self.pattern_detector = pattern_detector
         self.wallet_tracker = wallet_tracker
+        self.dexscreener_client = dexscreener_client  # Nueva fuente de mercado
         self.token_candidates = {}
         self.recent_signals = []
         self.last_signal_check = time.time()
         self.watched_tokens = set()
         self.token_type_scores = {}
         self._init_token_type_scores()
-        self.monitored_tokens = {}
+        self.monitored_tokens = {}  # Para tokens que necesitan monitoreo continuo
         self.last_monitoring_time = time.time()
-        
-        # Usamos solo DexScreener para datos de mercado
-        self.market_metrics = MarketMetricsAnalyzer()
-        self.token_analyzer = TokenAnalyzer()
+
+        # Instanciar módulos de análisis avanzado utilizando DexScreener
+        self.market_metrics = MarketMetricsAnalyzer(dexscreener_client=self.dexscreener_client)
+        self.token_analyzer = TokenAnalyzer(dexscreener_client=self.dexscreener_client)
         self.trader_profiler = TraderProfiler()
         
         self.performance_tracker = None  # Se asigna externamente
@@ -44,6 +55,10 @@ class SignalLogic:
         }
     
     def process_transaction(self, tx_data):
+        """
+        Procesa una transacción entrante y actualiza las estadísticas del token.
+        Se procesan todas las transacciones sin filtrar por traders elite.
+        """
         try:
             if not tx_data or "token" not in tx_data:
                 return
@@ -53,11 +68,13 @@ class SignalLogic:
             tx_type = tx_data.get("type", "").upper()
             timestamp = tx_data.get("timestamp", time.time())
             
+            # Ignorar token nativo
             if token in ["native", "So11111111111111111111111111111111111111112"]:
                 logger.debug(f"Ignorando token nativo: {token}")
                 return
                 
-            min_usd = float(Config.get("MIN_TRANSACTION_USD", 200))
+            # Verificar monto mínimo
+            min_usd = float(Config.MIN_TRANSACTION_USD)
             if amount_usd < min_usd:
                 return
                 
@@ -81,7 +98,9 @@ class SignalLogic:
                 )
             logger.debug(f"Transacción procesada: {tx_data['wallet']} - {tx_data['token']} - ${tx_data['amount_usd']:.2f}")
             
+            # Verifica si esta transacción podría ser parte de una señal
             asyncio.create_task(self._verify_and_signal(token, wallet, tx_data, wallet_score))
+            
         except Exception as e:
             logger.error(f"Error en process_transaction: {e}", exc_info=True)
     
@@ -89,6 +108,7 @@ class SignalLogic:
         timestamp = tx_data.get("timestamp", time.time())
         tx_type = tx_data.get("type", "").upper()
         amount_usd = float(tx_data.get("amount_usd", 0))
+        
         if token not in self.token_candidates:
             self.token_candidates[token] = {
                 "wallets": set(),
@@ -116,6 +136,10 @@ class SignalLogic:
         candidate["last_update"] = timestamp
 
     def _calculate_transaction_confidence(self, transactions):
+        """
+        Calcula un factor de confianza basado en los montos individuales de las transacciones.
+        Prioriza transacciones mayores: $1K, $2K, $3K, $5K, $10K+.
+        """
         if not transactions:
             return 0.0
         total = sum(tx.get("amount_usd", 0) for tx in transactions)
@@ -134,6 +158,9 @@ class SignalLogic:
             return 0.5
 
     async def _verify_and_signal(self, token, wallet, tx_data, wallet_score):
+        """
+        Verifica si una transacción cumple ciertos umbrales y, de ser así, genera una señal.
+        """
         try:
             if token in self.watched_tokens:
                 logger.debug(f"Token {token} ya está en seguimiento")
@@ -141,16 +168,18 @@ class SignalLogic:
             market_data = await self.get_token_market_data(token)
             market_cap = market_data.get("market_cap", 0)
             volume = market_data.get("volume", 0)
-            mcap_threshold = 100000
-            volume_threshold = 200000
-            if market_cap >= mcap_threshold and volume >= volume_threshold:
+            mcap_threshold = 100000  # $100K
+            volume_threshold = 200000  # $200K
+            meets_mcap = market_cap >= mcap_threshold
+            meets_volume = volume >= volume_threshold
+            if meets_mcap and meets_volume:
                 logger.info(f"⚡ Señal inmediata: {token} cumple umbrales - MC: ${market_cap/1000:.1f}K, Vol: ${volume/1000:.1f}K")
                 await self._generate_token_signal(token, wallet, wallet_score, market_data)
             else:
                 missing_criteria = []
-                if market_cap < mcap_threshold:
+                if not meets_mcap:
                     missing_criteria.append(f"Market Cap (${market_cap/1000:.1f}K < $100K)")
-                if volume < volume_threshold:
+                if not meets_volume:
                     missing_criteria.append(f"Volumen (${volume/1000:.1f}K < $200K)")
                 logger.info(f"👁️ Token {token} añadido a monitoreo - No cumple: {', '.join(missing_criteria)}")
                 self.monitored_tokens[token] = {
@@ -164,11 +193,13 @@ class SignalLogic:
             logger.error(f"Error verificando token {token} para señal: {e}", exc_info=True)
     
     async def get_token_market_data(self, token):
+        """
+        Obtiene datos de mercado para un token usando DexScreener.
+        """
         result = {"market_cap": 0, "volume": 0, "price": 0}
         try:
-            # Usar DexScreener para obtener datos de mercado
-            if hasattr(self, 'market_metrics') and self.market_metrics:
-                token_data = await self.market_metrics.fetch_token_data(token)
+            if self.dexscreener_client:
+                token_data = await self.dexscreener_client.fetch_token_data(token)
                 if token_data:
                     result = token_data
         except Exception as e:
@@ -176,8 +207,8 @@ class SignalLogic:
         return result
 
     async def periodic_monitoring(self):
-        monitor_interval = 60
-        max_monitoring_time = 3600 * 4
+        monitor_interval = 60  # cada 60 segundos
+        max_monitoring_time = 3600 * 4  # hasta 4 horas
         while True:
             try:
                 now = time.time()
@@ -197,15 +228,19 @@ class SignalLogic:
                     market_data = await self.get_token_market_data(token)
                     market_cap = market_data.get("market_cap", 0)
                     volume = market_data.get("volume", 0)
-                    if market_cap >= 100000 and volume >= 200000:
+                    mcap_threshold = 100000
+                    volume_threshold = 200000
+                    meets_mcap = market_cap >= mcap_threshold
+                    meets_volume = volume >= volume_threshold
+                    if meets_mcap and meets_volume:
                         logger.info(f"✅ Token monitoreado {token} ahora cumple umbrales - MC: ${market_cap/1000:.1f}K, Vol: ${volume/1000:.1f}K")
                         await self._generate_token_signal(token, data["wallet"], data["wallet_score"], market_data)
                         tokens_to_remove.append(token)
                     else:
                         missing = []
-                        if market_cap < 100000:
+                        if not meets_mcap:
                             missing.append(f"MC: ${market_cap/1000:.1f}K/$100K")
-                        if volume < 200000:
+                        if not meets_volume:
                             missing.append(f"Vol: ${volume/1000:.1f}K/$200K")
                         logger.debug(f"Token {token} continúa en monitoreo - No cumple: {', '.join(missing)}")
                 for token in tokens_to_remove:
@@ -222,7 +257,7 @@ class SignalLogic:
                 logger.debug(f"Ignorando señal duplicada para {token}")
                 return
             now = time.time()
-            extended_analysis = {}  # Puedes extender este análisis si se desea
+            extended_analysis = {}  # Se puede extender el análisis si es necesario
             candidate = self.token_candidates.get(token, {
                 "wallets": {wallet},
                 "high_quality_traders": {wallet} if wallet_score >= 8.0 else set(),
@@ -237,6 +272,7 @@ class SignalLogic:
             tx_amount_factor = self._calculate_transaction_confidence(candidate.get("transactions", []))
             base_confidence = 0.5 + (num_wallets * 0.02)
             high_quality_factor = 0.05 * len(candidate.get("high_quality_traders", []))
+            # Se elimina whale_bonus ya que no se utiliza WhaleDetector
             confidence = min(0.95, base_confidence + tx_amount_factor + high_quality_factor)
             if confidence >= 0.9:
                 signal_level = "S"
@@ -287,9 +323,15 @@ class SignalLogic:
             logger.error(f"Error generando señal para {token}: {e}", exc_info=True)
 
     def get_active_candidates_count(self):
+        """
+        Retorna el número de tokens candidatos activos en seguimiento.
+        """
         return len(self.token_candidates)
 
     def get_stats(self) -> dict:
+        """
+        Retorna estadísticas sobre el estado actual del sistema.
+        """
         now = time.time()
         return {
             "active_tokens": len(self.token_candidates),
