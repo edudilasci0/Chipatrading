@@ -191,10 +191,20 @@ class TransactionManager:
             
             # Guardar muestra para diagnóstico si está habilitado
             if self._diagnostic_mode and len(self._diagnostic_samples) < self._max_diagnostic_samples:
-                self._diagnostic_samples.append({
+                sample_data = {
                     "timestamp": time.time(),
                     "message": message if isinstance(message, str) else json.dumps(message)
-                })
+                }
+                self._diagnostic_samples.append(sample_data)
+                logger.info(f"Muestra diagnóstica #{len(self._diagnostic_samples)} guardada")
+                
+                # Si tenemos suficientes muestras, logear todas
+                if len(self._diagnostic_samples) == self._max_diagnostic_samples:
+                    logger.info("===== INICIO DE MUESTRAS DIAGNÓSTICAS =====")
+                    for i, sample in enumerate(self._diagnostic_samples):
+                        msg = sample.get("message", "")
+                        logger.info(f"DIAGNÓSTICO #{i+1}: {msg[:500]}...")
+                    logger.info("===== FIN DE MUESTRAS DIAGNÓSTICAS =====")
             
             # Convertir de string a JSON si es necesario
             if isinstance(message, str):
@@ -536,26 +546,18 @@ class TransactionManager:
         results["wallets_count"] = len(wallets)
         logger.info(f"Número de wallets en seguimiento: {len(wallets)}")
         
-        # 6. Guardar diagnóstico en archivo
-        try:
-            diagnostic_dir = "diagnostics"
-            os.makedirs(diagnostic_dir, exist_ok=True)
-            
-            filename = f"{diagnostic_dir}/connectivity_diagnostic_{int(time.time())}.json"
-            with open(filename, "w") as f:
-                json.dump(results, f, indent=2)
-            
-            # Si hay muestras de diagnóstico, guardarlas también
-            if self._diagnostic_samples:
-                samples_filename = f"{diagnostic_dir}/message_samples_{int(time.time())}.json"
-                with open(samples_filename, "w") as f:
-                    json.dump(self._diagnostic_samples, f, indent=2)
-                    
-            logger.info(f"Diagnóstico guardado en {filename}")
-            results["diagnostic_file"] = filename
-        except Exception as e:
-            logger.error(f"Error guardando diagnóstico: {e}")
-            results["save_error"] = str(e)
+        # 6. Loggear el diagnóstico completo
+        logger.info("===== DIAGNÓSTICO DE CONECTIVIDAD =====")
+        for key, value in results.items():
+            if key != "transaction_counts":  # Evitar log demasiado extenso
+                logger.info(f"{key}: {value}")
+        
+        # Loggear estadísticas de transacciones
+        logger.info("Estadísticas de transacciones:")
+        for key, value in results["transaction_counts"].items():
+            if key not in ["by_type", "by_source"]:  # Evitar demasiado detalle
+                logger.info(f"  {key}: {value}")
+        logger.info("===== FIN DE DIAGNÓSTICO =====")
         
         return results
         
