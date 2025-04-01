@@ -206,14 +206,12 @@ class CieloAPI:
                     self.message_samples.append(message)
                     logger.info(f"Muestra #{len(self.message_samples)} guardada")
                     
-                    # Si hemos recolectado suficientes muestras, guardarlas en archivo
+                    # Si hemos recolectado suficientes muestras, loggearlas
                     if len(self.message_samples) == self.max_samples:
-                        try:
-                            with open("cielo_message_samples.json", "w") as f:
-                                json.dump(self.message_samples, f, indent=2)
-                            logger.info("Muestras de mensajes guardadas en cielo_message_samples.json")
-                        except Exception as e:
-                            logger.error(f"Error guardando muestras: {e}")
+                        logger.info("===== INICIO DE MUESTRAS DE MENSAJES =====")
+                        for i, sample in enumerate(self.message_samples):
+                            logger.info(f"MUESTRA #{i+1}: {sample[:500]}...")
+                        logger.info("===== FIN DE MUESTRAS DE MENSAJES =====")
                 
                 # Procesar mensaje
                 if self.message_callback:
@@ -285,12 +283,10 @@ class CieloAPI:
                                 logger.info(f"Muestra #{len(self.message_samples)} guardada")
                                 
                                 if len(self.message_samples) == self.max_samples:
-                                    try:
-                                        with open("cielo_message_samples.json", "w") as f:
-                                            json.dump(self.message_samples, f, indent=2)
-                                        logger.info("Muestras de mensajes guardadas en cielo_message_samples.json")
-                                    except Exception as e:
-                                        logger.error(f"Error guardando muestras: {e}")
+                                    logger.info("===== INICIO DE MUESTRAS DE MENSAJES =====")
+                                    for i, sample in enumerate(self.message_samples):
+                                        logger.info(f"MUESTRA #{i+1}: {sample[:500]}...")
+                                    logger.info("===== FIN DE MUESTRAS DE MENSAJES =====")
                             
                             # Procesar mensaje
                             try:
