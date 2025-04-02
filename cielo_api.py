@@ -20,27 +20,26 @@ class CieloAPI:
         self.message_samples = []
         self.max_samples = 5  # Guardar solo los primeros 5 mensajes para análisis
         self.message_counter = 0
-        self.subscription_confirmed = False
         
-        # Seguimiento de suscripciones
+        # Seguimiento de suscripciones: convertir de booleano a conjuntos
         self.subscription_requests = set()  # Wallets para las que se envió solicitud
-        self.subscription_confirmed = set()  # Wallets confirmadas
-        self.subscription_failed = set()  # Wallets fallidas
+        self.subscription_confirmed = set()   # Wallets confirmadas (antes booleano)
+        self.subscription_failed = set()      # Wallets fallidas
 
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
         """
         Suscribe a múltiples wallets en chunks para evitar sobrecargar la conexión.
         
         Args:
-            ws: WebSocket conectado
-            wallets: Lista de direcciones a suscribir
-            filter_params: Parámetros adicionales de filtrado (opcional)
+            ws: WebSocket conectado.
+            wallets: Lista de direcciones a suscribir.
+            filter_params: Parámetros adicionales de filtrado (opcional).
         """
         # Preparar parámetros de suscripción
         subscription_params = {
             "chains": ["solana"],
             "tx_types": ["swap", "transfer"],
-            "min_amount_usd": float(Config.get("MIN_TRANSACTION_USD", "50"))  # Reducido para aumentar volumen
+            "min_amount_usd": float(Config.get("MIN_TRANSACTION_USD", "50"))
         }
         
         # Si hay parámetros específicos, combinarlos con los predeterminados
@@ -49,7 +48,7 @@ class CieloAPI:
             
         logger.info(f"Iniciando suscripción de {len(wallets)} wallets con parámetros: {subscription_params}")
         
-        # Limpiar seguimiento de suscripciones
+        # Limpiar seguimiento de suscripciones (ahora conjuntos)
         self.subscription_requests.clear()
         self.subscription_confirmed.clear()
         self.subscription_failed.clear()
@@ -67,21 +66,18 @@ class CieloAPI:
                 await ws.send(json.dumps(msg))
                 self.subscription_requests.add(wallet)  # Registrar solicitud
                 logger.debug(f"Suscripción enviada para wallet: {wallet}")
-                await asyncio.sleep(0.02)  # Pequeña pausa entre suscripciones
-                
+                await asyncio.sleep(0.02)
             if i + chunk_size < len(wallets):
-                progress = min(i+chunk_size, len(wallets))
+                progress = min(i + chunk_size, len(wallets))
                 logger.info(f"Progreso: {progress}/{len(wallets)} wallets suscritas...")
-                await asyncio.sleep(0.5)  # Pausa entre chunks
-                
+                await asyncio.sleep(0.5)
+        
         # Enviar ping para confirmar suscripción
         await ws.send(json.dumps({"type": "ping"}))
         logger.info(f"Enviadas solicitudes de suscripción para {len(self.subscription_requests)} wallets")
         
-        # Esperar un tiempo razonable para recibir confirmaciones
-        await asyncio.sleep(2)  # Dar tiempo para recibir respuestas
-        
-        # Verificar estado
+        # Esperar para recibir confirmaciones
+        await asyncio.sleep(2)
         missing = self.subscription_requests - self.subscription_confirmed - self.subscription_failed
         if missing:
             logger.warning(f"⚠️ Hay {len(missing)} wallets sin confirmación después de la suscripción inicial")
@@ -97,7 +93,7 @@ class CieloAPI:
             wallets: Lista de direcciones de wallets a monitorear
             
         Returns:
-            bool: True si la conexión fue exitosa
+            bool: True si la conexión fue exitosa.
         """
         try:
             if self.ws is not None and not self.ws.closed:
@@ -105,7 +101,7 @@ class CieloAPI:
                 await self.disconnect()
                 
             self.is_running = True
-            self.subscription_confirmed = False
+            self.subscription_confirmed = set()  # Reiniciar el set de confirmaciones
             headers = {"X-API-KEY": self.api_key}
             
             logger.info(f"Conectando a {self.ws_url}...")
@@ -137,7 +133,6 @@ class CieloAPI:
         """Cierra conexión ordenadamente"""
         self.is_running = False
         
-        # Cancelar tarea de ping si existe
         if self.ping_task:
             self.ping_task.cancel()
             try:
@@ -145,7 +140,6 @@ class CieloAPI:
             except asyncio.CancelledError:
                 pass
                 
-        # Cerrar WebSocket si existe
         if self.ws:
             try:
                 await self.ws.close()
@@ -159,7 +153,7 @@ class CieloAPI:
         Verifica la disponibilidad de Cielo con una conexión de prueba.
         
         Returns:
-            bool: True si Cielo está disponible
+            bool: True si Cielo está disponible.
         """
         try:
             logger.info("Verificando disponibilidad de Cielo...")
@@ -192,7 +186,7 @@ class CieloAPI:
         Verifica si hay una conexión activa.
         
         Returns:
-            bool: True si hay conexión activa
+            bool: True si hay conexión activa.
         """
         return self.ws is not None and not self.ws.closed and self.is_running
 
@@ -201,7 +195,7 @@ class CieloAPI:
         Configura callback externo para mensajes.
         
         Args:
-            callback: Función a llamar cuando se recibe un mensaje
+            callback: Función a llamar cuando se recibe un mensaje.
         """
         self.message_callback = callback
         logger.info("Callback de mensajes configurado para Cielo")
@@ -211,7 +205,7 @@ class CieloAPI:
         Escucha mensajes del WebSocket y los procesa.
         
         Args:
-            ws: WebSocket conectado
+            ws: WebSocket conectado.
         """
         logger.info("Iniciando escucha de mensajes de Cielo")
         while self.is_running and not ws.closed:
@@ -220,22 +214,19 @@ class CieloAPI:
                 self.last_message_time = time.time()
                 self.message_counter += 1
                 
-                # Log detallado para depuración
                 logger.debug(f"[MSG #{self.message_counter}] RAW mensaje recibido: {message[:200]}...")
                 
-                # Guardar muestra para análisis (solo las primeras)
                 if len(self.message_samples) < self.max_samples:
                     self.message_samples.append(message)
                     logger.info(f"Muestra #{len(self.message_samples)} guardada")
                     
-                    # Si hemos recolectado suficientes muestras, loggearlas
                     if len(self.message_samples) == self.max_samples:
                         logger.info("===== INICIO DE MUESTRAS DE MENSAJES =====")
                         for i, sample in enumerate(self.message_samples):
                             logger.info(f"MUESTRA #{i+1}: {sample[:500]}...")
                         logger.info("===== FIN DE MUESTRAS DE MENSAJES =====")
                 
-                # Detectar confirmaciones de suscripción
+                # Detectar confirmaciones de suscripción y otros mensajes
                 if isinstance(message, str):
                     try:
                         data = json.loads(message)
@@ -244,18 +235,14 @@ class CieloAPI:
                                 wallet = data["data"]["wallet"]
                                 self.subscription_confirmed.add(wallet)
                                 pending = len(self.subscription_requests) - len(self.subscription_confirmed)
-                                
-                                # Log periódico del progreso
                                 if len(self.subscription_confirmed) % 10 == 0 or len(self.subscription_confirmed) == len(self.subscription_requests):
                                     logger.info(f"Progreso: {len(self.subscription_confirmed)}/{len(self.subscription_requests)} wallets confirmadas, {pending} pendientes")
                         
-                        # Log para CUALQUIER otro tipo de mensaje (diagnóstico importante)
-                        elif data.get("type") != "pong":  # Ignorar pongs para no saturar logs
+                        elif data.get("type") != "pong":
                             logger.info(f"MENSAJE RECIBIDO TIPO '{data.get('type')}': {message[:300]}...")
-                    except:
+                    except Exception:
                         pass
                 
-                # Procesar mensaje
                 if self.message_callback:
                     try:
                         logger.debug(f"Llamando callback para mensaje #{self.message_counter}")
@@ -267,11 +254,9 @@ class CieloAPI:
             except websockets.ConnectionClosed as e:
                 logger.warning(f"Conexión a Cielo cerrada: {e}")
                 break
-                
             except Exception as e:
                 logger.error(f"Error recibiendo mensaje: {e}", exc_info=True)
                 
-        # Si salimos del bucle pero el bot sigue corriendo, intentar reconectar
         if self.is_running:
             logger.info("Bucle de escucha finalizado pero bot activo. Preparando para reconexión...")
             self.ws = None
@@ -279,15 +264,11 @@ class CieloAPI:
     def check_subscription_status(self):
         """Verifica el estado de las suscripciones de wallets"""
         missing = self.subscription_requests - self.subscription_confirmed
-        
-        # Log del estado actual
         if missing:
             logger.warning(f"⚠️ {len(missing)} wallets sin confirmación de suscripción")
             logger.warning(f"Ejemplos: {list(missing)[:5]}")
         else:
             logger.info(f"✅ Todas las {len(self.subscription_confirmed)} wallets confirmadas")
-        
-        # Devolver estadísticas para referencia
         return {
             "total_requested": len(self.subscription_requests),
             "confirmed": len(self.subscription_confirmed),
@@ -298,7 +279,7 @@ class CieloAPI:
     async def _periodic_subscription_check(self):
         """Verifica periódicamente el estado de las suscripciones"""
         while self.is_running:
-            await asyncio.sleep(300)  # Verificar cada 5 minutos
+            await asyncio.sleep(300)
             if self.is_running:
                 self.check_subscription_status()
 
@@ -308,9 +289,9 @@ class CieloAPI:
         Mantiene una conexión WebSocket activa, reconectando si es necesario.
         
         Args:
-            wallets: Lista de wallets a monitorear
-            on_message_callback: Función callback para mensajes
-            filter_params: Parámetros de filtrado (opcional)
+            wallets: Lista de wallets a monitorear.
+            on_message_callback: Función callback para mensajes.
+            filter_params: Parámetros de filtrado (opcional).
         """
         self.message_callback = on_message_callback
         retry_delay = 1
@@ -330,31 +311,22 @@ class CieloAPI:
                     self.ws = ws
                     logger.info("📡 WebSocket conectado a Cielo (modo multi-wallet)")
                     self.connection_failures = 0
-                    retry_delay = 1  # Resetear delay tras conexión exitosa
+                    retry_delay = 1
                     
-                    # Suscribir wallets
                     await self.subscribe_to_wallets(ws, wallets, filter_params)
-                    
-                    # Verificar estado después de unos segundos
-                    await asyncio.sleep(5)  # Esperar que lleguen las confirmaciones
+                    await asyncio.sleep(5)
                     self.check_subscription_status()
                     
-                    # Verificar periódicamente durante la ejecución
                     check_task = asyncio.create_task(self._periodic_subscription_check())
-                    
-                    # Iniciar tarea de ping
                     ping_task = asyncio.create_task(self._ping_periodically(ws))
                     
                     try:
-                        # Bucle de recepción de mensajes
                         async for message in ws:
                             self.last_message_time = time.time()
                             self.message_counter += 1
                             
-                            # Log detallado
                             logger.debug(f"[MSG #{self.message_counter}] Recibido: {message[:150]}...")
                             
-                            # Detectar confirmaciones de suscripción
                             if isinstance(message, str):
                                 try:
                                     data = json.loads(message)
@@ -363,57 +335,46 @@ class CieloAPI:
                                             wallet = data["data"]["wallet"]
                                             self.subscription_confirmed.add(wallet)
                                             pending = len(self.subscription_requests) - len(self.subscription_confirmed)
-                                            
-                                            # Log periódico del progreso
                                             if len(self.subscription_confirmed) % 10 == 0:
                                                 logger.info(f"Progreso: {len(self.subscription_confirmed)}/{len(self.subscription_requests)} wallets confirmadas, {pending} pendientes")
-                                    
-                                    # Log para CUALQUIER otro tipo de mensaje
-                                    elif data.get("type") != "pong":  # Ignorar pongs para no saturar logs
+                                    elif data.get("type") != "pong":
                                         logger.info(f"MENSAJE RECIBIDO TIPO '{data.get('type')}': {message[:300]}...")
-                                except:
+                                except Exception:
                                     pass
                             
-                            # Guardar muestra
                             if len(self.message_samples) < self.max_samples:
                                 self.message_samples.append(message)
                                 logger.info(f"Muestra #{len(self.message_samples)} guardada")
-                                
                                 if len(self.message_samples) == self.max_samples:
                                     logger.info("===== INICIO DE MUESTRAS DE MENSAJES =====")
                                     for i, sample in enumerate(self.message_samples):
                                         logger.info(f"MUESTRA #{i+1}: {sample[:500]}...")
                                     logger.info("===== FIN DE MUESTRAS DE MENSAJES =====")
                             
-                            # Procesar mensaje
                             try:
                                 logger.debug(f"Llamando callback para mensaje #{self.message_counter}")
                                 await on_message_callback(message)
                                 logger.debug(f"Callback completado para mensaje #{self.message_counter}")
                             except Exception as e:
                                 logger.error(f"Error procesando mensaje: {e}", exc_info=True)
-                                
                     finally:
-                        # Limpiar tareas al salir
                         if 'check_task' in locals():
                             check_task.cancel()
                             try:
                                 await check_task
                             except asyncio.CancelledError:
                                 pass
-                                
                         ping_task.cancel()
                         try:
                             await ping_task
                         except asyncio.CancelledError:
                             pass
-                            
+                        
             except (websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
                 logger.warning(f"Conexión cerrada (intento #{self.connection_failures}), reintentando en {retry_delay}s: {e}")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
-                
             except Exception as e:
                 self.connection_failures += 1
                 logger.error(f"Error inesperado ({self.connection_failures}): {e}", exc_info=True)
@@ -425,7 +386,7 @@ class CieloAPI:
         Envía pings periódicos para mantener la conexión activa.
         
         Args:
-            ws: WebSocket conectado
+            ws: WebSocket conectado.
         """
         ping_interval = 300  # 5 minutos
         ping_counter = 0
@@ -435,18 +396,14 @@ class CieloAPI:
             try:
                 await asyncio.sleep(ping_interval)
                 ping_counter += 1
-                
                 if ws.closed:
                     logger.warning("WebSocket cerrado, cancelando pings")
                     break
-                    
                 await ws.send(json.dumps({"type": "ping", "id": str(ping_counter)}))
                 logger.info(f"📤 Ping #{ping_counter} enviado a Cielo WebSocket")
-                
             except asyncio.CancelledError:
                 logger.info("Tarea de ping cancelada")
                 break
-                
             except Exception as e:
                 logger.error(f"Error enviando ping #{ping_counter}: {e}")
                 break
