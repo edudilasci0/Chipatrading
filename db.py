@@ -366,7 +366,7 @@ def init_db():
                     conn.rollback()
                     logger.error(f"Error añadiendo campo market_cap: {e}")
                     return False
-
+            
             try:
                 cur.execute("SELECT volume FROM signals LIMIT 1")
             except Exception as e:
@@ -390,7 +390,7 @@ def init_db():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_wallet_profits_wallet ON wallet_profits(wallet)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_features_token ON signal_features(token)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_signal_features_signal_id ON signal_features(signal_id)")
-
+                
                 if current_version >= 3:
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_token_liquidity_token ON token_liquidity(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_whale_activity_token ON whale_activity(token)")
@@ -399,13 +399,13 @@ def init_db():
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_trader_patterns_token ON trader_patterns(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_token_analysis_token ON token_analysis(token)")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_trending_tokens_token ON trending_tokens(token)")
-
+                
                 conn.commit()
                 logger.info("✅ Índices creados correctamente")
             except Exception as e:
                 conn.rollback()
                 logger.warning(f"⚠️ Error al crear índices: {e}")
-
+            
             try:
                 default_settings = [
                     ("min_transaction_usd", Config.MIN_TRANSACTION_USD),
@@ -426,14 +426,14 @@ def init_db():
                     ("liquidity_health_weight", Config.LIQUIDITY_HEALTH_WEIGHT),
                     ("technical_factors_weight", Config.TECHNICAL_FACTORS_WEIGHT)
                 ]
-
+                
                 for key, value in default_settings:
                     try:
                         cur.execute("""
                             INSERT INTO bot_settings (key, value)
                             VALUES (%s, %s)
                             ON CONFLICT (key) DO NOTHING
-                        """, (key, value))
+                        """, (key, str(value)))
                     except Exception as e:
                         logger.warning(f"Error al configurar setting {key}: {e}")
                 conn.commit()
@@ -659,23 +659,3 @@ def get_cache_stats():
         "cache_misses": query_cache_misses,
         "hit_ratio": hit_ratio
     }
-
-@retry_db_operation()
-def get_wallet_score(wallet):
-    """
-    Obtiene el score actual de un wallet desde la base de datos.
-    Si no existe, devuelve el score por defecto.
-    
-    Args:
-        wallet: Dirección del wallet.
-        
-    Returns:
-        float: Score del wallet (0-10).
-    """
-    query = """
-    SELECT score FROM wallet_scores WHERE wallet = %s
-    """
-    results = execute_cached_query(query, (wallet,), max_age=300)
-    if results and results[0]["score"] is not None:
-        return float(results[0]["score"])
-    return float(Config.DEFAULT_SCORE)
