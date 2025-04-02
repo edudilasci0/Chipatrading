@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import asyncio
 import time
 import logging
@@ -31,7 +32,6 @@ class TransactionManager:
             DataSource.HELIUS: {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()}
         }
 
-        # Valores por defecto en caso de que Config.get falle
         self.health_check_interval = int(Config.get("SOURCE_HEALTH_CHECK_INTERVAL", "60"))
         self.max_failures = int(Config.get("MAX_SOURCE_FAILURES", "3"))
         self.source_timeout = int(Config.get("SOURCE_TIMEOUT", "300"))
@@ -44,7 +44,7 @@ class TransactionManager:
         self.cache_ttl = 3600
         self.processed_tx_lock = asyncio.Lock()
         
-        # Contadores y estadísticas
+        # Contadores y estadísticas de transacciones (incluye nuevo campo by_message_type)
         self.tx_counts = {
             "total": 0,            # Total recibidas desde inicio
             "processed": 0,        # Procesadas correctamente
@@ -54,10 +54,11 @@ class TransactionManager:
             "last_minute": 0,      # Contador últimos 60s
             "last_minute_timestamp": time.time(),
             "by_type": {},         # Contador por tipo
-            "by_source": {}        # Contador por fuente
+            "by_source": {},       # Contador por fuente
+            "by_message_type": {}  # Nuevo campo para contar tipos de mensajes
         }
         
-        # Diagnóstico
+        # Modo diagnóstico
         self._diagnostic_mode = False
         self._diagnostic_samples = []
         self._max_diagnostic_samples = 10
@@ -100,14 +101,12 @@ class TransactionManager:
         
         # Intentar conectar a Cielo
         try:
-            # Primero intentar método connect si está disponible
             if hasattr(self.cielo_adapter, 'connect'):
                 connected = await self.cielo_adapter.connect(wallets_to_track)
                 if connected:
                     logger.info("Conexión a Cielo establecida correctamente")
                 else:
                     logger.warning("No se pudo establecer conexión a Cielo, intentando método alternativo")
-                    # Método alternativo (legacy)
                     callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
                     self.tasks.append(asyncio.create_task(
                         self.cielo_adapter.run_forever_wallets(
@@ -117,7 +116,6 @@ class TransactionManager:
                     ))
                     logger.info("Tarea legacy de Cielo iniciada")
             else:
-                # Método legacy directamente
                 callback = lambda message: asyncio.ensure_future(self.handle_cielo_message(message))
                 self.tasks.append(asyncio.create_task(
                     self.cielo_adapter.run_forever_wallets(
@@ -127,7 +125,6 @@ class TransactionManager:
                 ))
                 logger.info("Iniciada conexión a Cielo (modo legacy)")
                 
-            # Actualizar estado
             self.active_source = DataSource.CIELO
             self.source_health[DataSource.CIELO]["healthy"] = True
             self.source_health[DataSource.CIELO]["last_check"] = time.time()
@@ -135,10 +132,10 @@ class TransactionManager:
         except Exception as e:
             logger.error(f"Error conectando a Cielo: {e}", exc_info=True)
             
-        # Iniciar modo de diagnóstico si es necesario
         logger.info(f"TransactionManager iniciado con fuente activa: {self.active_source}")
-        if self._diagnostic_mode:
-            logger.info("🔍 Modo diagnóstico activado")
+        
+        # Enviar transacción de prueba para diagnóstico
+        await self._send_test_transaction()
 
     async def stop(self):
         """Detiene el TransactionManager y sus tareas asociadas"""
@@ -148,7 +145,6 @@ class TransactionManager:
         self.running = False
         logger.info("Deteniendo TransactionManager...")
         
-        # Cancelar tareas
         if self.health_check_task:
             self.health_check_task.cancel()
             try:
@@ -163,7 +159,6 @@ class TransactionManager:
             except asyncio.CancelledError:
                 pass
         
-        # Cerrar conexiones
         if self.cielo_adapter and hasattr(self.cielo_adapter, 'disconnect'):
             await self.cielo_adapter.disconnect()
             
@@ -181,15 +176,15 @@ class TransactionManager:
             self.source_health[DataSource.CIELO]["last_message"] = time.time()
             self.source_health[DataSource.CIELO]["healthy"] = True
             
-            # Inicializar contadores si no existen
+            # Inicializar contador de mensajes si no existe
             if not hasattr(self, "rx_counter"):
                 self.rx_counter = 0
             self.rx_counter += 1
             
             # Log inicial para confirmar entrada
-            logger.debug(f"[MSG #{self.rx_counter}] Recibido: {message[:50]}...")
+            logger.info(f"[MSG #{self.rx_counter}] MANEJANDO MENSAJE: {str(message)[:200]}...")
             
-            # Guardar muestra para diagnóstico si está habilitado
+            # Guardar muestra diagnóstica si está habilitado
             if self._diagnostic_mode and len(self._diagnostic_samples) < self._max_diagnostic_samples:
                 sample_data = {
                     "timestamp": time.time(),
@@ -197,13 +192,11 @@ class TransactionManager:
                 }
                 self._diagnostic_samples.append(sample_data)
                 logger.info(f"Muestra diagnóstica #{len(self._diagnostic_samples)} guardada")
-                
-                # Si tenemos suficientes muestras, logear todas
                 if len(self._diagnostic_samples) == self._max_diagnostic_samples:
                     logger.info("===== INICIO DE MUESTRAS DIAGNÓSTICAS =====")
                     for i, sample in enumerate(self._diagnostic_samples):
-                        msg = sample.get("message", "")
-                        logger.info(f"DIAGNÓSTICO #{i+1}: {msg[:500]}...")
+                        msg_diag = sample.get("message", "")
+                        logger.info(f"DIAGNÓSTICO #{i+1}: {msg_diag[:500]}...")
                     logger.info("===== FIN DE MUESTRAS DIAGNÓSTICAS =====")
             
             # Convertir de string a JSON si es necesario
@@ -211,12 +204,12 @@ class TransactionManager:
                 try:
                     data = json.loads(message)
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Mensaje inválido de Cielo (no es JSON): {message[:100]} - Error: {e}")
+                    logger.warning(f"Mensaje inválido de Cielo (no es JSON): {str(message)[:100]} - Error: {e}")
                     return
             else:
                 data = message
             
-            # Para mensajes de ping, simplemente actualizar el estado
+            # Si el mensaje es un pong, solo actualizar el estado
             if isinstance(data, dict) and data.get("type") == "pong":
                 logger.debug(f"Recibido pong de Cielo (ID: {data.get('id', 'desconocido')})")
                 return
@@ -226,14 +219,12 @@ class TransactionManager:
                 logger.debug(f"Mensaje ignorado - tipo: {data.get('type', 'desconocido')}")
                 return
                 
-            # Validar estructura del mensaje
             if "data" not in data:
                 logger.debug("Mensaje sin datos de transacción")
                 return
                 
             tx_data = data["data"]
             
-            # Validar campos requeridos
             if "token" not in tx_data or "amountUsd" not in tx_data:
                 logger.debug(f"Transacción sin token o monto ignorada: {tx_data}")
                 return
@@ -249,22 +240,19 @@ class TransactionManager:
                     "source": "cielo"
                 }
                 
-                # Actualizar contador por tipo
+                logger.info(f"TRANSACCIÓN NORMALIZADA: {json.dumps(normalized_tx)}")
+                
+                # Actualizar contadores por tipo y fuente
                 tx_type = normalized_tx["type"]
-                if tx_type not in self.tx_counts["by_type"]:
-                    self.tx_counts["by_type"][tx_type] = 0
+                self.tx_counts["by_type"].setdefault(tx_type, 0)
                 self.tx_counts["by_type"][tx_type] += 1
                 
-                # Actualizar contador por fuente
                 source = normalized_tx["source"]
-                if source not in self.tx_counts["by_source"]:
-                    self.tx_counts["by_source"][source] = 0
+                self.tx_counts["by_source"].setdefault(source, 0)
                 self.tx_counts["by_source"][source] += 1
                 
-                # Actualizar contador total
                 self.tx_counts["total"] += 1
                 
-                # Actualizar contador por minuto
                 now = time.time()
                 if now - self.tx_counts["last_minute_timestamp"] > 60:
                     self.tx_counts["last_minute"] = 1
@@ -283,69 +271,88 @@ class TransactionManager:
             logger.error(f"Error en handle_cielo_message: {e}", exc_info=True)
             self.tx_counts["errors"] += 1
 
+    async def _send_test_transaction(self):
+        """
+        Envía una transacción de prueba para verificar el flujo de procesamiento.
+        """
+        await asyncio.sleep(10)  # Esperar a que todo esté inicializado
+        try:
+            test_tx = {
+                "type": "transaction",
+                "data": {
+                    "wallet": "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+                    "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 
+                    "txType": "BUY",
+                    "amountUsd": 500.0
+                }
+            }
+            logger.info("🧪 ENVIANDO TRANSACCIÓN DE PRUEBA INTERNA...")
+            logger.info(f"Contenido: {json.dumps(test_tx)}")
+            await self.handle_cielo_message(json.dumps(test_tx))
+            logger.info("✅ Transacción de prueba interna procesada")
+        except Exception as e:
+            logger.error(f"❌ Error procesando transacción de prueba: {e}", exc_info=True)
+
     async def process_transaction(self, tx_data):
         """
         Procesa una transacción normalizada.
         
         Args:
-            tx_data: Datos normalizados de la transacción
+            tx_data: Datos normalizados de la transacción.
         """
         try:
-            # Log detallado de entrada
-            logger.debug(f"Procesando tx: {tx_data}")
-            
-            # Verificar monto mínimo
+            logger.debug(f"Procesando tx: {json.dumps(tx_data)}")
             min_usd = float(Config.get("MIN_TRANSACTION_USD", "200"))
             if tx_data.get("amount_usd", 0) < min_usd:
                 logger.debug(f"Transacción ignorada: monto ${tx_data.get('amount_usd', 0):.2f} < ${min_usd}")
                 self.tx_counts["filtered_out"] += 1
                 return
-                
-            # Verificar si es duplicada
+            
             is_duplicate = await self.is_duplicate_transaction(tx_data)
             if is_duplicate:
                 logger.debug(f"Transacción duplicada ignorada: {tx_data['wallet']} - {tx_data['token']}")
                 self.tx_counts["duplicates"] += 1
                 return
-                
-            # Guardar en la BD
+            
             try:
                 db.save_transaction(tx_data)
                 logger.info(f"Transacción guardada en BD: {tx_data['wallet']} {tx_data['type']} {tx_data['token']} ${tx_data['amount_usd']:.2f}")
             except Exception as e:
-                logger.error(f"Error guardando transacción en BD: {e}", exc_info=True)
-                
-            # Procesar con signal_logic
+                logger.error(f"❌ Error guardando transacción en BD: {e}", exc_info=True)
+            
             if self.signal_logic:
                 try:
+                    logger.info("Enviando transacción a signal_logic...")
                     self.signal_logic.process_transaction(tx_data)
+                    logger.info("Transacción procesada por signal_logic")
                 except Exception as e:
-                    logger.error(f"Error en signal_logic.process_transaction: {e}", exc_info=True)
-                    
-            # Actualizar scoring
+                    logger.error(f"❌ Error en signal_logic.process_transaction: {e}", exc_info=True)
+            
             if self.scoring_system:
                 try:
+                    logger.info(f"Actualizando score para {tx_data['wallet']}...")
                     self.scoring_system.update_score_on_trade(tx_data["wallet"], tx_data)
+                    logger.info(f"Score actualizado para {tx_data['wallet']}")
                 except Exception as e:
-                    logger.error(f"Error en scoring_system.update_score_on_trade: {e}", exc_info=True)
-                    
-            # Registrar en wallet_manager
+                    logger.error(f"❌ Error en scoring_system.update_score_on_trade: {e}", exc_info=True)
+            
             if self.wallet_manager:
                 try:
+                    logger.info("Registrando transacción en wallet_manager...")
                     self.wallet_manager.register_transaction(
                         tx_data["wallet"],
                         tx_data["token"],
                         tx_data["type"],
                         tx_data["amount_usd"]
                     )
+                    logger.info("Transacción registrada en wallet_manager")
                 except Exception as e:
-                    logger.error(f"Error en wallet_manager.register_transaction: {e}", exc_info=True)
+                    logger.error(f"❌ Error en wallet_manager.register_transaction: {e}", exc_info=True)
             
-            # Actualizar contadores
             self.tx_counts["processed"] += 1
-                
+            logger.info(f"✅ Transacción procesada exitosamente: {tx_data['wallet']} {tx_data['type']} {tx_data['token']} ${tx_data['amount_usd']:.2f}")
         except Exception as e:
-            logger.error(f"Error en process_transaction: {e}", exc_info=True)
+            logger.error(f"❌ Error en process_transaction: {e}", exc_info=True)
             self.tx_counts["errors"] += 1
 
     async def is_duplicate_transaction(self, tx_data):
@@ -353,15 +360,13 @@ class TransactionManager:
         Verifica si una transacción ya ha sido procesada para evitar duplicados.
         
         Args:
-            tx_data: Datos de la transacción
+            tx_data: Datos de la transacción.
             
         Returns:
-            bool: True si la transacción es un duplicado
+            bool: True si la transacción es un duplicado.
         """
         now = time.time()
-        
-        # Limpiar caché periódicamente
-        if now - self.cache_cleanup_time > 300:  # Cada 5 minutos
+        if now - self.cache_cleanup_time > 300:
             async with self.processed_tx_lock:
                 keys_to_remove = [key for key, t in self.processed_tx_cache.items() if now - t > self.cache_ttl]
                 for key in keys_to_remove:
@@ -369,14 +374,12 @@ class TransactionManager:
                 self.cache_cleanup_time = now
                 logger.debug(f"Limpieza de caché: eliminadas {len(keys_to_remove)} entradas")
         
-        # Generar clave única para la transacción
         wallet = tx_data.get("wallet", "")
         token = tx_data.get("token", "")
         amount = str(tx_data.get("amount_usd", 0))
         tx_type = tx_data.get("type", "")
         cache_key = f"{wallet}:{token}:{amount}:{tx_type}"
         
-        # Verificar si ya existe en la caché
         async with self.processed_tx_lock:
             if cache_key in self.processed_tx_cache:
                 return True
@@ -389,25 +392,19 @@ class TransactionManager:
         Obtiene la lista de wallets a monitorear desde diferentes fuentes.
         
         Returns:
-            list: Lista de direcciones de wallets
+            list: Lista de direcciones de wallets.
         """
         wallets_to_track = []
-        
-        # Intentar desde wallet_manager (prioridad)
         if self.wallet_manager and hasattr(self.wallet_manager, 'get_wallets'):
             wallets_to_track = self.wallet_manager.get_wallets()
             if wallets_to_track:
                 logger.info(f"Obtenidas {len(wallets_to_track)} wallets desde WalletManager")
                 return wallets_to_track
-        
-        # Intentar desde wallet_tracker (segunda opción)
         if self.wallet_tracker and hasattr(self.wallet_tracker, 'get_wallets'):
             wallets_to_track = self.wallet_tracker.get_wallets()
             if wallets_to_track:
                 logger.info(f"Obtenidas {len(wallets_to_track)} wallets desde WalletTracker")
                 return wallets_to_track
-        
-        # Si no se encontraron wallets, intentar directamente desde el archivo JSON
         if not wallets_to_track:
             try:
                 import json
@@ -417,11 +414,10 @@ class TransactionManager:
                     logger.info(f"Obtenidas {len(wallets_to_track)} wallets directamente desde traders_data.json")
             except Exception as e:
                 logger.error(f"Error leyendo wallets desde traders_data.json: {e}")
-                
         return wallets_to_track
 
     async def run_health_checks(self):
-        """Ejecuta verificaciones periódicas del estado de las fuentes de datos"""
+        """Ejecuta verificaciones periódicas del estado de las fuentes de datos."""
         try:
             while self.running:
                 await asyncio.sleep(self.health_check_interval)
@@ -434,34 +430,32 @@ class TransactionManager:
             logger.error(f"Error en verificación de salud: {e}", exc_info=True)
 
     async def _check_sources_health(self):
-        """Verifica el estado de las fuentes y actúa en consecuencia"""
+        """Verifica el estado de las fuentes y actúa en consecuencia."""
         now = time.time()
         active_health = self.source_health[self.active_source]
         
-        # Verificar tiempo desde último mensaje
         if now - active_health["last_message"] > self.source_timeout:
             logger.warning(f"Fuente activa {self.active_source} sin mensajes por {self.source_timeout}s")
             active_health["healthy"] = False
             active_health["failures"] += 1
             
-            # Intentar enviar ping para verificar conexión
             if self.cielo_adapter and hasattr(self.cielo_adapter, 'ws') and self.cielo_adapter.ws:
                 try:
                     await self.cielo_adapter.ws.send(json.dumps({"type": "ping", "id": str(int(now))}))
                     logger.info("Ping enviado a Cielo para verificar conexión")
                 except Exception as e:
                     logger.error(f"Error enviando ping a Cielo: {e}")
-                    
-        # Si la fuente no está saludable o ha fallado demasiadas veces, intentar reconectar
+        
+        logger.info(f"ESTADÍSTICAS: Mensajes: {self.tx_counts['total']}, Procesadas: {self.tx_counts['processed']}, Filtradas: {self.tx_counts['filtered_out']}, Duplicadas: {self.tx_counts['duplicates']}")
+        if self.tx_counts["by_message_type"]:
+            logger.info(f"TIPOS DE MENSAJES: {json.dumps(self.tx_counts['by_message_type'])}")
+        
         if not active_health["healthy"] or active_health["failures"] >= self.max_failures:
             logger.warning(f"Fuente {self.active_source} no saludable, intentando reconectar")
-            
             if self.cielo_adapter:
                 try:
-                    # Intentar reconectar
                     if hasattr(self.cielo_adapter, 'disconnect'):
                         await self.cielo_adapter.disconnect()
-                    
                     wallets = self._get_wallets_to_track()
                     if hasattr(self.cielo_adapter, 'connect'):
                         connected = await self.cielo_adapter.connect(wallets)
@@ -470,11 +464,10 @@ class TransactionManager:
                             active_health["healthy"] = True
                             active_health["failures"] = 0
                     else:
-                        # Intentar reiniciar mediante otras tareas
                         logger.warning("Reconexión a Cielo no implementada, necesita reinicio manual")
                 except Exception as e:
                     logger.error(f"Error reconectando a Cielo: {e}", exc_info=True)
-            
+        
         active_health["last_check"] = now
 
     async def _try_switch_to_source(self, target_source):
@@ -482,12 +475,11 @@ class TransactionManager:
         Intenta cambiar a una fuente alternativa.
         
         Args:
-            target_source: Fuente a la que cambiar
+            target_source: Fuente a la que cambiar.
             
         Returns:
-            bool: True si el cambio fue exitoso
+            bool: True si el cambio fue exitoso.
         """
-        # En esta versión, usamos solo Cielo
         logger.info(f"Conmutación solicitada a {target_source} (no implementada, usando Cielo)")
         return True
 
@@ -496,7 +488,7 @@ class TransactionManager:
         Ejecuta diagnóstico completo de conectividad.
         
         Returns:
-            dict: Resultados del diagnóstico
+            dict: Resultados del diagnóstico.
         """
         logger.info("Iniciando diagnóstico de conectividad...")
         results = {
@@ -510,7 +502,6 @@ class TransactionManager:
             "transaction_counts": dict(self.tx_counts)
         }
         
-        # 1. Verificar estado de conexión con Cielo
         if not self.cielo_adapter:
             logger.error("No hay adaptador Cielo configurado")
             results["error"] = "No hay adaptador Cielo configurado"
@@ -520,18 +511,15 @@ class TransactionManager:
         results["connected"] = connected
         logger.info(f"Estado de conexión Cielo: {'Conectado' if connected else 'Desconectado'}")
         
-        # 2. Verificar tiempo desde último mensaje
         last_msg_time = self.source_health[DataSource.CIELO]["last_message"]
         seconds_since_last = time.time() - last_msg_time
         results["seconds_since_last_message"] = seconds_since_last
         logger.info(f"Tiempo desde último mensaje: {seconds_since_last:.1f} segundos")
         
-        # 3. Verificar fallos
         failures = self.source_health[DataSource.CIELO]["failures"]
         results["failures"] = failures
         logger.info(f"Fallos acumulados: {failures}")
         
-        # 4. Intentar enviar ping para verificar conexión
         if connected and hasattr(self.cielo_adapter, 'ws') and self.cielo_adapter.ws:
             try:
                 await self.cielo_adapter.ws.send(json.dumps({"type": "ping", "id": "diagnostic"}))
@@ -541,21 +529,17 @@ class TransactionManager:
                 logger.error(f"Error enviando ping: {e}")
                 results["ping_error"] = str(e)
         
-        # 5. Verificar wallets suscritas
         wallets = self._get_wallets_to_track()
         results["wallets_count"] = len(wallets)
         logger.info(f"Número de wallets en seguimiento: {len(wallets)}")
         
-        # 6. Loggear el diagnóstico completo
         logger.info("===== DIAGNÓSTICO DE CONECTIVIDAD =====")
         for key, value in results.items():
-            if key != "transaction_counts":  # Evitar log demasiado extenso
+            if key != "transaction_counts":
                 logger.info(f"{key}: {value}")
-        
-        # Loggear estadísticas de transacciones
         logger.info("Estadísticas de transacciones:")
         for key, value in results["transaction_counts"].items():
-            if key not in ["by_type", "by_source"]:  # Evitar demasiado detalle
+            if key not in ["by_type", "by_source"]:
                 logger.info(f"  {key}: {value}")
         logger.info("===== FIN DE DIAGNÓSTICO =====")
         
@@ -566,23 +550,21 @@ class TransactionManager:
         Genera transacciones de prueba para verificar el funcionamiento.
         
         Args:
-            interval: Intervalo entre transacciones (segundos)
-            sample_size: Número de wallets a usar para pruebas
+            interval: Intervalo entre transacciones (segundos).
+            sample_size: Número de wallets a usar para pruebas.
         """
         logger.info("🧪 Iniciando modo de prueba - generando transacciones simuladas")
-        
         wallets = self._get_wallets_to_track()
         if not wallets or len(wallets) < sample_size:
             logger.error("No hay suficientes wallets para el modo de prueba")
             return
             
-        # Seleccionar algunas wallets aleatoriamente
         import random
         sample_wallets = random.sample(wallets, sample_size)
         test_tokens = [
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
-            "So11111111111111111111111111111111111111112",   # wSOL
-            "7ABz8qEFZTHPkovMDsmQkm64DZWN5wRtU7LEtD2ShkQ6"  # Un ejemplo de los datos
+            "So11111111111111111111111111111111111111112",    # wSOL
+            "7ABz8qEFZTHPkovMDsmQkm64DZWN5wRtU7LEtD2ShkQ6"   # Ejemplo adicional
         ]
         
         test_counter = 0
@@ -591,7 +573,6 @@ class TransactionManager:
             token = random.choice(test_tokens)
             amount = random.uniform(200, 1000)
             tx_type = random.choice(["BUY", "SELL"])
-            
             test_counter += 1
             test_tx = {
                 "wallet": wallet,
@@ -601,7 +582,6 @@ class TransactionManager:
                 "timestamp": time.time(),
                 "source": "test_mode"
             }
-            
             logger.info(f"📊 TEST #{test_counter}: {wallet[:8]}... {tx_type} {token[:8]}... ${amount:.2f}")
             await self.process_transaction(test_tx)
             await asyncio.sleep(interval)
@@ -611,13 +591,12 @@ class TransactionManager:
         Activa o desactiva el modo de diagnóstico.
         
         Args:
-            enable: True para activar, False para desactivar
-            max_samples: Número máximo de muestras a recolectar
+            enable: True para activar, False para desactivar.
+            max_samples: Número máximo de muestras a recolectar.
         """
         self._diagnostic_mode = enable
         self._max_diagnostic_samples = max_samples
         self._diagnostic_samples = []
-        
         if enable:
             logger.info(f"🔍 Modo diagnóstico activado (max {max_samples} muestras)")
         else:
@@ -628,14 +607,11 @@ class TransactionManager:
         Genera un informe completo del estado del TransactionManager.
         
         Returns:
-            dict: Informe de estado
+            dict: Informe de estado.
         """
         now = time.time()
-        
-        # Calcular tiempo desde último mensaje
         last_message_time = self.source_health[self.active_source]["last_message"]
         time_since_last = now - last_message_time
-        
         return {
             "timestamp": datetime.now().isoformat(),
             "active_source": self.active_source,
