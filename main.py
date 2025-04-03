@@ -196,7 +196,7 @@ async def main():
         scoring_system = ScoringSystem()
         # Se elimina Helius y WhaleDetector
         # Inicializar componentes avanzados
-        dex_monitor = DexMonitor()
+        dex_monitor = DexScreenerClient()
         market_metrics = MarketMetricsAnalyzer(dexscreener_client=dexscreener_client)
         token_analyzer = TokenAnalyzer(dexscreener_client=dexscreener_client)
         trader_profiler = TraderProfiler()
