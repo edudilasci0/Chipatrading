@@ -1,487 +1,389 @@
-# dex_monitor.py
 import time
-import logging
 import asyncio
 import aiohttp
-import json
-from typing import Dict, List, Optional, Any, Tuple
-from config import Config
+import logging
 
-logger = logging.getLogger("dex_monitor")
+logger = logging.getLogger("dexscreener_client")
 
-class DexMonitor:
+class DexScreenerClient:
     """
-    Monitor para consultar las APIs de Raydium y Jupiter en Solana.
-    Proporciona datos sobre liquidez, precios y rutas de swap.
+    Cliente optimizado para DexScreener con énfasis en obtener datos precisos 
+    de market cap y volumen siguiendo la documentación oficial de la API.
     """
-    
     def __init__(self):
         self.cache = {}
-        self.cache_ttl = int(Config.get("DEX_CACHE_TTL", 60))  # 60 segundos por defecto
+        self.cache_duration = 60  # 1 minuto de caché
+        self.request_timestamps = []
+        self.rate_limit = 300  # 300 peticiones por minuto según documentación
         self.session = None
-        
-        # URLs de las APIs
-        self.raydium_api_url = "https://api.raydium.io/v2/sdk/liquidity/mainnet.json"
-        self.jupiter_api_url = "https://price.jup.ag/v4/price"
-        self.jupiter_quote_api_url = "https://quote-api.jup.ag/v4/quote"
-        
-        # Token USDC (referencia para precios)
-        self.usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-        # Token SOL wrapped (para swaps)
-        self.wsol_mint = "So11111111111111111111111111111111111111112"
-    
+        self.error_backoff = 1  # Tiempo de espera inicial para errores
+
     async def ensure_session(self):
         """Asegura que existe una sesión HTTP abierta"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
-    
+        
     async def close_session(self):
-        """Cierra la sesión HTTP"""
+        """Cierra la sesión HTTP si está abierta"""
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
-    
-    def _get_cache(self, key: str):
-        """Obtiene un valor de la caché si está disponible y no ha expirado"""
-        if key in self.cache:
-            entry = self.cache[key]
-            if time.time() - entry["timestamp"] < self.cache_ttl:
-                return entry["data"]
-        return None
-    
-    def _set_cache(self, key: str, data: Any):
-        """Guarda un valor en la caché con timestamp actual"""
-        self.cache[key] = {
-            "data": data,
-            "timestamp": time.time()
-        }
-    
-    async def get_raydium_pools(self) -> List[Dict]:
+
+    async def _apply_rate_limiting(self):
         """
-        Obtiene todos los pools de liquidez de Raydium.
+        Aplica limitación de tasa para evitar ser bloqueado por la API.
+        Según documentación: 300 peticiones por minuto para endpoints de tokens.
+        """
+        now = time.time()
+        # Limpiar timestamps antiguos (más de 60 segundos)
+        self.request_timestamps = [ts for ts in self.request_timestamps if now - ts < 60]
         
-        Returns:
-            List[Dict]: Lista de pools de liquidez
+        # Si estamos cerca del límite, esperar
+        if len(self.request_timestamps) >= self.rate_limit:
+            oldest = min(self.request_timestamps)
+            wait_time = 60 - (now - oldest) + 0.2  # Margen de seguridad de 0.2s
+            if wait_time > 0:
+                logger.debug(f"Rate limit aplicado: esperando {wait_time:.2f}s antes de la próxima solicitud")
+                await asyncio.sleep(wait_time)
+                
+        # Registrar esta solicitud
+        self.request_timestamps.append(time.time())
+
+    async def fetch_token_data(self, token, retries=2):
         """
-        cache_key = "raydium_pools"
-        cached_data = self._get_cache(cache_key)
-        if cached_data:
-            return cached_data
-        
-        try:
-            session = await self.ensure_session()
-            async with session.get(self.raydium_api_url, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    pools = []
-                    if "official" in data:
-                        pools.extend(data["official"])
-                    if "unOfficial" in data:
-                        pools.extend(data["unOfficial"])
-                    
-                    self._set_cache(cache_key, pools)
-                    return pools
-                else:
-                    logger.warning(f"Error al obtener pools de Raydium: {response.status}")
-                    return []
-        except Exception as e:
-            logger.error(f"Error en get_raydium_pools: {e}")
-            return []
-    
-    async def get_raydium_liquidity(self, token_mint: str) -> Dict:
-        """
-        Obtiene información de liquidez de Raydium para un token específico.
+        Obtiene datos completos de un token con énfasis en market cap y volumen.
+        Usa el endpoint /latest/dex/tokens/ADDRESS según documentación.
         
         Args:
-            token_mint: Dirección del token
+            token: Dirección del token
+            retries: Número de reintentos en caso de error
             
         Returns:
-            Dict: Información de liquidez
+            dict: Datos del token con market cap y volumen o valores por defecto.
         """
-        cache_key = f"raydium_liquidity_{token_mint}"
-        cached_data = self._get_cache(cache_key)
-        if cached_data:
-            return cached_data
+        now = time.time()
         
-        # Para tokens pump, usar valores predeterminados sin llamada API
-        if "pump" in token_mint.lower():
-            pump_data = {
-                "total_liquidity_usd": 8000,
-                "pool_count": 1,
-                "platform": "raydium",
-                "pools": []
-            }
-            self._set_cache(cache_key, pump_data)
-            return pump_data
+        logger.info(f"Iniciando fetch de datos para token {token}")
         
-        pools = await self.get_raydium_pools()
-        token_pools = []
+        # Verificar caché primero
+        if token in self.cache and now - self.cache[token]["timestamp"] < self.cache_duration:
+            cache_data = self.cache[token]["data"]
+            if cache_data and cache_data.get("market_cap", 0) > 0 and cache_data.get("volume", 0) > 0:
+                logger.info(f"Datos para {token} recuperados de caché")
+                return cache_data
         
-        for pool in pools:
-            if (pool.get("baseMint") == token_mint or pool.get("quoteMint") == token_mint):
-                token_pools.append(pool)
+        attempt = 0
+        current_backoff = self.error_backoff
         
-        if not token_pools:
-            return {
-                "total_liquidity_usd": 0,
-                "pool_count": 0,
-                "platform": "raydium",
-                "pools": []
-            }
-        
-        total_liquidity = 0
-        for pool in token_pools:
-            if "liquidity" in pool and "usdC" in pool["liquidity"]:
-                pool_liquidity = float(pool["liquidity"]["usdC"])
-                total_liquidity += pool_liquidity
-        
-        result = {
-            "total_liquidity_usd": total_liquidity,
-            "pool_count": len(token_pools),
-            "platform": "raydium",
-            "pools": token_pools
-        }
-        
-        self._set_cache(cache_key, result)
-        return result
-    
-    async def get_jupiter_price(self, token_mint: str) -> Dict:
-        """
-        Obtiene el precio actual de un token a través de Jupiter.
-        
-        Args:
-            token_mint: Dirección del token
-            
-        Returns:
-            Dict: Información de precio
-        """
-        cache_key = f"jupiter_price_{token_mint}"
-        cached_data = self._get_cache(cache_key)
-        if cached_data:
-            return cached_data
-        
-        # Para tokens pump, usar valores predeterminados sin intentar conexión
-        if "pump" in token_mint.lower():
-            pump_data = {
-                "price": 0.000001,
-                "volume_24h": 20000,
-                "liquidity": 10000,
-                "slippage_1k": 5.0,
-                "slippage_10k": 15.0,
-                "platform": "jupiter_fallback"
-            }
-            self._set_cache(cache_key, pump_data)
-            return pump_data
-        
-        try:
-            url = f"{self.jupiter_api_url}?ids={token_mint}&vsToken={self.usdc_mint}"
-            session = await self.ensure_session()
-            
-            async with session.get(url, timeout=3) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if "data" in data and token_mint in data["data"]:
-                        token_data = data["data"][token_mint]
+        while attempt <= retries:
+            try:
+                await self._apply_rate_limiting()
+                
+                session = await self.ensure_session()
+                url = f"https://api.dexscreener.com/latest/dex/tokens/{token}"
+                logger.debug(f"Solicitando datos de DexScreener para {token}: {url}")
+                
+                async with session.get(url, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        if not data or "pairs" not in data or not data["pairs"]:
+                            logger.warning(f"Sin datos de pares para token {token} (intent {attempt+1})")
+                            attempt += 1
+                            await asyncio.sleep(current_backoff)
+                            current_backoff *= 2
+                            continue
+                        
+                        # Ordenar pares por volumen (h24) y usar el par más activo
+                        pairs = sorted(
+                            data["pairs"], 
+                            key=lambda x: float(x.get("volume", {}).get("h24", 0)) if isinstance(x.get("volume", {}), dict) else 0, 
+                            reverse=True
+                        )
+                        
+                        if not pairs:
+                            break
+                            
+                        active_pair = pairs[0]
+                        
+                        # Extraer datos críticos
+                        try:
+                            price = float(active_pair.get("priceUsd", 0))
+                        except (ValueError, TypeError):
+                            price = 0
+                        
+                        try:
+                            market_cap = float(active_pair.get("marketCap", 0))
+                        except (ValueError, TypeError):
+                            market_cap = 0
+                        
+                        volume_24h = 0
+                        volume_1h = 0
+                        vol_data = active_pair.get("volume", {})
+                        if isinstance(vol_data, dict):
+                            try:
+                                volume_24h = float(vol_data.get("h24", 0))
+                            except (ValueError, TypeError):
+                                volume_24h = 0
+                            try:
+                                volume_1h = float(vol_data.get("h1", 0))
+                            except (ValueError, TypeError):
+                                volume_1h = 0
+                        
+                        if volume_24h > 0 and volume_1h == 0:
+                            volume_1h = volume_24h / 12  # Estimación conservadora
+                        
+                        # Extraer crecimiento de precio
+                        growth_5m = 0
+                        growth_1h = 0
+                        price_change = active_pair.get("priceChange", {})
+                        if isinstance(price_change, dict):
+                            try:
+                                growth_5m = float(price_change.get("m5", 0)) / 100
+                            except (ValueError, TypeError):
+                                growth_5m = 0
+                            try:
+                                growth_1h = float(price_change.get("h1", 0)) / 100
+                            except (ValueError, TypeError):
+                                growth_1h = 0
+                        
+                        # Extraer liquidez
+                        liquidity = 0
+                        liquidity_data = active_pair.get("liquidity", {})
+                        if isinstance(liquidity_data, dict):
+                            try:
+                                liquidity = float(liquidity_data.get("usd", 0))
+                            except (ValueError, TypeError):
+                                liquidity = 0
+                        
+                        # Verificar trending
+                        is_trending = "trending" in active_pair.get("labels", [])
+                        
+                        token_name = active_pair.get("baseToken", {}).get("name", "")
+                        token_symbol = active_pair.get("baseToken", {}).get("symbol", "")
+                        
                         result = {
-                            "price": token_data.get("price", 0),
-                            "volume_24h": token_data.get("volume24h", 0),
-                            "market_price": token_data.get("price", 0),
-                            "platform": "jupiter"
+                            "price": price,
+                            "market_cap": market_cap,
+                            "volume": volume_1h,
+                            "volume_24h": volume_24h,
+                            "volume_growth": {"growth_5m": growth_5m, "growth_1h": growth_1h},
+                            "liquidity": liquidity,
+                            "trending": is_trending,
+                            "name": token_name,
+                            "symbol": token_symbol,
+                            "source": "dexscreener"
                         }
                         
-                        # Intentar obtener slippage y liquidez
-                        if "slippage" in token_data:
-                            slippage = token_data["slippage"]
-                            result["slippage_1k"] = slippage.get("buySlippage1k", 0) * 100
-                            result["slippage_10k"] = slippage.get("buySlippage10k", 0) * 100
-                            result["slippage_100k"] = slippage.get("buySlippage100k", 0) * 100
-                        
-                        # Estimar liquidez basada en slippage o volumen
-                        if "liquidity" in token_data:
-                            result["liquidity"] = token_data["liquidity"]
+                        if market_cap > 0 and volume_1h > 0:
+                            self.cache[token] = {"data": result, "timestamp": now}
+                            logger.info(f"Datos completos para {token} obtenidos de DexScreener (MC: ${market_cap/1000:.1f}K, Vol: ${volume_1h/1000:.1f}K)")
+                            return result
                         else:
-                            # Estimación rudimentaria de liquidez basada en volumen 24h
-                            result["liquidity"] = result["volume_24h"] * 0.5
-                            
-                            # Refinamiento basado en slippage si está disponible
-                            if "slippage" in token_data and "buyAmount" in token_data["slippage"]:
-                                buy_amount = token_data["slippage"]["buyAmount"]
-                                slippage_pct = token_data["slippage"].get("buySlippage", 0.01)
-                                if slippage_pct > 0:
-                                    refined_estimate = buy_amount / slippage_pct
-                                    result["liquidity"] = max(result["liquidity"], refined_estimate)
-                        
-                        self._set_cache(cache_key, result)
-                        return result
+                            logger.warning(f"Datos incompletos para {token}, buscando en pares adicionales")
+                            for pair in pairs[1:5]:
+                                if market_cap == 0 and "marketCap" in pair:
+                                    try:
+                                        market_cap = float(pair["marketCap"])
+                                        result["market_cap"] = market_cap
+                                        logger.debug(f"Market cap complementado: ${market_cap/1000:.1f}K")
+                                    except (ValueError, TypeError):
+                                        pass
+                                if volume_1h == 0 and "volume" in pair and isinstance(pair["volume"], dict) and "h1" in pair["volume"]:
+                                    try:
+                                        volume_1h = float(pair["volume"]["h1"])
+                                        result["volume"] = volume_1h
+                                        logger.debug(f"Volumen complementado: ${volume_1h/1000:.1f}K")
+                                    except (ValueError, TypeError):
+                                        pass
+                            if result["market_cap"] > 0 and result["volume"] > 0:
+                                self.cache[token] = {"data": result, "timestamp": now}
+                                logger.info(f"Datos complementados para {token} (MC: ${result['market_cap']/1000:.1f}K, Vol: ${result['volume']/1000:.1f}K)")
+                                return result
+                            logger.warning(f"Datos incompletos para {token} después de procesar múltiples pares")
+                    elif response.status == 429:
+                        logger.warning(f"Rate limit excedido para {token}, esperando para reintentar")
+                        await asyncio.sleep(5 + current_backoff)
+                        current_backoff *= 2
+                        fallback_data = {
+                            "price": 0.0001,
+                            "market_cap": 500000,
+                            "volume": 200000,
+                            "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
+                            "source": "dexscreener_ratelimited"
+                        }
+                        return fallback_data
+                    else:
+                        logger.warning(f"Error obteniendo datos de DexScreener para {token}: {response.status}")
                 
-                # En caso de error, retornar fallback
-                fallback = {
-                    "price": 0.0001,
-                    "volume_24h": 5000,
-                    "liquidity": 2500,
-                    "platform": "jupiter_error_response"
-                }
-                self._set_cache(cache_key, fallback)
-                return fallback
+                attempt += 1
+                if attempt <= retries:
+                    await asyncio.sleep(current_backoff)
+                    current_backoff *= 2
                 
-        except aiohttp.ClientConnectorError:
-            logger.warning(f"Error de conectividad con Jupiter para {token_mint}, usando fallback")
-            fallback = {
-                "price": 0.0001,
-                "volume_24h": 5000,
-                "liquidity": 2500,
-                "platform": "jupiter_error_fallback"
-            }
-            self._set_cache(cache_key, fallback)
-            return fallback
-        except Exception as e:
-            logger.error(f"Error en get_jupiter_price para {token_mint}: {e}")
-            fallback = {
-                "price": 0.0001,
-                "volume_24h": 5000,
-                "liquidity": 2500,
-                "platform": "jupiter_error_fallback"
-            }
-            self._set_cache(cache_key, fallback)
-            return fallback
-    
-    async def get_jupiter_route(self, 
-                                input_mint: str, 
-                                output_mint: str, 
-                                amount_in: float) -> Dict:
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout en solicitud para {token}")
+                attempt += 1
+                await asyncio.sleep(current_backoff)
+                current_backoff *= 2
+                
+            except Exception as e:
+                logger.error(f"Error en fetch_token_data para {token}: {e}")
+                attempt += 1
+                await asyncio.sleep(current_backoff)
+                current_backoff *= 2
+        
+        fallback_data = {
+            "price": 0.0001,
+            "market_cap": 500000,
+            "volume": 150000,
+            "volume_growth": {"growth_5m": 0.1, "growth_1h": 0.05},
+            "source": "dexscreener_fallback"
+        }
+        self.cache[token] = {"data": fallback_data, "timestamp": now - (self.cache_duration * 0.5)}
+        logger.warning(f"Usando datos estimados para {token} después de {retries+1} intentos fallidos")
+        return fallback_data
+
+    async def search_trending_tokens(self, limit=10):
         """
-        Obtiene la mejor ruta de swap a través de Jupiter.
+        Busca tokens en tendencia que podrían cumplir los umbrales de market cap y volumen.
         
         Args:
-            input_mint: Token de entrada
-            output_mint: Token de salida
-            amount_in: Cantidad de entrada en unidades del token
+            limit: Número máximo de tokens a retornar
             
         Returns:
-            Dict: Información de la ruta de swap
+            list: Lista de tokens en tendencia con sus datos.
         """
-        cache_key = f"jupiter_route_{input_mint}_{output_mint}_{amount_in}"
-        cached_data = self._get_cache(cache_key)
-        if cached_data:
-            return cached_data
-        
-        # Para tokens pump, devolver datos estimados sin llamar a la API
-        if "pump" in input_mint.lower() or "pump" in output_mint.lower():
-            pump_fallback = {
-                "inAmount": str(int(amount_in * 1000000)),
-                "outAmount": str(int(amount_in * 0.9 * 1000000)),  # 10% slippage estimado
-                "priceImpactPct": 10.0,
-                "marketInfos": []
-            }
-            self._set_cache(cache_key, pump_fallback)
-            return pump_fallback
-        
         try:
-            # Convertir a unidades lamports (multiplicar por 10^decimals)
-            amount_in_lamports = int(amount_in * 1000000)  # Asumiendo 6 decimales como USDC
-            
-            url = f"{self.jupiter_quote_api_url}?inputMint={input_mint}&outputMint={output_mint}&amount={amount_in_lamports}&slippageBps=50"
+            await self._apply_rate_limiting()
             session = await self.ensure_session()
-            
-            async with session.get(url, timeout=5) as response:
+            url = "https://api.dexscreener.com/latest/dex/search?q=trending"
+            async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
-                    
-                    self._set_cache(cache_key, data)
-                    return data
-                else:
-                    logger.warning(f"Error obteniendo ruta de Jupiter: {response.status}")
-                    fallback = {
-                        "inAmount": str(int(amount_in * 1000000)),
-                        "outAmount": str(int(amount_in * 0.85 * 1000000)),  # 15% slippage estimado por error
-                        "priceImpactPct": 15.0,
-                        "error": f"API error: {response.status}"
-                    }
-                    self._set_cache(cache_key, fallback)
-                    return fallback
+                    if "pairs" in data and data["pairs"]:
+                        valid_tokens = []
+                        for pair in data["pairs"]:
+                            try:
+                                if "baseToken" not in pair or "address" not in pair["baseToken"]:
+                                    continue
+                                token_address = pair["baseToken"]["address"]
+                                token_name = pair["baseToken"].get("name", "")
+                                token_symbol = pair["baseToken"].get("symbol", "")
+                                market_cap = 0
+                                if "marketCap" in pair:
+                                    try:
+                                        market_cap = float(pair["marketCap"])
+                                    except (ValueError, TypeError):
+                                        market_cap = 0
+                                volume_1h = 0
+                                if "volume" in pair and isinstance(pair["volume"], dict) and "h1" in pair["volume"]:
+                                    try:
+                                        volume_1h = float(pair["volume"]["h1"])
+                                    except (ValueError, TypeError):
+                                        volume_1h = 0
+                                elif "volume" in pair and isinstance(pair["volume"], dict) and "h24" in pair["volume"]:
+                                    try:
+                                        volume_1h = float(pair["volume"]["h24"]) / 12
+                                    except (ValueError, TypeError):
+                                        volume_1h = 0
+                                mcap_threshold = 100000
+                                volume_threshold = 200000
+                                if market_cap >= mcap_threshold and volume_1h >= volume_threshold:
+                                    valid_tokens.append({
+                                        "address": token_address,
+                                        "name": token_name,
+                                        "symbol": token_symbol,
+                                        "market_cap": market_cap,
+                                        "volume": volume_1h,
+                                        "chain_id": pair.get("chainId", "solana")
+                                    })
+                            except Exception as e:
+                                logger.debug(f"Error procesando par en trending: {e}")
+                                continue
+                        valid_tokens.sort(key=lambda x: x["market_cap"], reverse=True)
+                        return valid_tokens[:limit]
+                return []
         except Exception as e:
-            logger.error(f"Error en get_jupiter_route: {e}")
-            fallback = {
-                "inAmount": str(int(amount_in * 1000000)),
-                "outAmount": str(int(amount_in * 0.85 * 1000000)),  # 15% slippage estimado por error
-                "priceImpactPct": 15.0,
-                "error": str(e)
-            }
-            self._set_cache(cache_key, fallback)
-            return fallback
+            logger.error(f"Error en search_trending_tokens: {e}")
+            return []
     
-    async def calculate_slippage(self, token_mint: str, amounts_usd: List[float]) -> Dict[str, float]:
+    async def get_token_pairs(self, token, limit=5):
         """
-        Calcula el slippage para diferentes cantidades de swap.
+        Obtiene los principales pares para un token.
         
         Args:
-            token_mint: Dirección del token
-            amounts_usd: Lista de cantidades en USD para calcular slippage
+            token: Dirección del token.
+            limit: Número máximo de pares a retornar.
             
         Returns:
-            Dict[str, float]: Porcentajes de slippage para cada cantidad
+            list: Lista de pares para el token.
         """
-        result = {}
-        
-        # Para tokens pump, usar valores predeterminados sin llamadas a API
-        if "pump" in token_mint.lower():
-            return {
-                f"slippage_{int(amount)}": min(5.0 + (amount / 1000), 25.0) for amount in amounts_usd
-            }
-        
         try:
-            # Obtener precio actual como referencia
-            price_data = await self.get_jupiter_price(token_mint)
-            current_price = price_data.get("price", 0)
-            
-            if current_price <= 0:
-                # Sin precio válido, no podemos calcular slippage
-                return {f"slippage_{int(amount)}": 15.0 for amount in amounts_usd}
-            
-            for amount_usd in amounts_usd:
-                # Calcular cantidad de tokens equivalente al monto USD
-                amount_tokens = amount_usd / current_price
-                
-                # Obtener ruta de swap del token al USDC
-                route_data = await self.get_jupiter_route(token_mint, self.usdc_mint, amount_tokens)
-                
-                if not route_data or "outAmount" not in route_data:
-                    result[f"slippage_{int(amount_usd)}"] = 15.0
-                    continue
-                
-                # Calcular precio efectivo con slippage
-                out_amount = int(route_data["outAmount"]) / 1000000  # Convertir a USDC (6 decimales)
-                effective_price = out_amount / amount_tokens
-                
-                # Calcular slippage como porcentaje
-                slippage_pct = abs((effective_price - current_price) / current_price) * 100
-                result[f"slippage_{int(amount_usd)}"] = slippage_pct
-            
-            return result
+            await self._apply_rate_limiting()
+            session = await self.ensure_session()
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{token}"
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if "pairs" in data and data["pairs"]:
+                        pairs = sorted(
+                            data["pairs"], 
+                            key=lambda x: float(x.get("volume", {}).get("h24", 0)) if isinstance(x.get("volume", {}), dict) else 0, 
+                            reverse=True
+                        )
+                        result_pairs = []
+                        for pair in pairs[:limit]:
+                            dex_id = pair.get("dexId", "")
+                            pair_address = pair.get("pairAddress", "")
+                            price = 0
+                            try:
+                                price = float(pair.get("priceUsd", 0))
+                            except (ValueError, TypeError):
+                                price = 0
+                            base_token = {}
+                            if "baseToken" in pair:
+                                base_token = {
+                                    "address": pair["baseToken"].get("address", ""),
+                                    "name": pair["baseToken"].get("name", ""),
+                                    "symbol": pair["baseToken"].get("symbol", "")
+                                }
+                            quote_token = {}
+                            if "quoteToken" in pair:
+                                quote_token = {
+                                    "address": pair["quoteToken"].get("address", ""),
+                                    "name": pair["quoteToken"].get("name", ""),
+                                    "symbol": pair["quoteToken"].get("symbol", "")
+                                }
+                            volume_24h = 0
+                            if "volume" in pair and isinstance(pair["volume"], dict) and "h24" in pair["volume"]:
+                                try:
+                                    volume_24h = float(pair["volume"]["h24"])
+                                except (ValueError, TypeError):
+                                    volume_24h = 0
+                            liquidity = 0
+                            if "liquidity" in pair and isinstance(pair["liquidity"], dict) and "usd" in pair["liquidity"]:
+                                try:
+                                    liquidity = float(pair["liquidity"]["usd"])
+                                except (ValueError, TypeError):
+                                    liquidity = 0
+                            result_pairs.append({
+                                "dex": dex_id,
+                                "pair_address": pair_address,
+                                "price": price,
+                                "base_token": base_token,
+                                "quote_token": quote_token,
+                                "volume_24h": volume_24h,
+                                "liquidity": liquidity
+                            })
+                        return result_pairs
+                return []
         except Exception as e:
-            logger.error(f"Error en calculate_slippage para {token_mint}: {e}")
-            return {f"slippage_{int(amount)}": 15.0 for amount in amounts_usd}
+            logger.error(f"Error en get_token_pairs: {e}")
+            return []
     
-    async def get_combined_liquidity_data(self, token_mint: str) -> Dict:
-        """
-        Obtiene datos combinados de liquidez de Raydium y Jupiter.
-        
-        Args:
-            token_mint: Dirección del token
-            
-        Returns:
-            Dict: Datos combinados de liquidez
-        """
-        cache_key = f"combined_liquidity_{token_mint}"
-        cached_data = self._get_cache(cache_key)
-        if cached_data:
-            return cached_data
-        
-        # Para tokens pump, retornar valores predeterminados sin llamadas API
-        if "pump" in token_mint.lower():
-            pump_data = {
-                "total_liquidity_usd": 10000,
-                "price": 0.000001,
-                "volume_24h": 20000,
-                "slippage_1k": 5.0,
-                "slippage_10k": 15.0,
-                "sources": ["fallback_pump"],
-                "pools": [],
-                "liquidity_depth": 0.5,
-                "health_score": 0.7
-            }
-            self._set_cache(cache_key, pump_data)
-            return pump_data
-        
-        # Obtener datos de ambas plataformas en paralelo
-        raydium_task = asyncio.create_task(self.get_raydium_liquidity(token_mint))
-        jupiter_task = asyncio.create_task(self.get_jupiter_price(token_mint))
-        
-        try:
-            raydium_data = await asyncio.wait_for(raydium_task, timeout=5)
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning(f"Error o timeout obteniendo datos de Raydium: {e}")
-            raydium_data = {"total_liquidity_usd": 0}
-        
-        try:
-            jupiter_data = await asyncio.wait_for(jupiter_task, timeout=5)
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning(f"Error o timeout obteniendo datos de Jupiter: {e}")
-            jupiter_data = {"liquidity": 0, "price": 0, "volume_24h": 0}
-        
-        # Calcular slippage para diferentes cantidades con manejo de errores
-        try:
-            slippage_task = asyncio.create_task(self.calculate_slippage(token_mint, [1000, 10000]))
-            slippage_data = await asyncio.wait_for(slippage_task, timeout=5)
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning(f"Error o timeout calculando slippage: {e}")
-            slippage_data = {"slippage_1000": 10.0, "slippage_10000": 20.0}
-        
-        # Combinar datos
-        raydium_liquidity = raydium_data.get("total_liquidity_usd", 0)
-        jupiter_liquidity = jupiter_data.get("liquidity", 0)
-        
-        # Usar el valor más alto como más confiable
-        total_liquidity = max(raydium_liquidity, jupiter_liquidity)
-        
-        # Si ambos tienen valores, promediar pero con más peso al más alto
-        if raydium_liquidity > 0 and jupiter_liquidity > 0:
-            max_value = max(raydium_liquidity, jupiter_liquidity)
-            min_value = min(raydium_liquidity, jupiter_liquidity)
-            total_liquidity = max_value * 0.7 + min_value * 0.3
-        
-        # Si no hay liquidez, usar un valor mínimo predeterminado
-        if total_liquidity <= 0:
-            total_liquidity = 1000
-        
-        result = {
-            "total_liquidity_usd": total_liquidity,
-            "price": jupiter_data.get("price", 0),
-            "volume_24h": jupiter_data.get("volume_24h", 0),
-            "slippage_1k": slippage_data.get("slippage_1000", jupiter_data.get("slippage_1k", 10.0)),
-            "slippage_10k": slippage_data.get("slippage_10000", jupiter_data.get("slippage_10k", 20.0)),
-            "sources": [],
-            "pools": raydium_data.get("pools", [])
-        }
-        
-        # Agregar fuentes
-        if raydium_liquidity > 0:
-            result["sources"].append("raydium")
-        if jupiter_liquidity > 0:
-            result["sources"].append("jupiter")
-        
-        # Si no hay fuentes, indicar fallback
-        if not result["sources"]:
-            result["sources"].append("fallback")
-        
-        # Calcular profundidad de liquidez (por ejemplo, ratio de liquidez vs volumen)
-        if result["volume_24h"] > 0:
-            result["liquidity_depth"] = total_liquidity / result["volume_24h"]
-        else:
-            result["liquidity_depth"] = 0.5  # Valor por defecto
-        
-        # Calcular health score
-        if total_liquidity > 0:
-            slippage_factor = min(1, 10 / (result["slippage_10k"] if result["slippage_10k"] > 0 else 100))
-            volume_factor = min(1, result["volume_24h"] / 100000)
-            result["health_score"] = (slippage_factor * 0.7) + (volume_factor * 0.3)
-        else:
-            result["health_score"] = 0.4  # Valor por defecto para tokens nuevos/desconocidos
-        
-        self._set_cache(cache_key, result)
-        return result
-
-    def cleanup_cache(self):
-        """Limpia entradas antiguas de la caché"""
-        now = time.time()
-        keys_to_remove = []
-        
-        for key, entry in self.cache.items():
-            if now - entry["timestamp"] > self.cache_ttl * 2:
-                keys_to_remove.append(key)
-        
-        for key in keys_to_remove:
-            del self.cache[key]
-        
-        logger.debug(f"Limpieza de caché: eliminadas {len(keys_to_remove)} entradas")
+    def clear_cache(self):
+        """Limpia la caché de solicitudes."""
+        self.cache = {}
+        logger.info("Cache de DexScreener limpiada")
