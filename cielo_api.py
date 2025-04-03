@@ -3,6 +3,7 @@ import websockets
 import json
 import time
 import logging
+from datetime import datetime
 from config import Config
 
 logger = logging.getLogger("cielo_api")
@@ -17,13 +18,36 @@ class CieloAPI:
         self.ping_task = None
         self.message_callback = None
         self.last_message_time = 0
+        
+        # Sistema mejorado de diagnóstico y muestreo
         self.message_samples = []
         self.max_samples = 5  # Guardar solo los primeros 5 mensajes para análisis
         self.message_counter = 0
+        self.transaction_counter = 0
+        self.last_transactions = []  # Guarda las últimas 10 transacciones para diagnóstico
+        self.max_transactions = 10
+        
         # Seguimiento de suscripciones: Cambiado de booleano a conjuntos
         self.subscription_requests = set()  # Wallets para las que se envió solicitud
         self.subscription_confirmed = set()  # Wallets confirmadas
         self.subscription_failed = set()  # Wallets fallidas
+        
+        # Estado de salud y estadísticas
+        self.source_health = {"healthy": False, "last_check": 0, "failures": 0, "last_message": time.time()}
+        
+        # Contadores para diagnóstico
+        self.tx_counts = {
+            "total": 0,            # Total recibidas desde inicio
+            "processed": 0,        # Procesadas correctamente
+            "filtered_out": 0,     # Filtradas por criterios
+            "errors": 0,           # Errores en procesamiento
+            "by_type": {},         # Contador por tipo de mensaje
+        }
+        
+        # Para diagnósticos avanzados
+        self._diagnostic_mode = False
+        self._diagnostic_samples = []
+        self._max_diagnostic_samples = 10
 
     async def subscribe_to_wallets(self, ws, wallets, filter_params=None):
         """
@@ -62,17 +86,24 @@ class CieloAPI:
                     "wallet": wallet,
                     "filter": subscription_params
                 }
-                await ws.send(json.dumps(msg))
-                self.subscription_requests.add(wallet)  # Registrar solicitud
-                logger.debug(f"Suscripción enviada para wallet: {wallet}")
+                try:
+                    await ws.send(json.dumps(msg))
+                    self.subscription_requests.add(wallet)  # Registrar solicitud
+                    logger.debug(f"Suscripción enviada para wallet: {wallet}")
+                except Exception as e:
+                    logger.error(f"Error enviando suscripción para wallet {wallet}: {e}")
+                    self.subscription_failed.add(wallet)
                 await asyncio.sleep(0.02)
             if i + chunk_size < len(wallets):
                 logger.info(f"Progreso: {min(i+chunk_size, len(wallets))}/{len(wallets)} wallets suscritas...")
                 await asyncio.sleep(0.5)
         
         # Enviar ping para confirmar suscripción
-        await ws.send(json.dumps({"type": "ping"}))
-        logger.info(f"Enviadas solicitudes de suscripción para {len(self.subscription_requests)} wallets")
+        try:
+            await ws.send(json.dumps({"type": "ping", "id": "post-subscription"}))
+            logger.info(f"Enviadas solicitudes de suscripción para {len(self.subscription_requests)} wallets")
+        except Exception as e:
+            logger.error(f"Error enviando ping post-suscripción: {e}")
         
         # Esperar un tiempo razonable para recibir confirmaciones
         await asyncio.sleep(2)
@@ -118,10 +149,15 @@ class CieloAPI:
             
             check_task = asyncio.create_task(self._periodic_subscription_check())
             
+            self.source_health["healthy"] = True
+            self.source_health["last_check"] = time.time()
+            
             return True
         except Exception as e:
             logger.error(f"Error en connect: {e}", exc_info=True)
             self.connection_failures += 1
+            self.source_health["healthy"] = False
+            self.source_health["failures"] += 1
             return False
 
     async def disconnect(self):
@@ -191,6 +227,77 @@ class CieloAPI:
         self.message_callback = callback
         logger.info("Callback de mensajes configurado para Cielo")
 
+    async def _process_cielo_message(self, message):
+        """
+        Procesa mensajes de Cielo e identifica transacciones.
+        
+        Args:
+            message: Mensaje recibido (string JSON o diccionario)
+            
+        Returns:
+            bool: True si se procesó una transacción correctamente
+        """
+        try:
+            # Convertir de string a JSON si es necesario
+            if isinstance(message, str):
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Mensaje inválido de Cielo (no es JSON): {str(message)[:100]} - Error: {e}")
+                    return False
+            else:
+                data = message
+            
+            # Verificar si el mensaje es una transacción
+            msg_type = data.get("type", "unknown")
+            
+            # Actualizar contadores por tipo de mensaje
+            self.tx_counts["by_type"].setdefault(msg_type, 0)
+            self.tx_counts["by_type"][msg_type] += 1
+            
+            # Si el mensaje es un pong, solo actualizar el estado
+            if msg_type == "pong":
+                logger.debug(f"Recibido pong de Cielo (ID: {data.get('id', 'desconocido')})")
+                return False
+                
+            # Verificar si el mensaje es una transacción
+            if msg_type != "transaction":
+                return False
+                
+            if "data" not in data:
+                logger.debug("Mensaje de transacción sin datos")
+                return False
+                
+            tx_data = data["data"]
+            
+            # Validaciones específicas para transacciones
+            if "token" not in tx_data or "amountUsd" not in tx_data:
+                logger.debug(f"Transacción sin token o monto ignorada: {tx_data}")
+                return False
+                
+            # Registrar transacción para diagnóstico
+            self.transaction_counter += 1
+            logger.info(f"Transacción #{self.transaction_counter} detectada: {tx_data.get('txType', 'unknown')} para token {tx_data.get('token', 'unknown')}")
+            
+            # Guardar las últimas transacciones para diagnóstico
+            transaction_summary = {
+                "wallet": tx_data.get("wallet", ""),
+                "token": tx_data.get("token", ""),
+                "type": tx_data.get("txType", ""),
+                "amount": tx_data.get("amountUsd", 0),
+                "timestamp": time.time()
+            }
+            self.last_transactions.append(transaction_summary)
+            if len(self.last_transactions) > self.max_transactions:
+                self.last_transactions = self.last_transactions[-self.max_transactions:]
+            
+            self.tx_counts["total"] += 1
+            return True
+        except Exception as e:
+            logger.error(f"Error procesando mensaje de Cielo: {e}", exc_info=True)
+            self.tx_counts["errors"] += 1
+            return False
+
     async def _listen_messages(self, ws):
         """
         Escucha mensajes del WebSocket y los procesa.
@@ -203,8 +310,10 @@ class CieloAPI:
             try:
                 message = await ws.recv()
                 self.last_message_time = time.time()
+                self.source_health["last_message"] = time.time()
                 self.message_counter += 1
-                logger.debug(f"[MSG #{self.message_counter}] RAW mensaje recibido: {message[:200]}...")
+                
+                # Diagnóstico para los primeros mensajes
                 if len(self.message_samples) < self.max_samples:
                     self.message_samples.append(message)
                     logger.info(f"Muestra #{len(self.message_samples)} guardada")
@@ -213,13 +322,35 @@ class CieloAPI:
                         for i, sample in enumerate(self.message_samples):
                             logger.info(f"MUESTRA #{i+1}: {sample[:500]}...")
                         logger.info("===== FIN DE MUESTRAS DE MENSAJES =====")
+                
+                # Procesar el mensaje y verificar si es una transacción
+                is_transaction = await self._process_cielo_message(message)
+                
+                # Verificar suscripciones
+                if isinstance(message, str):
+                    try:
+                        data = json.loads(message)
+                        if data.get("type") == "wallet_subscribed":
+                            if "data" in data and "wallet" in data["data"]:
+                                wallet = data["data"]["wallet"]
+                                self.subscription_confirmed.add(wallet)
+                                pending = len(self.subscription_requests) - len(self.subscription_confirmed)
+                                if len(self.subscription_confirmed) % 10 == 0 or len(self.subscription_confirmed) == len(self.subscription_requests):
+                                    logger.info(f"Progreso: {len(self.subscription_confirmed)}/{len(self.subscription_requests)} wallets confirmadas, {pending} pendientes")
+                    except Exception as e:
+                        logger.debug(f"Error procesando confirmación de suscripción: {e}")
+                
+                # Enviar al callback si está configurado
                 if self.message_callback:
                     try:
                         logger.debug(f"Llamando callback para mensaje #{self.message_counter}")
                         await self.message_callback(message)
                         logger.debug(f"Callback completado para mensaje #{self.message_counter}")
+                        if is_transaction:
+                            self.tx_counts["processed"] += 1
                     except Exception as e:
                         logger.error(f"Error en callback de mensaje: {e}", exc_info=True)
+                        self.tx_counts["errors"] += 1
             except websockets.ConnectionClosed as e:
                 logger.warning(f"Conexión a Cielo cerrada: {e}")
                 break
@@ -228,6 +359,7 @@ class CieloAPI:
         if self.is_running:
             logger.info("Bucle de escucha finalizado pero bot activo. Preparando para reconexión...")
             self.ws = None
+            self.source_health["healthy"] = False
 
     def check_subscription_status(self):
         """Verifica el estado de las suscripciones de wallets."""
@@ -276,6 +408,8 @@ class CieloAPI:
                     self.ws = ws
                     logger.info("📡 WebSocket conectado a Cielo (modo multi-wallet)")
                     self.connection_failures = 0
+                    self.source_health["healthy"] = True
+                    self.source_health["last_check"] = time.time()
                     retry_delay = 1
                     await self.subscribe_to_wallets(ws, wallets, filter_params)
                     await asyncio.sleep(5)
@@ -285,22 +419,10 @@ class CieloAPI:
                     try:
                         async for message in ws:
                             self.last_message_time = time.time()
+                            self.source_health["last_message"] = time.time()
                             self.message_counter += 1
-                            logger.debug(f"[MSG #{self.message_counter}] Recibido: {message[:150]}...")
-                            if isinstance(message, str):
-                                try:
-                                    data = json.loads(message)
-                                    if data.get("type") == "wallet_subscribed":
-                                        if "data" in data and "wallet" in data["data"]:
-                                            wallet = data["data"]["wallet"]
-                                            self.subscription_confirmed.add(wallet)
-                                            pending = len(self.subscription_requests) - len(self.subscription_confirmed)
-                                            if len(self.subscription_confirmed) % 10 == 0 or len(self.subscription_confirmed) == len(self.subscription_requests):
-                                                logger.info(f"Progreso: {len(self.subscription_confirmed)}/{len(self.subscription_requests)} wallets confirmadas, {pending} pendientes")
-                                    elif data.get("type") != "pong":
-                                        logger.info(f"MENSAJE RECIBIDO TIPO '{data.get('type')}': {message[:300]}...")
-                                except:
-                                    pass
+                            
+                            # Diagnóstico
                             if len(self.message_samples) < self.max_samples:
                                 self.message_samples.append(message)
                                 logger.info(f"Muestra #{len(self.message_samples)} guardada")
@@ -309,12 +431,18 @@ class CieloAPI:
                                     for i, sample in enumerate(self.message_samples):
                                         logger.info(f"MUESTRA #{i+1}: {sample[:500]}...")
                                     logger.info("===== FIN DE MUESTRAS DE MENSAJES =====")
+                            
+                            # Procesar mensaje
+                            is_transaction = await self._process_cielo_message(message)
+                            
+                            # Enviar al callback
                             try:
-                                logger.debug(f"Llamando callback para mensaje #{self.message_counter}")
                                 await on_message_callback(message)
-                                logger.debug(f"Callback completado para mensaje #{self.message_counter}")
+                                if is_transaction:
+                                    self.tx_counts["processed"] += 1
                             except Exception as e:
                                 logger.error(f"Error procesando mensaje: {e}", exc_info=True)
+                                self.tx_counts["errors"] += 1
                     finally:
                         if 'check_task' in locals():
                             check_task.cancel()
@@ -329,11 +457,15 @@ class CieloAPI:
                             pass
             except (websockets.ConnectionClosed, OSError) as e:
                 self.connection_failures += 1
+                self.source_health["healthy"] = False
+                self.source_health["failures"] += 1
                 logger.warning(f"Conexión cerrada (intento #{self.connection_failures}), reintentando en {retry_delay}s: {e}")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
             except Exception as e:
                 self.connection_failures += 1
+                self.source_health["healthy"] = False
+                self.source_health["failures"] += 1
                 logger.error(f"Error inesperado ({self.connection_failures}): {e}", exc_info=True)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
@@ -364,98 +496,37 @@ class CieloAPI:
                 logger.error(f"Error enviando ping #{ping_counter}: {e}")
                 break
 
-    async def diagnose_connectivity(self):
+    async def simulate_transaction(self):
         """
-        Ejecuta diagnóstico completo de conectividad.
+        Simula una transacción para verificar el flujo de procesamiento.
         
         Returns:
-            dict: Resultados del diagnóstico.
+            bool: True si la transacción simulada fue procesada correctamente
         """
-        logger.info("Iniciando diagnóstico de conectividad...")
-        results = {
-            "timestamp": datetime.now().isoformat(),
-            "active_source": "cielo",
-            "connected": False,
-            "ping_success": False,
-            "seconds_since_last_message": 0,
-            "wallets_count": 0,
-            "failures": 0,
-            "transaction_counts": dict(self.tx_counts)
-        }
-        if not self.ws:
-            logger.error("No hay adaptador Cielo configurado")
-            results["error"] = "No hay adaptador Cielo configurado"
-            return results
-        connected = self.is_connected()
-        results["connected"] = connected
-        logger.info(f"Estado de conexión Cielo: {'Conectado' if connected else 'Desconectado'}")
-        last_msg_time = self.last_message_time
-        seconds_since_last = time.time() - last_msg_time
-        results["seconds_since_last_message"] = seconds_since_last
-        logger.info(f"Tiempo desde último mensaje: {seconds_since_last:.1f} segundos")
-        failures = self.connection_failures
-        results["failures"] = failures
-        logger.info(f"Fallos acumulados: {failures}")
-        if connected and self.ws:
-            try:
-                await self.ws.send(json.dumps({"type": "ping", "id": "diagnostic"}))
-                logger.info("Ping enviado a Cielo")
-                results["ping_success"] = True
-            except Exception as e:
-                logger.error(f"Error enviando ping: {e}")
-                results["ping_error"] = str(e)
-        wallets = self.subscription_requests  # O usar _get_wallets_to_track()
-        results["wallets_count"] = len(wallets)
-        logger.info(f"Número de wallets en seguimiento: {len(wallets)}")
-        logger.info("===== DIAGNÓSTICO DE CONECTIVIDAD =====")
-        for key, value in results.items():
-            if key != "transaction_counts":
-                logger.info(f"{key}: {value}")
-        logger.info("Estadísticas de transacciones:")
-        for key, value in results["transaction_counts"].items():
-            if key not in ["by_type", "by_source"]:
-                logger.info(f"  {key}: {value}")
-        logger.info("===== FIN DE DIAGNÓSTICO =====")
-        return results
-
-    async def start_test_mode(self, interval=30, sample_size=2):
-        """
-        Genera transacciones de prueba para verificar el funcionamiento.
-        
-        Args:
-            interval: Intervalo entre transacciones (segundos).
-            sample_size: Número de wallets a usar para pruebas.
-        """
-        logger.info("🧪 Iniciando modo de prueba - generando transacciones simuladas")
-        wallets = self._get_wallets_to_track()
-        if not wallets or len(wallets) < sample_size:
-            logger.error("No hay suficientes wallets para el modo de prueba")
-            return
-        import random
-        sample_wallets = random.sample(wallets, sample_size)
-        test_tokens = [
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "So11111111111111111111111111111111111111112",
-            "7ABz8qEFZTHPkovMDsmQkm64DZWN5wRtU7LEtD2ShkQ6"
-        ]
-        test_counter = 0
-        while self.is_running:
-            wallet = random.choice(sample_wallets)
-            token = random.choice(test_tokens)
-            amount = random.uniform(200, 1000)
-            tx_type = random.choice(["BUY", "SELL"])
-            test_counter += 1
-            test_tx = {
-                "wallet": wallet,
-                "token": token,
-                "type": tx_type,
-                "amount_usd": amount,
-                "timestamp": time.time(),
-                "source": "test_mode"
+        logger.info("🧪 Generando transacción de prueba")
+        sample_tx = {
+            "type": "transaction",
+            "data": {
+                "wallet": "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",  # Una de tus wallets
+                "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+                "txType": "BUY",
+                "amountUsd": 500.0
             }
-            logger.info(f"📊 TEST #{test_counter}: {wallet[:8]}... {tx_type} {token[:8]}... ${amount:.2f}")
-            await self.process_transaction(test_tx)
-            await asyncio.sleep(interval)
+        }
+        
+        # Procesar directamente como si fuera un mensaje recibido
+        if self.message_callback:
+            logger.info("Enviando transacción simulada al callback")
+            try:
+                await self.message_callback(json.dumps(sample_tx))
+                logger.info("✅ Transacción de prueba procesada correctamente")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Error procesando transacción de prueba: {e}", exc_info=True)
+                return False
+        else:
+            logger.warning("❌ No hay callback configurado para procesar la transacción de prueba")
+            return False
 
     def enable_diagnostic_mode(self, enable=True, max_samples=10):
         """
@@ -472,34 +543,122 @@ class CieloAPI:
             logger.info(f"🔍 Modo diagnóstico activado (max {max_samples} muestras)")
         else:
             logger.info("🔍 Modo diagnóstico desactivado")
-            
+    
+    def get_diagnostic_data(self):
+        """
+        Obtiene datos de diagnóstico completos.
+        
+        Returns:
+            dict: Datos de diagnóstico
+        """
+        return {
+            "connection": {
+                "is_connected": self.is_connected(),
+                "failures": self.connection_failures,
+                "last_message_time": self.last_message_time,
+                "seconds_since_last": time.time() - self.last_message_time
+            },
+            "transactions": {
+                "total": self.tx_counts["total"],
+                "processed": self.tx_counts["processed"],
+                "errors": self.tx_counts["errors"],
+                "by_type": self.tx_counts["by_type"],
+                "last_transactions": self.last_transactions
+            },
+            "subscriptions": {
+                "requested": len(self.subscription_requests),
+                "confirmed": len(self.subscription_confirmed),
+                "failed": len(self.subscription_failed),
+                "pending": len(self.subscription_requests) - len(self.subscription_confirmed) - len(self.subscription_failed)
+            },
+            "health": {
+                "healthy": self.source_health["healthy"],
+                "failures": self.source_health["failures"],
+                "last_check": self.source_health["last_check"]
+            }
+        }
+    
+    async def run_diagnostics(self):
+        """
+        Ejecuta diagnósticos completos de la conexión.
+        
+        Returns:
+            dict: Resultados del diagnóstico
+        """
+        logger.info("🔍 Iniciando diagnósticos completos de Cielo...")
+        results = self.get_diagnostic_data()
+        
+        # Verificar si podemos enviar un ping
+        if self.is_connected() and self.ws:
+            try:
+                await self.ws.send(json.dumps({"type": "ping", "id": "diagnostic"}))
+                results["ping_sent"] = True
+                logger.info("✅ Ping diagnóstico enviado correctamente")
+            except Exception as e:
+                results["ping_sent"] = False
+                results["ping_error"] = str(e)
+                logger.error(f"❌ Error enviando ping diagnóstico: {e}")
+        
+        # Intentar suscribirse a una wallet de prueba
+        if self.is_connected() and self.ws:
+            try:
+                test_wallet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                msg = {
+                    "type": "subscribe_wallet",
+                    "wallet": test_wallet,
+                    "filter": {
+                        "chains": ["solana"],
+                        "tx_types": ["swap", "transfer"],
+                        "min_amount_usd": 50
+                    }
+                }
+                await self.ws.send(json.dumps(msg))
+                results["test_subscription_sent"] = True
+                logger.info("✅ Suscripción de prueba enviada correctamente")
+            except Exception as e:
+                results["test_subscription_sent"] = False
+                results["test_subscription_error"] = str(e)
+                logger.error(f"❌ Error enviando suscripción de prueba: {e}")
+        
+        # Probar transacción simulada
+        try:
+            simulation_result = await self.simulate_transaction()
+            results["transaction_simulation"] = simulation_result
+        except Exception as e:
+            results["transaction_simulation"] = False
+            results["simulation_error"] = str(e)
+            logger.error(f"❌ Error en simulación de transacción: {e}")
+        
+        logger.info(f"🔍 Diagnósticos completados: {json.dumps(results, default=str)}")
+        return results
+        
     def get_status_report(self):
         """
-        Genera un informe completo del estado del TransactionManager.
+        Genera un informe completo del estado del cliente Cielo.
         
         Returns:
             dict: Informe de estado.
         """
         now = time.time()
-        last_message_time = self.source_health["cielo"]["last_message"]
-        time_since_last = now - last_message_time
+        time_since_last = now - self.last_message_time
         return {
             "timestamp": datetime.now().isoformat(),
-            "active_source": "cielo",
             "is_running": self.is_running,
             "is_connected": self.is_connected(),
             "health": {
-                "cielo": self.source_health["cielo"],
+                "healthy": self.source_health["healthy"],
+                "failures": self.source_health["failures"],
                 "seconds_since_last_message": time_since_last
             },
             "transactions": {
                 "total": self.tx_counts["total"],
                 "processed": self.tx_counts["processed"],
-                "filtered": self.tx_counts["filtered_out"],
-                "duplicates": self.tx_counts["duplicates"],
                 "errors": self.tx_counts["errors"],
-                "by_type": self.tx_counts["by_type"],
-                "by_source": self.tx_counts["by_source"],
-                "last_minute": self.tx_counts["last_minute"]
+                "by_type": self.tx_counts["by_type"]
+            },
+            "subscriptions": {
+                "requested": len(self.subscription_requests),
+                "confirmed": len(self.subscription_confirmed),
+                "pending": len(self.subscription_requests) - len(self.subscription_confirmed)
             }
         }
