@@ -24,7 +24,7 @@ from performance_tracker import PerformanceTracker
 from transaction_manager import TransactionManager
 
 # Componentes avanzados
-from dex_monitor import DexScreenerClient
+from dexscreener_client import DexScreenerClient
 from market_metrics import MarketMetricsAnalyzer
 from token_analyzer import TokenAnalyzer
 from trader_profiler import TraderProfiler
