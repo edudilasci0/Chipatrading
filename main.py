@@ -7,7 +7,7 @@ import sys
 import logging
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import Config
 import db
 
@@ -124,6 +124,57 @@ async def process_pending_signals():
         logger.error(f"Error procesando señales pendientes: {e}")
         return []
 
+async def run_delayed_diagnostics(transaction_manager):
+    """Ejecuta diagnósticos después de un tiempo de inicialización"""
+    try:
+        # Esperar a que el sistema se inicialice completamente
+        await asyncio.sleep(30)
+        
+        logger.info("🔍 Ejecutando diagnósticos de transacciones...")
+        
+        # Verificar si tenemos un adaptador de Cielo configurado
+        if transaction_manager and transaction_manager.cielo_adapter:
+            # Ejecutar diagnósticos completos
+            logger.info("Ejecutando diagnósticos completos de Cielo...")
+            diagnostics = await transaction_manager.cielo_adapter.run_diagnostics()
+            
+            # Registrar estadísticas de transacciones
+            tx_stats = diagnostics['transactions']
+            logger.info(f"Estadísticas de transacciones: Total={tx_stats['total']}, Procesadas={tx_stats['processed']}, Errores={tx_stats['errors']}")
+            
+            # Verificar últimas transacciones si existen
+            if 'last_transactions' in tx_stats and tx_stats['last_transactions']:
+                logger.info(f"Últimas transacciones recibidas: {len(tx_stats['last_transactions'])}")
+                for idx, tx in enumerate(tx_stats['last_transactions']):
+                    logger.info(f"  Transacción #{idx+1}: {tx['type']} {tx['token']} por ${tx['amount']:.2f} desde {tx['wallet']}")
+            else:
+                logger.info("No se han detectado transacciones recientes")
+            
+            # Intentar simular una transacción para verificar procesamiento
+            logger.info("Simulando transacción para verificar procesamiento...")
+            simulation_result = await transaction_manager.cielo_adapter.simulate_transaction()
+            logger.info(f"Simulación de transacción: {'✅ Exitosa' if simulation_result else '❌ Fallida'}")
+            
+            # Verificar estados de conexión
+            conn_status = "✅ Conectado" if transaction_manager.cielo_adapter.is_connected() else "❌ Desconectado"
+            logger.info(f"Estado de conexión: {conn_status}")
+            
+            # Verificar estado de suscripciones
+            sub_status = transaction_manager.cielo_adapter.check_subscription_status()
+            logger.info(f"Estado de suscripciones: Solicitadas={sub_status['total_requested']}, Confirmadas={sub_status['confirmed']}, Pendientes={sub_status['pending']}")
+            
+            if sub_status['pending'] > 0:
+                logger.warning(f"⚠️ Hay {sub_status['pending']} wallets sin confirmar la suscripción")
+                if sub_status['missing_wallets']:
+                    logger.warning(f"Ejemplos de wallets sin confirmar: {', '.join(sub_status['missing_wallets'][:5])}")
+            
+            logger.info("🔍 Diagnósticos completados")
+        else:
+            logger.warning("⚠️ No se puede ejecutar diagnóstico - Adaptador Cielo no disponible")
+            
+    except Exception as e:
+        logger.error(f"❌ Error ejecutando diagnósticos: {e}", exc_info=True)
+
 async def main():
     global shutdown_flag
     try:
@@ -226,6 +277,10 @@ async def main():
         await performance_tracker.start()
         await transaction_manager.start()
         
+        # Añadir tarea de diagnóstico para verificar el procesamiento de transacciones
+        diagnostic_task = asyncio.create_task(run_delayed_diagnostics(transaction_manager))
+        logger.info("✅ Tarea de diagnóstico programada")
+        
         while not shutdown_flag:
             await asyncio.sleep(1)
         
@@ -233,6 +288,7 @@ async def main():
             telegram_task.cancel()
         maintenance_task.cancel()
         heartbeat_task.cancel()
+        diagnostic_task.cancel()
         await cleanup_resources(components)
         logger.info("✅ Bot detenido correctamente")
         return 0
