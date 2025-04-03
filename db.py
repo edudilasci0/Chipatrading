@@ -481,36 +481,6 @@ def save_transaction(tx_data):
         return False
 
 @retry_db_operation()
-def update_wallet_score(wallet, score):
-    """
-    Actualiza el score de un wallet en la base de datos.
-    
-    Args:
-        wallet: Dirección del wallet
-        score: Nuevo score (0-10)
-        
-    Returns:
-        bool: True si se actualizó correctamente.
-    """
-    query = """
-    INSERT INTO wallet_scores (wallet, score, updated_at)
-    VALUES (%s, %s, NOW())
-    ON CONFLICT (wallet) DO UPDATE 
-    SET score = %s, updated_at = NOW()
-    """
-    try:
-        execute_cached_query(query, (wallet, score, score), write_query=True)
-        logger.info(f"Score actualizado en BD para {wallet}: {score}")
-        # Limpiar caché
-        cache_key = f"SELECT * FROM wallet_scores WHERE wallet = '{wallet}'"
-        if cache_key in query_cache:
-            del query_cache[cache_key]
-        return True
-    except Exception as e:
-        logger.error(f"Error actualizando score para {wallet} en BD: {e}")
-        return False
-
-@retry_db_operation()
 def update_setting(key, value):
     """
     Actualiza o crea un setting en la tabla bot_settings.
@@ -679,13 +649,33 @@ def get_wallet_recent_transactions(wallet, hours=24):
     results = execute_cached_query(query, (wallet, hours), max_age=60)
     return results
 
-def get_cache_stats():
-    global query_cache_hits, query_cache_misses
-    total = query_cache_hits + query_cache_misses
-    hit_ratio = query_cache_hits / total if total > 0 else 0
-    return {
-        "cache_size": len(query_cache),
-        "cache_hits": query_cache_hits,
-        "cache_misses": query_cache_misses,
-        "hit_ratio": hit_ratio
-    }
+# NUEVA FUNCIÓN: update_wallet_score
+@retry_db_operation()
+def update_wallet_score(wallet, score):
+    """
+    Actualiza el score de un wallet en la base de datos.
+    
+    Args:
+        wallet: Dirección del wallet
+        score: Nuevo score (0-10)
+        
+    Returns:
+        bool: True si se actualizó correctamente
+    """
+    query = """
+    INSERT INTO wallet_scores (wallet, score, updated_at)
+    VALUES (%s, %s, NOW())
+    ON CONFLICT (wallet) DO UPDATE 
+    SET score = %s, updated_at = NOW()
+    """
+    try:
+        execute_cached_query(query, (wallet, score, score), write_query=True)
+        logger.info(f"Score actualizado en BD para {wallet}: {score}")
+        # Limpiar caché
+        cache_key = f"SELECT * FROM wallet_scores WHERE wallet = '{wallet}'"
+        if cache_key in query_cache:
+            del query_cache[cache_key]
+        return True
+    except Exception as e:
+        logger.error(f"Error actualizando score para {wallet} en BD: {e}")
+        return False
