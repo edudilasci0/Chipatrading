@@ -168,8 +168,12 @@ class SignalLogic:
             market_data = await self.get_token_market_data(token)
             market_cap = market_data.get("market_cap", 0)
             volume = market_data.get("volume", 0)
-            mcap_threshold = 100000  # $100K
-            volume_threshold = 200000  # $200K
+            mcap_threshold = float(Config.get("MCAP_THRESHOLD", "100000"))
+            volume_threshold = float(Config.get("VOLUME_THRESHOLD", "200000"))
+            
+            # Logs detallados
+            logger.info(f"Verificando token {token} - MC: ${market_cap/1000:.1f}K (umbral: ${mcap_threshold/1000:.1f}K), Vol: ${volume/1000:.1f}K (umbral: ${volume_threshold/1000:.1f}K)")
+            
             meets_mcap = market_cap >= mcap_threshold
             meets_volume = volume >= volume_threshold
             if meets_mcap and meets_volume:
@@ -178,9 +182,9 @@ class SignalLogic:
             else:
                 missing_criteria = []
                 if not meets_mcap:
-                    missing_criteria.append(f"Market Cap (${market_cap/1000:.1f}K < $100K)")
+                    missing_criteria.append(f"Market Cap (${market_cap/1000:.1f}K < ${mcap_threshold/1000:.1f}K)")
                 if not meets_volume:
-                    missing_criteria.append(f"Volumen (${volume/1000:.1f}K < $200K)")
+                    missing_criteria.append(f"Volumen (${volume/1000:.1f}K < ${volume_threshold/1000:.1f}K)")
                 logger.info(f"👁️ Token {token} añadido a monitoreo - No cumple: {', '.join(missing_criteria)}")
                 self.monitored_tokens[token] = {
                     "wallet": wallet,
@@ -272,7 +276,6 @@ class SignalLogic:
             tx_amount_factor = self._calculate_transaction_confidence(candidate.get("transactions", []))
             base_confidence = 0.5 + (num_wallets * 0.02)
             high_quality_factor = 0.05 * len(candidate.get("high_quality_traders", []))
-            # Se elimina whale_bonus ya que no se utiliza WhaleDetector
             confidence = min(0.95, base_confidence + tx_amount_factor + high_quality_factor)
             if confidence >= 0.9:
                 signal_level = "S"
