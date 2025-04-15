@@ -216,6 +216,38 @@ class SignalLogic:
         except Exception as e:
             logger.error(f"Error generando señal: {e}", exc_info=True)
             
+    async def process_signals(self):
+        """
+        Procesa señales de trading basadas en la actividad reciente.
+        Este método es llamado periódicamente desde el bucle principal.
+        """
+        try:
+            logger.debug("Procesando señales de trading")
+            
+            # Obtener transacciones recientes de la base de datos (si hay alguna implementación)
+            recent_txs = []
+            try:
+                # Si existe una función para obtener transacciones recientes, usarla
+                if hasattr(db, 'get_recent_transactions'):
+                    recent_txs = db.get_recent_transactions(hours=1)
+                    logger.debug(f"Obtenidas {len(recent_txs)} transacciones recientes")
+            except Exception as e:
+                logger.error(f"Error obteniendo transacciones recientes: {e}")
+            
+            # Procesar cada transacción
+            for tx in recent_txs:
+                await self.process_transaction(tx)
+                
+            # También revisar los tokens en watchlist
+            tokens_checked = 0
+            if hasattr(self, 'watched_tokens') and self.watched_tokens:
+                tokens_checked = len(self.watched_tokens)
+                
+            logger.debug(f"Procesamiento de señales completado. Transacciones: {len(recent_txs)}, Tokens en watchlist: {tokens_checked}")
+            
+        except Exception as e:
+            logger.error(f"Error en process_signals: {e}", exc_info=True)
+            
     async def periodic_monitoring(self):
         """
         Monitoreo periódico de tokens
