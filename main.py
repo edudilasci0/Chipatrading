@@ -209,7 +209,8 @@ async def main():
             "signal_logic": signal_logic,
             "wallet_manager": wallet_manager,
             "wallet_tracker": wallet_tracker,
-            "transaction_manager": transaction_manager
+            "transaction_manager": transaction_manager,
+            "risk_manager": signal_logic.risk_manager  # Añadir Risk Manager a componentes
         }
         
         logger.info("✅ Todos los componentes inicializados correctamente")
