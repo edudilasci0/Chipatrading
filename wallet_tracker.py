@@ -1,4 +1,3 @@
-# wallet_tracker.py
 from datetime import datetime
 import json
 
