@@ -160,7 +160,7 @@ class SignalLogic:
         """
         try:
             logger.debug(f"Obteniendo datos de mercado para {token}")
-            data = await self.dexscreener_client.get_token_data(token)
+            data = await self.dexscreener_client.fetch_token_data(token)
             if data:
                 logger.debug(f"Datos obtenidos para {token}: {data}")
             else:
@@ -183,7 +183,14 @@ class SignalLogic:
             logger.debug(f"Datos de señal: {signal_data}")
             
             # Guardar en base de datos
-            db.save_signal(signal_data)
+            db.save_signal(
+                token=signal_data["token"],
+                trader_count=1,  # Por ahora asumimos un trader individual
+                confidence=0.5,  # Valor por defecto de confianza
+                initial_price=signal_data["price"],
+                market_cap=signal_data.get("market_cap", 0),
+                volume=signal_data.get("volume_24h", 0)
+            )
             logger.info(f"Señal guardada en base de datos para {token}")
             
             # Registrar trade en Risk Manager
@@ -194,7 +201,14 @@ class SignalLogic:
             })
             
             # Enviar notificación
-            await send_enhanced_signal(signal_data)
+            await send_enhanced_signal(
+                token=token,
+                confidence=0.7,  # Valor por defecto de confianza
+                tx_velocity=1.0,  # Valor por defecto
+                traders=[wallet],  # Lista con el wallet que generó la señal
+                market_cap=signal_data.get("market_cap"),
+                initial_price=signal_data.get("price")
+            )
             logger.info(f"Notificación enviada para {token}")
             
             logger.info(f"✅ Señal generada exitosamente para {token} por wallet {wallet}")
