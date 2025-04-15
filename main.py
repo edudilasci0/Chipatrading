@@ -180,122 +180,57 @@ async def main():
     try:
         start_time = time.time()
         setup_signal_handlers()
+        
+        # Inicializar base de datos
         if not db.init_db():
             logger.critical("No se pudo inicializar la base de datos. Abortando.")
             return 1
+            
+        # Verificar configuración
         Config.check_required_config()
         logger.info("🔄 Inicializando componentes...")
         
-        # Inicializar APIs y servicios
+        # Inicializar cliente DexScreener
         dexscreener_client = DexScreenerClient()
-        cielo_api = CieloAPI(api_key=Config.CIELO_API_KEY)
         
         # Inicializar componentes principales
+        signal_logic = SignalLogic(dexscreener_client=dexscreener_client)
         wallet_manager = WalletManager()
         wallet_tracker = WalletTracker()
-        scoring_system = ScoringSystem()
-        # Se elimina Helius y WhaleDetector
-        # Inicializar componentes avanzados
-        dex_monitor = DexScreenerClient()
-        market_metrics = MarketMetricsAnalyzer(dexscreener_client=dexscreener_client)
-        token_analyzer = TokenAnalyzer(dexscreener_client=dexscreener_client)
-        trader_profiler = TraderProfiler()
-        
-        performance_tracker = PerformanceTracker(
-            dexscreener_client=dexscreener_client,
-            dex_monitor=dex_monitor,
-            market_metrics=market_metrics
-        )
-        performance_tracker.token_analyzer = token_analyzer
-        
-        signal_logic = SignalLogic(
-            scoring_system=scoring_system,
-            rugcheck_api=None,
-            ml_predictor=None,
-            pattern_detector=None,
-            wallet_tracker=wallet_tracker,
-            dexscreener_client=dexscreener_client
-        )
-        signal_logic.token_analyzer = token_analyzer
-        signal_logic.trader_profiler = trader_profiler
-        signal_logic.dex_monitor = dex_monitor
-        signal_logic.performance_tracker = performance_tracker
-        
         transaction_manager = TransactionManager(
             signal_logic=signal_logic,
             wallet_tracker=wallet_tracker,
-            scoring_system=scoring_system,
             wallet_manager=wallet_manager
         )
         
-        transaction_manager.cielo_adapter = cielo_api
-        transaction_manager.helius_adapter = None  # Se elimina Helius
-        
-        # Actualizar configuraciones
-        Config.update_setting("mcap_threshold", "100000")
-        Config.update_setting("volume_threshold", "200000")
-        
-        logger.info("✅ Todos los componentes inicializados correctamente")
-        logger.info("📊 Umbrales establecidos: Market Cap mín. $100K, Volumen mín. $200K")
-        
+        # Configurar componentes
         components = {
             "dexscreener_client": dexscreener_client,
-            "dex_monitor": dex_monitor,
-            "market_metrics": market_metrics,
-            "token_analyzer": token_analyzer,
-            "trader_profiler": trader_profiler,
-            "scoring_system": scoring_system,
             "signal_logic": signal_logic,
-            "performance_tracker": performance_tracker,
+            "wallet_manager": wallet_manager,
+            "wallet_tracker": wallet_tracker,
             "transaction_manager": transaction_manager
         }
         
-        maintenance_task = asyncio.create_task(periodic_maintenance(components))
-        heartbeat_task = asyncio.create_task(run_heartbeat(transaction_manager))
+        logger.info("✅ Todos los componentes inicializados correctamente")
         
-        pending_signals = await process_pending_signals()
-        for signal in pending_signals:
-            token = signal.get("token")
-            if token:
-                performance_tracker.add_signal(token, signal)
+        # Iniciar tareas principales
+        tasks = [
+            asyncio.create_task(transaction_manager.start()),
+            asyncio.create_task(periodic_maintenance(components)),
+            asyncio.create_task(run_heartbeat(transaction_manager))
+        ]
         
-        telegram_process_commands = fix_telegram_commands()
-        if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
-            telegram_task = asyncio.create_task(
-                telegram_process_commands(
-                    Config.TELEGRAM_BOT_TOKEN,
-                    Config.TELEGRAM_CHAT_ID,
-                    signal_logic,
-                    wallet_manager
-                )
-            )
-            logger.info("✅ Bot de Telegram inicializado")
-        else:
-            logger.warning("⚠️ Bot de Telegram no configurado")
-            telegram_task = None
+        # Esperar a que todas las tareas terminen o se reciba señal de shutdown
+        await asyncio.gather(*tasks)
         
-        await performance_tracker.start()
-        await transaction_manager.start()
-        
-        # Añadir tarea de diagnóstico para verificar el procesamiento de transacciones
-        diagnostic_task = asyncio.create_task(run_delayed_diagnostics(transaction_manager))
-        logger.info("✅ Tarea de diagnóstico programada")
-        
-        while not shutdown_flag:
-            await asyncio.sleep(1)
-        
-        if telegram_task:
-            telegram_task.cancel()
-        maintenance_task.cancel()
-        heartbeat_task.cancel()
-        diagnostic_task.cancel()
-        await cleanup_resources(components)
-        logger.info("✅ Bot detenido correctamente")
         return 0
+        
     except Exception as e:
-        logger.critical(f"🚨 Error crítico: {e}")
-        logger.critical(traceback.format_exc())
+        logger.critical(f"Error crítico en main: {e}", exc_info=True)
         return 1
+    finally:
+        await cleanup_resources(components)
 
 if __name__ == "__main__":
     try:
