@@ -80,7 +80,6 @@ async def init_components():
     logger.info("🔄 Inicializando API de datos en tiempo real...")
     cielo_api = CieloAPI()
     trader_profiler = TraderProfiler()
-    transaction_manager = TransactionManager(cielo_api=cielo_api)
     
     # Inicializar lógica de señales
     logger.info("🚨 Inicializando lógica de señales...")
@@ -90,6 +89,14 @@ async def init_components():
         token_analyzer=token_analyzer,
         trader_profiler=trader_profiler
     )
+    
+    # Inicializar el gestor de transacciones con los componentes apropiados
+    transaction_manager = TransactionManager(
+        signal_logic=signal_logic,
+        wallet_tracker=wallet_tracker,
+        wallet_manager=wallet_manager
+    )
+    transaction_manager.cielo_adapter = cielo_api  # Asignar el adaptador después de la inicialización
     
     components = {
         'dexscreener_client': dexscreener_client,
