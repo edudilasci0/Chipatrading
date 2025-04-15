@@ -46,8 +46,8 @@ class SignalLogic:
         self.risk_manager = RiskManager()
         
         # Configuración de umbrales
-        self.min_market_cap = float(Config.get_setting("mcap_threshold", "50000"))  # Reducido a $50K
-        self.min_volume = float(Config.get_setting("volume_threshold", "100000"))   # Reducido a $100K
+        self.min_market_cap = float(Config.get("mcap_threshold", "50000"))  # Reducido a $50K
+        self.min_volume = float(Config.get("volume_threshold", "100000"))   # Reducido a $100K
         self.min_transaction_usd = float(Config.MIN_TRANSACTION_USD)
         
         logger.info(f"SignalLogic inicializado con umbrales: Market Cap=${self.min_market_cap}, Volumen=${self.min_volume}, Min Trans=${self.min_transaction_usd}")
