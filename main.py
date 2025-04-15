@@ -11,6 +11,12 @@ from datetime import datetime, timedelta
 from config import Config
 import db
 
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 # Servicios y APIs
 from cielo_api import CieloAPI
 from dexscreener_client import DexScreenerClient
