@@ -13,15 +13,16 @@ class RiskManager:
         Inicializa el gestor de riesgo con configuraciones básicas
         """
         # Configuración de riesgo
-        self.max_portfolio_risk = float(Config.get_setting("max_portfolio_risk", "0.10"))  # 10% máximo del portfolio
-        self.max_trade_risk = float(Config.get_setting("max_trade_risk", "0.02"))  # 2% máximo por trade
-        self.min_trade_size = float(Config.get_setting("min_trade_size", "100"))  # $100 mínimo por trade
-        self.max_trade_size = float(Config.get_setting("max_trade_size", "1000"))  # $1000 máximo por trade
+        self.max_portfolio_risk = float(Config.get("max_portfolio_risk", "0.10"))  # 10% máximo del portfolio
+        self.max_trade_risk = float(Config.get("max_trade_risk", "0.02"))  # 2% máximo por trade
+        self.min_trade_size = float(Config.get("min_trade_size", "100"))  # $100 mínimo por trade
+        self.max_trade_size = float(Config.get("max_trade_size", "1000"))  # $1000 máximo por trade
+        self.portfolio_value = float(Config.get("portfolio_value", "1000"))  # Valor inicial del portfolio
+        self.min_liquidity_ratio = float(Config.get("min_liquidity_ratio", "0.1"))  # 10% del market cap
         
         # Estado actual
         self.active_trades = {}  # token -> trade_info
         self.total_risk = 0.0
-        self.portfolio_value = 0.0
         
         logger.info(f"RiskManager inicializado: Max Portfolio Risk={self.max_portfolio_risk*100}%, Max Trade Risk={self.max_trade_risk*100}%")
         

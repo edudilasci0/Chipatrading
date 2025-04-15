@@ -176,62 +176,43 @@ async def run_delayed_diagnostics(transaction_manager):
         logger.error(f"❌ Error ejecutando diagnósticos: {e}", exc_info=True)
 
 async def main():
-    global shutdown_flag
+    components = {}  # Inicializamos components al principio
     try:
-        start_time = time.time()
-        setup_signal_handlers()
+        # Configurar logging
+        setup_logging()
+        logger.info("✅ Manejadores de señales configurados")
         
         # Inicializar base de datos
-        if not db.init_db():
-            logger.critical("No se pudo inicializar la base de datos. Abortando.")
-            return 1
-            
-        # Verificar configuración
-        Config.check_required_config()
+        await init_database()
+        
         logger.info("🔄 Inicializando componentes...")
         
-        # Inicializar cliente DexScreener
-        dexscreener_client = DexScreenerClient()
-        
-        # Inicializar componentes principales
+        # Inicializar componentes
+        dexscreener_client = DexscreenerClient()
         signal_logic = SignalLogic(dexscreener_client=dexscreener_client)
-        wallet_manager = WalletManager()
-        wallet_tracker = WalletTracker()
-        transaction_manager = TransactionManager(
-            signal_logic=signal_logic,
-            wallet_tracker=wallet_tracker,
-            wallet_manager=wallet_manager
-        )
         
-        # Configurar componentes
         components = {
-            "dexscreener_client": dexscreener_client,
-            "signal_logic": signal_logic,
-            "wallet_manager": wallet_manager,
-            "wallet_tracker": wallet_tracker,
-            "transaction_manager": transaction_manager,
-            "risk_manager": signal_logic.risk_manager  # Añadir Risk Manager a componentes
+            'dexscreener_client': dexscreener_client,
+            'signal_logic': signal_logic
         }
         
-        logger.info("✅ Todos los componentes inicializados correctamente")
-        
-        # Iniciar tareas principales
-        tasks = [
-            asyncio.create_task(transaction_manager.start()),
-            asyncio.create_task(periodic_maintenance(components)),
-            asyncio.create_task(run_heartbeat(transaction_manager))
-        ]
-        
-        # Esperar a que todas las tareas terminen o se reciba señal de shutdown
-        await asyncio.gather(*tasks)
-        
-        return 0
-        
+        # Iniciar el bucle principal
+        while True:
+            try:
+                await signal_logic.process_signals()
+                await asyncio.sleep(60)  # Esperar 1 minuto entre iteraciones
+            except Exception as e:
+                logger.error(f"Error en el bucle principal: {str(e)}")
+                await asyncio.sleep(60)  # Esperar antes de reintentar
+                
     except Exception as e:
-        logger.critical(f"Error crítico en main: {e}", exc_info=True)
+        logger.critical(f"Error crítico en main: {str(e)}")
+        logger.critical(f"Traceback:\n{traceback.format_exc()}")
         return 1
     finally:
-        await cleanup_resources(components)
+        if components:
+            await cleanup_resources(components)
+    return 0
 
 if __name__ == "__main__":
     try:
