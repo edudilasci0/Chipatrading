@@ -83,12 +83,7 @@ async def init_components():
     
     # Inicializar lógica de señales
     logger.info("🚨 Inicializando lógica de señales...")
-    signal_logic = SignalLogic(
-        dexscreener_client=dexscreener_client,
-        market_metrics=market_metrics,
-        token_analyzer=token_analyzer,
-        trader_profiler=trader_profiler
-    )
+    signal_logic = SignalLogic(dexscreener_client=dexscreener_client)
     
     # Inicializar el gestor de transacciones con los componentes apropiados
     transaction_manager = TransactionManager(
